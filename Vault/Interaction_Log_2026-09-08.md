@@ -1,0 +1,6 @@
+# Interaction Log — 2026-09-08
+
+- Requested a duplicate GitHub repository named `ArchaeodashDesktop`; verified access, changed `origin`, and pushed the existing `master` branch. Vault log updates remain uncommitted.
+- Requested an exhaustive no-code migration plan from R/Shiny to a Node.js/TypeScript client with Rust desktop/server backends; created `IMPLEMENTATION.md` with complete component dispositions, architecture, parity specifications, APIs, storage, security, migration, tests, and phased acceptance gates.
+- Requested adoption of a native-format user file store in place of MySQL dataset storage; revised `IMPLEMENTATION.md` so exact native sources and sidecars are authoritative, PostgreSQL is hosted control-plane only, desktop supports managed/linked and explicit local file operations, and caches are rebuildable.
+- Requested a group-per-file workspace refinement; replaced the earlier source/sidecar authority model in `IMPLEMENTATION.md` with discoverable self-describing group Parquet files, validation-on-add, hidden `analytical_uuid`, analytical-unit terminology, sources anywhere inside the project, editable comparative-group options, and immutable measured elements with transformations/permutations rerun on demand.
