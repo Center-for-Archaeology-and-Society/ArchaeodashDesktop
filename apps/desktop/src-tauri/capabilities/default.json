@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for the main window. File-system scope stays minimal per IMPLEMENTATION.md Section 2; native dialogs are granted per-command in later phases.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

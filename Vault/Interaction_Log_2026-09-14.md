@@ -1,0 +1,8 @@
+# Interaction Log 2026-09-14
+
+- Reviewed `IMPLEMENTATION.md` and the local prerequisite environment: the plan can start Phase 0, while the R oracle package environment remains incomplete despite the script's tool-only check passing.
+- Installed `uvr` and used it to resolve the Phase 0 R oracle environment; all 37 direct/oracle packages now load from the dedicated `uvr` project.
+- Created and validated the legacy R oracle plus all fourteen `INAA_test.csv` baseline captures, including provenance hashes, package/default metadata, and repeat-run verification.
+- Completed the sanitized repository/local-runtime Phase 0 production inventory with MySQL analytical data explicitly excluded; documented the identity/contact-only PostgreSQL boundary and unverified external deployment facts.
+- Implemented the Phase 1 monorepo skeleton: 15-crate Rust workspace + Tauri shell, pnpm/TS packages (contracts/design-system/test-fixtures/client/web), shared smoke use case through Axum HTTP and Tauri IPC, CI workflow; cargo fmt/clippy/test (18 passing) and pnpm build/test all green. See [[Phase_1_Monorepo_Skeleton_2026-09-14]].
+- Began Phase 2: CSV import engine in `crates/data-io` porting `DataLoader.R`/`columnTypeHints.R` semantics (clean-names compatibility, 1,500-row/95% numeric inference) with golden parity test against `fixtures/golden/01_csv_import_and_numeric_inference.json`.

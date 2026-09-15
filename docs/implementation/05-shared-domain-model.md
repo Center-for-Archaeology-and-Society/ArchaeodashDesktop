@@ -33,7 +33,7 @@ Use opaque IDs at every boundary:
 `GroupRevision`
 
 - immutable revision metadata for a published group file: parent revision, reason, actor/mode, old/new checksums, affected analytical UUIDs, source/destination paths, timestamp, and validation report;
-- reasons include import, create group, move analytical units, copy analytical units, duplicate group, descriptive edit, metadata edit, reference edit enablement, merge, split, and legacy migration;
+- reasons include import, create group, move analytical units, copy analytical units, duplicate group, descriptive edit, metadata edit, reference edit enablement, merge, split, and optional identity/contact transition;
 - the active Parquet file is replaced atomically after its staged successor passes full validation. Bounded history/recovery copies may be retained under `.archaeodash/`.
 
 `Workspace`

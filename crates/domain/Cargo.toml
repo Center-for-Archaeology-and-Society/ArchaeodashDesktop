@@ -1,0 +1,19 @@
+[package]
+name = "archaeodash-domain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Opaque IDs, core entities, invariants, and typed errors (IMPLEMENTATION.md Section 5)."
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

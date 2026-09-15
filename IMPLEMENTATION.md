@@ -6,6 +6,8 @@ Prepared: 2026-09-08
 
 Revised: 2026-09-09 — split into sub-documents under `docs/implementation/` (sections 4–14; numbering and cross-references unchanged); corrected the Section 7.1 Calamine/CSV-TSV scope; added parity classes (Section 8.0) so stochastic-method parity is distributional where the R baseline is unseeded; added the Section 15.4 `INAA_test.csv` baseline benchmark plan with phase re-execution gates; added Section 17.1 recommended best-practice defaults for the Section 17 open questions (numerical-backend and `umap_rs` spikes moved to Phase 0).
 
+Scope amendment: 2026-09-14 — legacy MySQL analytical data is explicitly out of scope and is not inventoried, extracted, reconciled, or migrated. The new runtime has no MySQL dependency. PostgreSQL is limited to necessary identity/contact and authentication-security records; analytical and other user content remains file-first. See [Phase 0 production inventory](docs/operations/phase-0-production-inventory-2026-09-14.md).
+
 Architecture amendments: 2026-09-08 — MySQL is removed; PostgreSQL is hosted control-plane only; each analytical group is a self-describing Apache Parquet file; the opened directory is the project/workspace boundary; and calculated elemental transformations are recomputed on demand rather than written into group files
 
 Scope reviewed: every tracked application source, UI asset, test, package/deployment file, security script, generated document, and known legacy/prototype path in this repository
@@ -54,7 +56,7 @@ This structure is consistent with Tauri's documented Rust/webview message-passin
 - Hosted authentication uses server-set `HttpOnly`, `Secure`, `SameSite` cookies and CSRF protection. Bearer tokens are never exposed to client JavaScript.
 - Secrets belong in runtime secret stores or environment injection, never Git, client bundles, logs, project files, or Vault notes.
 - Long analyses are jobs with progress, cancellation, timeout, and resource limits in both delivery modes.
-- The migration is not complete until old MySQL data can be inventoried, imported, reconciled, and rolled back safely.
+- Legacy MySQL analytical data is deliberately not migrated. If legacy accounts require transition, handle only an authorized minimal identity/contact transition; do not copy analytical data, preferences, transformations, or result data into PostgreSQL.
 
 ## 3. What “parity” includes
 
@@ -120,7 +122,7 @@ Sections 4-14 are maintained as standalone sub-documents under `docs/implementat
 | 11 | [authentication-privacy-security](docs/implementation/11-authentication-privacy-security.md) | Auth, upload/data controls, desktop controls, legal |
 | 12 | [jobs-performance-observability](docs/implementation/12-jobs-performance-observability.md) | Jobs, performance, observability |
 | 13 | [source-disposition](docs/implementation/13-source-disposition.md) | Every current file: port/replace/retire/archive |
-| 14 | [legacy-data-migration](docs/implementation/14-legacy-data-migration.md) | MySQL discovery, mapping rules, cutover |
+| 14 | [legacy-data-migration](docs/implementation/14-legacy-data-migration.md) | Legacy identity/contact transition and analytical-data non-migration |
 
 ## 15. Test and validation strategy
 
@@ -164,7 +166,7 @@ Mandatory storage-invariant tests inspect every group Parquet written by every c
 - required web and desktop e2e with no silent skips;
 - container/image and desktop artifact scans, SBOMs, signatures, and provenance;
 - accessibility and visual regression;
-- backup/restore and legacy migration rehearsal;
+- backup/restore and, if needed, identity/contact transition rehearsal;
 - performance budgets and threat-model review.
 
 ### 15.4 Baseline benchmark plan (`INAA_test.csv` oracle)
@@ -211,7 +213,7 @@ Re-execution gates:
 
 - Bootstrap the developer environment with `install_dev_prereqs.sh` (system packages, Rust/pnpm/sqlx/tauri-cli toolchain, R oracle dependencies; see the vault note [[Vault/Install_Dev_Prereqs_Script_2026-09-10]]). Requires R ≥ 4.4 — the script enables the CRAN apt repository on Ubuntu 24.04.
 - Tag the current R baseline; capture R/package/database/deployment versions.
-- Inventory actual production formats, dataset sizes, table layouts, and external Compose/proxy settings.
+- Inventory actual production formats, dataset sizes, file-store requirements, and external Compose/proxy settings; do not inspect or use MySQL analytical tables.
 - Build oracle fixtures and screenshots for every workflow.
 - Capture the Section 15.4 `INAA_test.csv` baseline benchmark suite through the R oracle and assign parity classes (Section 8.0) to every procedure.
 - Complete the numerical-backend spike (Section 17.1 item 2) and the `umap_rs` spike (Section 17.1 item 3): confirm or overturn each recommended default with a recorded decision, because the Section 15.4 parity gates depend on their outcomes.
@@ -264,11 +266,11 @@ Exit: full statistical parity matrix approved; fallback/method metadata visible;
 
 Exit: threat-model findings closed or explicitly accepted; auth lifecycle/security e2e and restore drill pass.
 
-### Phase 8 — Legacy migration and cutover
+### Phase 8 — Identity/contact transition and cutover
 
-- Rehearse/import/reconcile, update Help/Terms/Privacy, beta desktop installers and hosted environment, user acceptance, final delta/cutover/rollback window.
+- If legacy accounts must be retained, rehearse the authorized minimal identity/contact transition and reset/verification flow; do not import MySQL analytical data. Update Help/Terms/Privacy, beta desktop installers and hosted environment, user acceptance, final delta/cutover/rollback window.
 
-Exit: reconciliation is exact within approved rules, signed installers/images published, rollback proven, old app read-only, support runbook active.
+Exit: any authorized account transition is exact within approved identity/contact rules, signed installers/images published, rollback proven, old app read-only, support runbook active.
 
 ### Phase 9 — Remove legacy runtime
 
@@ -323,7 +325,7 @@ Best-practice defaults for each open question above. Each default remains gated 
 2. **Numerical backend.** Decide in Phase 0. Default: a pure-Rust deterministic linear-algebra core (`faer` or `ndarray`-based) for the PCA/LDA/Mahalanobis/Hotelling computations so goldens reproduce across Windows/macOS/Linux without BLAS build variance; multithreaded BLAS is enabled only where a class-T tolerance is re-approved for it. Random-forest imputation uses a pinned, audited pure-Rust regressor (e.g., Linfa RandomForest) with recorded seed and tree/feature defaults, validated distributionally against R `mice rf` goldens. Gate: the same class-T golden passes unchanged on all three CI platforms, with backend and version recorded in every golden.
 3. **`umap_rs` adoption.** Time-boxed Phase 0 spike against Section 15.4 procedure 7: caller-supplied exact brute-force KNN for up to the 100,000-row plot ceiling, fixed-seed deterministic initialization, pinned epochs/learning schedule, input validation, and panic isolation at the job boundary. Quality gate: k-NN overlap/trustworthiness against the R `umap` oracle across at least three seeds within a Phase 0-ratified threshold (class D). Fallback: reimplement the UMAP layout on the chosen backend, or hold UMAP behind the experimental-parity flag until it passes; never ship an unvalidated, panicking path.
 4. **DIANA / Ward.D.** Procedure-9 Phase 0 goldens decide. Default: use maintained crates where parity passes (`kodama` covers Ward linkages and stepwise dendrograms; `kmedoids` covers PAM); DIANA has no maintained Rust equivalent — implement the divisive algorithm in `crates/analysis` (O(n²) dissimilarity matrix plus recursive split) with ultrametric/merge-count property tests and golden dendrogram orderings. No clustering method ships without its procedure-9 golden.
-5. **Dataset sizes and hosted quotas.** The Phase 0 MySQL inventory (row counts, widths, byte sizes) sets the floor; the Section 12 benchmark ladder (10k/100k/1M rows) sets the tested ceiling: 1M rows × roughly 40 elemental/descriptive columns per group file. Enforce explicit import row/cell limits with a clear error before analysis, never OOM mid-job. Hosted tiers: guest namespace hard-quotaed with published TTL per Section 3.1; authenticated default 5 GB, operator-configurable through `storage_quotas`; quota reserve-and-reconcile per Section 6.9. Publish final numbers in Help/Terms at Phase 8.
+5. **Dataset sizes and hosted quotas.** Phase 0 fixture/performance-ladder measurements and future file-store telemetry set the floor; MySQL analytical table sizes are out of scope. The Section 12 benchmark ladder (10k/100k/1M rows) sets the tested ceiling: 1M rows × roughly 40 elemental/descriptive columns per group file. Enforce explicit import row/cell limits with a clear error before analysis, never OOM mid-job. Hosted tiers: guest namespace hard-quotaed with published TTL per Section 3.1; authenticated default 5 GB, operator-configurable through `storage_quotas`; quota reserve-and-reconcile per Section 6.9. Publish final numbers in Help/Terms at Phase 8.
 6. **Hosted user-file backend.** Keep the `object_store`-based `UserFileStore`/`GroupFileStore` traits as the only port. Production default: self-hosted S3-compatible storage (MinIO or cloud S3) with server-side encryption, object versioning on, noncurrent-version lifecycle expiry (~30 days), multipart upload with abort cleanup, and conditional PUTs via ETags. Single-host filesystem remains a supported deployment mode (atomic write-to-temp + rename + fsync, daily coordinated backup of the data volume and PostgreSQL) for small/self-hosted installs. Section 15.2 contract tests run against both backends; the choice is per deployment, never a code fork.
 7. **Same-format writeback claims.** Default: XLS/XLSB/ODS are import-only (Calamine reads; edits export to CSV/TSV/XLSX/group Parquet). Same-format writeback promises exist only for CSV/TSV (value round-trip under the documented dialect normalization) and app-generated XLSX (round-trip of app-written structure). The Section 7.1 capability matrix stays authoritative; any addition requires a fixture-tested adapter and a new matrix row.
 8. **Group-profile footer metadata and checksums.** Parquet key-value metadata under namespaced keys (`archaeodash.profile.v1`) carrying a canonical JSON payload: explicit `profile_version`, UTF-8, sorted keys, no insignificant whitespace; that serialization is what checksums sign. `measured_elemental_checksum` is SHA-256 over the canonical ordered `(analytical_uuid, column-id, value|null)` tuple stream in fixed schema order — never over raw file bytes. Readers accept known minor versions and fail closed on unknown majors (Section 6.6); profile evolution adds fields only, with a fixture-tested migration per version. The single canonical `analytical_uuid` physical encoding is the fixed 16-byte Parquet UUID (Section 6.6); a lowercase hyphenated string column is accepted only as a one-time migration input, canonicalized to the 16-byte form on read, and never written by any current writer.
@@ -350,7 +352,7 @@ The migration is complete only when:
 - multi-group edits publish validated Parquet revisions to the correct paths transactionally and recover deterministically after interruption;
 - auth tokens are HttpOnly server sessions, verification/reset/rate limiting work across processes, and cross-user tests fail closed;
 - secure upload limits, version conflicts, cancellation, recovery, logging redaction, backups/restores, health checks, and rollback are tested;
-- old MySQL datasets/users/preferences/transformations reconcile to group Parquet files, JSON definitions, and the fidelity-loss report; no reconstructed file is mislabeled as the original upload;
+- no MySQL analytical dataset, transformation, preference, result, or other user content is copied into the new runtime; any authorized legacy account transition is limited to identity/contact records and never labels reconstructed content as an original upload;
 - Help, Terms, Privacy, credits, license, issue/support links, and mode differences are current;
 - signed desktop artifacts and immutable hosted images are reproducible from locked source with SBOM/provenance;
 - no secrets are committed or copied into documentation/Vault; and

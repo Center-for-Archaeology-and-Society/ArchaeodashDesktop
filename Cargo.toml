@@ -1,0 +1,93 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/domain",
+    "crates/contracts",
+    "crates/analysis",
+    "crates/data-io",
+    "crates/storage",
+    "crates/file-store-fs",
+    "crates/file-store-s3",
+    "crates/project-manifest",
+    "crates/cache",
+    "crates/jobs",
+    "crates/auth",
+    "crates/control-postgres",
+    "crates/application",
+    "crates/api",
+    "crates/desktop",
+    "apps/desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "SEE LICENSE IN LICENSE"
+repository = "https://github.com/Center-for-Archaeology-and-Society/Archaeodash"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Errors
+thiserror = "2.0"
+
+# IDs
+uuid = { version = "1.26", features = ["v7", "serde"] }
+
+# Async runtime and HTTP
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process"] }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.7", features = ["fs", "trace", "cors"] }
+
+# Numerical core (pure-Rust deterministic backend, ADR-0002)
+faer = "0.24"
+
+# Data I/O
+csv = "1.4"
+calamine = "0.36"
+rust_xlsxwriter = "0.99"
+arrow = "59"
+parquet = { version = "59", features = ["arrow"] }
+
+# Clustering
+kodama = "0.3"
+kmedoids = "0.5"
+
+# Randomness (seeded, reproducible)
+rand = "0.10"
+rand_chacha = "0.10"
+
+# Auth
+argon2 = "0.6"
+
+# Internal crates
+archaeodash-domain = { path = "crates/domain" }
+archaeodash-contracts = { path = "crates/contracts" }
+archaeodash-analysis = { path = "crates/analysis" }
+archaeodash-data-io = { path = "crates/data-io" }
+archaeodash-storage = { path = "crates/storage" }
+archaeodash-file-store-fs = { path = "crates/file-store-fs" }
+archaeodash-file-store-s3 = { path = "crates/file-store-s3" }
+archaeodash-project-manifest = { path = "crates/project-manifest" }
+archaeodash-cache = { path = "crates/cache" }
+archaeodash-jobs = { path = "crates/jobs" }
+archaeodash-auth = { path = "crates/auth" }
+archaeodash-control-postgres = { path = "crates/control-postgres" }
+archaeodash-application = { path = "crates/application" }
+archaeodash-api = { path = "crates/api" }
+archaeodash-desktop = { path = "crates/desktop" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -8,3 +8,12 @@ db_backup_auth_cleanup_*.rds
 db_backup_auth_cleanup_*.sql
 
 inst/app/app_cache/
+
+# --- Node/Rust workspace (Phase 1) ---
+node_modules/
+dist/
+target/
+*.tsbuildinfo
+
+# Tauri generated
+apps/desktop/src-tauri/gen/

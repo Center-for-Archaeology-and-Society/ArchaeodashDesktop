@@ -1,0 +1,5490 @@
+[
+  {
+    "rowid": "1",
+    "anid": "AID089",
+    "match": "AID622",
+    "distance": 1.9421,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "1",
+    "anid": "AID089",
+    "match": "AID672",
+    "distance": 2.2762,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "1",
+    "anid": "AID089",
+    "match": "AID616",
+    "distance": 2.462,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "2",
+    "anid": "AID090",
+    "match": "AID305",
+    "distance": 0.8066,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "3",
+    "anid": "AID092",
+    "match": "AID593",
+    "distance": 2.5231,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "3",
+    "anid": "AID092",
+    "match": "AID672",
+    "distance": 2.676,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "3",
+    "anid": "AID092",
+    "match": "AID188",
+    "distance": 3.4469,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "4",
+    "anid": "AID093",
+    "match": "AID137",
+    "distance": 3.4297,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "4",
+    "anid": "AID093",
+    "match": "AID308",
+    "distance": 3.4918,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "5",
+    "anid": "AID094",
+    "match": "AID415",
+    "distance": 2.322,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "5",
+    "anid": "AID094",
+    "match": "AID301",
+    "distance": 2.5255,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "6",
+    "anid": "AID096",
+    "match": "AID173",
+    "distance": 2.4649,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "6",
+    "anid": "AID096",
+    "match": "MAP105",
+    "distance": 3.3709,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "7",
+    "anid": "AID097",
+    "match": "AID182",
+    "distance": 1.3074,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "7",
+    "anid": "AID097",
+    "match": "AID295",
+    "distance": 1.3737,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "10",
+    "anid": "AID100",
+    "match": "AID628",
+    "distance": 2.3214,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "12",
+    "anid": "AID109",
+    "match": "MAP125",
+    "distance": 7.0105,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "12",
+    "anid": "AID109",
+    "match": "AID577",
+    "distance": 7.2354,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "13",
+    "anid": "AID137",
+    "match": "AID624",
+    "distance": 0.6063,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "13",
+    "anid": "AID137",
+    "match": "AID229",
+    "distance": 1.4733,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "13",
+    "anid": "AID137",
+    "match": "AID141",
+    "distance": 1.7126,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "13",
+    "anid": "AID137",
+    "match": "AID394",
+    "distance": 1.9363,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "13",
+    "anid": "AID137",
+    "match": "AID584",
+    "distance": 2.1507,
+    "CORE": "D3a",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "14",
+    "anid": "AID138",
+    "match": "AID744",
+    "distance": 1.4288,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "15",
+    "anid": "AID139",
+    "match": "AID282",
+    "distance": 0.9261,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "15",
+    "anid": "AID139",
+    "match": "AID295",
+    "distance": 1.1111,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "15",
+    "anid": "AID139",
+    "match": "AID554",
+    "distance": 1.1244,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "15",
+    "anid": "AID139",
+    "match": "AID182",
+    "distance": 1.4362,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "16",
+    "anid": "AID140",
+    "match": "AID652",
+    "distance": 0.7086,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "16",
+    "anid": "AID140",
+    "match": "AID180",
+    "distance": 2.3448,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "16",
+    "anid": "AID140",
+    "match": "AID231",
+    "distance": 2.6394,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "17",
+    "anid": "AID141",
+    "match": "AID137",
+    "distance": 1.7126,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "20",
+    "anid": "AID148",
+    "match": "AID622",
+    "distance": 1.1832,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "20",
+    "anid": "AID148",
+    "match": "AID616",
+    "distance": 2.1393,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "21",
+    "anid": "AID150",
+    "match": "MAP478",
+    "distance": 0.4215,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "21",
+    "anid": "AID150",
+    "match": "MAP544",
+    "distance": 1.4347,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "23",
+    "anid": "AID161",
+    "match": "AID415",
+    "distance": 1.3773,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "24",
+    "anid": "AID162",
+    "match": "AID210",
+    "distance": 1.7788,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "25",
+    "anid": "AID164",
+    "match": "MAP486",
+    "distance": 1.9105,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "25",
+    "anid": "AID164",
+    "match": "MAP122",
+    "distance": 1.9815,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "25",
+    "anid": "AID164",
+    "match": "AID279",
+    "distance": 2.1589,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "27",
+    "anid": "AID167",
+    "match": "MAP560",
+    "distance": 0.8696,
+    "CORE": "D2",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "28",
+    "anid": "AID168",
+    "match": "MAP486",
+    "distance": 0.9222,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "28",
+    "anid": "AID168",
+    "match": "MAP483",
+    "distance": 1.4699,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "28",
+    "anid": "AID168",
+    "match": "AID577",
+    "distance": 1.602,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "28",
+    "anid": "AID168",
+    "match": "MAP125",
+    "distance": 1.8936,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "29",
+    "anid": "AID173",
+    "match": "MAP105",
+    "distance": 2.0537,
+    "CORE": "D4",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "29",
+    "anid": "AID173",
+    "match": "MAP103",
+    "distance": 2.157,
+    "CORE": "D4",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "29",
+    "anid": "AID173",
+    "match": "AID299",
+    "distance": 2.2356,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "29",
+    "anid": "AID173",
+    "match": "AID096",
+    "distance": 2.4649,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "29",
+    "anid": "AID173",
+    "match": "AID251",
+    "distance": 3.015,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "30",
+    "anid": "AID174",
+    "match": "AID580",
+    "distance": 3.6074,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "32",
+    "anid": "AID178",
+    "match": "AID393",
+    "distance": 1.3838,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "33",
+    "anid": "AID180",
+    "match": "AID301",
+    "distance": 2.2999,
+    "CORE": "D2",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "33",
+    "anid": "AID180",
+    "match": "AID140",
+    "distance": 2.3448,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "33",
+    "anid": "AID180",
+    "match": "AID249",
+    "distance": 2.5086,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "33",
+    "anid": "AID180",
+    "match": "MAP121",
+    "distance": 2.9745,
+    "CORE": "D2",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "34",
+    "anid": "AID182",
+    "match": "AID097",
+    "distance": 1.3074,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "34",
+    "anid": "AID182",
+    "match": "AID634",
+    "distance": 1.4334,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "34",
+    "anid": "AID182",
+    "match": "AID139",
+    "distance": 1.4362,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "34",
+    "anid": "AID182",
+    "match": "AID272",
+    "distance": 1.5721,
+    "CORE": "D3a",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "35",
+    "anid": "AID183",
+    "match": "AID565",
+    "distance": 0.476,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "35",
+    "anid": "AID183",
+    "match": "AID670",
+    "distance": 0.8099,
+    "CORE": "D3a",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "35",
+    "anid": "AID183",
+    "match": "AID617",
+    "distance": 1.2328,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "35",
+    "anid": "AID183",
+    "match": "AID505",
+    "distance": 2.0295,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "36",
+    "anid": "AID184",
+    "match": "AID623",
+    "distance": 2.0887,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "37",
+    "anid": "AID185",
+    "match": "MAP548",
+    "distance": 1.2135,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "37",
+    "anid": "AID185",
+    "match": "MAP549",
+    "distance": 2.149,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "38",
+    "anid": "AID186",
+    "match": "AID580",
+    "distance": 1.9978,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "38",
+    "anid": "AID186",
+    "match": "AID264",
+    "distance": 2.0469,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "39",
+    "anid": "AID187",
+    "match": "AID709",
+    "distance": 21.3461,
+    "CORE": "D4",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "39",
+    "anid": "AID187",
+    "match": "AID710",
+    "distance": 21.5881,
+    "CORE": "D4",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "39",
+    "anid": "AID187",
+    "match": "MAP545",
+    "distance": 23.4578,
+    "CORE": "D4",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "39",
+    "anid": "AID187",
+    "match": "AID679",
+    "distance": 23.8403,
+    "CORE": "D4",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "40",
+    "anid": "AID188",
+    "match": "AID489",
+    "distance": 2.3953,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "40",
+    "anid": "AID188",
+    "match": "AID395",
+    "distance": 2.7303,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "40",
+    "anid": "AID188",
+    "match": "AID092",
+    "distance": 3.4469,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "40",
+    "anid": "AID188",
+    "match": "AID162",
+    "distance": 3.4712,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "40",
+    "anid": "AID188",
+    "match": "AID492",
+    "distance": 3.5108,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "41",
+    "anid": "AID189",
+    "match": "MAP486",
+    "distance": 1.0802,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "41",
+    "anid": "AID189",
+    "match": "AID623",
+    "distance": 2.2112,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "41",
+    "anid": "AID189",
+    "match": "MAP483",
+    "distance": 2.2371,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "41",
+    "anid": "AID189",
+    "match": "AID577",
+    "distance": 2.465,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "42",
+    "anid": "AID191",
+    "match": "AID516",
+    "distance": 0.7956,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "42",
+    "anid": "AID191",
+    "match": "AID702",
+    "distance": 1.006,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "42",
+    "anid": "AID191",
+    "match": "AID407",
+    "distance": 1.795,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "42",
+    "anid": "AID191",
+    "match": "AID511",
+    "distance": 2.3221,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "43",
+    "anid": "AID192",
+    "match": "AID393",
+    "distance": 1.9399,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "44",
+    "anid": "AID193",
+    "match": "AID393",
+    "distance": 1.7822,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "45",
+    "anid": "AID196",
+    "match": "AID708",
+    "distance": 6.6327,
+    "CORE": "D4",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "45",
+    "anid": "AID196",
+    "match": "AID656",
+    "distance": 8.7461,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "45",
+    "anid": "AID196",
+    "match": "AID488",
+    "distance": 8.9473,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "45",
+    "anid": "AID196",
+    "match": "AID258",
+    "distance": 9.1349,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "45",
+    "anid": "AID196",
+    "match": "AID665",
+    "distance": 9.7914,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "46",
+    "anid": "AID197",
+    "match": "AID139",
+    "distance": 1.5072,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "46",
+    "anid": "AID197",
+    "match": "AID490",
+    "distance": 1.5861,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "46",
+    "anid": "AID197",
+    "match": "AID097",
+    "distance": 1.5966,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "47",
+    "anid": "AID200",
+    "match": "MAP532",
+    "distance": 2.767,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "48",
+    "anid": "AID201",
+    "match": "AID620",
+    "distance": 2.6401,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "48",
+    "anid": "AID201",
+    "match": "AID231",
+    "distance": 3.2199,
+    "CORE": "D4",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "48",
+    "anid": "AID201",
+    "match": "AID404",
+    "distance": 3.2215,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "48",
+    "anid": "AID201",
+    "match": "AID482",
+    "distance": 3.8768,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "48",
+    "anid": "AID201",
+    "match": "AID696",
+    "distance": 4.0178,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "49",
+    "anid": "AID202",
+    "match": "AID393",
+    "distance": 2.2405,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "50",
+    "anid": "AID203",
+    "match": "MAP103",
+    "distance": 4.4585,
+    "CORE": "D4",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "50",
+    "anid": "AID203",
+    "match": "AID679",
+    "distance": 4.8608,
+    "CORE": "D4",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "50",
+    "anid": "AID203",
+    "match": "MAP105",
+    "distance": 5.104,
+    "CORE": "D4",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "50",
+    "anid": "AID203",
+    "match": "AID096",
+    "distance": 5.5481,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "51",
+    "anid": "AID205",
+    "match": "MAP548",
+    "distance": 2.7651,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "52",
+    "anid": "AID207",
+    "match": "AID249",
+    "distance": 2.0278,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "52",
+    "anid": "AID207",
+    "match": "AID680",
+    "distance": 2.2431,
+    "CORE": "D2",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "52",
+    "anid": "AID207",
+    "match": "AID252",
+    "distance": 2.4278,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "53",
+    "anid": "AID210",
+    "match": "AID561",
+    "distance": 1.6162,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "53",
+    "anid": "AID210",
+    "match": "MAP554",
+    "distance": 1.7495,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "53",
+    "anid": "AID210",
+    "match": "AID162",
+    "distance": 1.7788,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "53",
+    "anid": "AID210",
+    "match": "AID572",
+    "distance": 2.4507,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "53",
+    "anid": "AID210",
+    "match": "AID417",
+    "distance": 2.5047,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "54",
+    "anid": "AID213",
+    "match": "AID672",
+    "distance": 3.6746,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "54",
+    "anid": "AID213",
+    "match": "AID089",
+    "distance": 4.1549,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "54",
+    "anid": "AID213",
+    "match": "AID243",
+    "distance": 4.3308,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "54",
+    "anid": "AID213",
+    "match": "AID390",
+    "distance": 5.0205,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "54",
+    "anid": "AID213",
+    "match": "AID622",
+    "distance": 5.1882,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "55",
+    "anid": "AID214",
+    "match": "AID740",
+    "distance": 1.3533,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "55",
+    "anid": "AID214",
+    "match": "AID232",
+    "distance": 1.9202,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "56",
+    "anid": "AID217",
+    "match": "MAP477",
+    "distance": 1.7014,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "56",
+    "anid": "AID217",
+    "match": "AID634",
+    "distance": 1.9476,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "56",
+    "anid": "AID217",
+    "match": "MAP471",
+    "distance": 2.0968,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "56",
+    "anid": "AID217",
+    "match": "AID257",
+    "distance": 2.1808,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "56",
+    "anid": "AID217",
+    "match": "AID668",
+    "distance": 2.2446,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "58",
+    "anid": "AID219",
+    "match": "AID669",
+    "distance": 3.1768,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "58",
+    "anid": "AID219",
+    "match": "AID702",
+    "distance": 3.664,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "58",
+    "anid": "AID219",
+    "match": "MAP125",
+    "distance": 4.0634,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "59",
+    "anid": "AID221",
+    "match": "MAP548",
+    "distance": 1.1618,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "60",
+    "anid": "AID228",
+    "match": "AID137",
+    "distance": 2.6549,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "61",
+    "anid": "AID229",
+    "match": "AID584",
+    "distance": 0.9209,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "61",
+    "anid": "AID229",
+    "match": "AID279",
+    "distance": 1.3536,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "61",
+    "anid": "AID229",
+    "match": "AID137",
+    "distance": 1.4733,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "62",
+    "anid": "AID231",
+    "match": "AID404",
+    "distance": 0.8528,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "62",
+    "anid": "AID231",
+    "match": "AID611",
+    "distance": 1.8968,
+    "CORE": "D3a",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "62",
+    "anid": "AID231",
+    "match": "AID696",
+    "distance": 2.4886,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "62",
+    "anid": "AID231",
+    "match": "AID140",
+    "distance": 2.6394,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "63",
+    "anid": "AID232",
+    "match": "AID389",
+    "distance": 1.914,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "63",
+    "anid": "AID232",
+    "match": "AID214",
+    "distance": 1.9202,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "63",
+    "anid": "AID232",
+    "match": "AID167",
+    "distance": 1.9246,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "63",
+    "anid": "AID232",
+    "match": "AID528",
+    "distance": 1.9717,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "64",
+    "anid": "AID233",
+    "match": "AID584",
+    "distance": 1.969,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "65",
+    "anid": "AID241",
+    "match": "MAP557",
+    "distance": 1.9375,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "65",
+    "anid": "AID241",
+    "match": "AID137",
+    "distance": 3.0202,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "66",
+    "anid": "AID242",
+    "match": "AID247",
+    "distance": 1.0172,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "66",
+    "anid": "AID242",
+    "match": "AID251",
+    "distance": 2.5911,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "66",
+    "anid": "AID242",
+    "match": "AID398",
+    "distance": 2.999,
+    "CORE": "D3a",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "66",
+    "anid": "AID242",
+    "match": "AID699",
+    "distance": 3.4388,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "66",
+    "anid": "AID242",
+    "match": "AID504",
+    "distance": 3.7898,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "67",
+    "anid": "AID243",
+    "match": "AID622",
+    "distance": 0.993,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "67",
+    "anid": "AID243",
+    "match": "AID616",
+    "distance": 1.6814,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "68",
+    "anid": "AID245",
+    "match": "AID197",
+    "distance": 2.0975,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "69",
+    "anid": "AID246",
+    "match": "AID744",
+    "distance": 1.6775,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "69",
+    "anid": "AID246",
+    "match": "AID635",
+    "distance": 1.9213,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "70",
+    "anid": "AID247",
+    "match": "AID242",
+    "distance": 1.0172,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "70",
+    "anid": "AID247",
+    "match": "AID398",
+    "distance": 2.5489,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "71",
+    "anid": "AID248",
+    "match": "AID643",
+    "distance": 1.824,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "71",
+    "anid": "AID248",
+    "match": "AID515",
+    "distance": 2.0609,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "71",
+    "anid": "AID248",
+    "match": "AID478",
+    "distance": 2.2884,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "71",
+    "anid": "AID248",
+    "match": "MAP560",
+    "distance": 2.4738,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "71",
+    "anid": "AID248",
+    "match": "AID480",
+    "distance": 2.558,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "72",
+    "anid": "AID249",
+    "match": "AID652",
+    "distance": 0.4931,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "72",
+    "anid": "AID249",
+    "match": "AID207",
+    "distance": 2.0278,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "72",
+    "anid": "AID249",
+    "match": "AID180",
+    "distance": 2.5086,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "72",
+    "anid": "AID249",
+    "match": "AID518",
+    "distance": 2.7413,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "74",
+    "anid": "AID251",
+    "match": "AID242",
+    "distance": 2.5911,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "74",
+    "anid": "AID251",
+    "match": "AID398",
+    "distance": 2.9678,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "75",
+    "anid": "AID252",
+    "match": "AID515",
+    "distance": 2.2105,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "75",
+    "anid": "AID252",
+    "match": "AID207",
+    "distance": 2.4278,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "75",
+    "anid": "AID252",
+    "match": "AID517",
+    "distance": 2.8148,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "75",
+    "anid": "AID252",
+    "match": "AID478",
+    "distance": 3.1405,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "75",
+    "anid": "AID252",
+    "match": "AID680",
+    "distance": 3.3206,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "76",
+    "anid": "AID255",
+    "match": "MAP122",
+    "distance": 0.6719,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "76",
+    "anid": "AID255",
+    "match": "MAP487",
+    "distance": 1.465,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "76",
+    "anid": "AID255",
+    "match": "AID279",
+    "distance": 1.5867,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "77",
+    "anid": "AID256",
+    "match": "AID295",
+    "distance": 1.6339,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "77",
+    "anid": "AID256",
+    "match": "AID305",
+    "distance": 2.2231,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "78",
+    "anid": "AID257",
+    "match": "AID217",
+    "distance": 2.1808,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "79",
+    "anid": "AID258",
+    "match": "AID415",
+    "distance": 2.8985,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "79",
+    "anid": "AID258",
+    "match": "AID301",
+    "distance": 3.5062,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "80",
+    "anid": "AID260",
+    "match": "AID644",
+    "distance": 1.0029,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "80",
+    "anid": "AID260",
+    "match": "AID616",
+    "distance": 1.9921,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "80",
+    "anid": "AID260",
+    "match": "AID611",
+    "distance": 2.2068,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "82",
+    "anid": "AID264",
+    "match": "AID744",
+    "distance": 1.6312,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "82",
+    "anid": "AID264",
+    "match": "AID186",
+    "distance": 2.0469,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "85",
+    "anid": "AID272",
+    "match": "MAP471",
+    "distance": 1.3527,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "85",
+    "anid": "AID272",
+    "match": "AID668",
+    "distance": 1.3667,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "85",
+    "anid": "AID272",
+    "match": "AID182",
+    "distance": 1.5721,
+    "CORE": "D4",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "85",
+    "anid": "AID272",
+    "match": "MAP544",
+    "distance": 1.8302,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "85",
+    "anid": "AID272",
+    "match": "AID634",
+    "distance": 1.9203,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "87",
+    "anid": "AID275",
+    "match": "MAP533",
+    "distance": 1.118,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "87",
+    "anid": "AID275",
+    "match": "MAP532",
+    "distance": 1.3521,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "87",
+    "anid": "AID275",
+    "match": "MAP547",
+    "distance": 1.3806,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "87",
+    "anid": "AID275",
+    "match": "MAP477",
+    "distance": 1.7015,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "88",
+    "anid": "AID279",
+    "match": "AID584",
+    "distance": 0.481,
+    "CORE": "D3a",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "88",
+    "anid": "AID279",
+    "match": "AID633",
+    "distance": 1.0434,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "88",
+    "anid": "AID279",
+    "match": "AID229",
+    "distance": 1.3536,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "88",
+    "anid": "AID279",
+    "match": "AID255",
+    "distance": 1.5867,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "89",
+    "anid": "AID282",
+    "match": "AID139",
+    "distance": 0.9261,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "89",
+    "anid": "AID282",
+    "match": "AID097",
+    "distance": 1.5112,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "93",
+    "anid": "AID295",
+    "match": "AID490",
+    "distance": 1.0151,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "93",
+    "anid": "AID295",
+    "match": "AID139",
+    "distance": 1.1111,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "93",
+    "anid": "AID295",
+    "match": "AID484",
+    "distance": 1.1695,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "93",
+    "anid": "AID295",
+    "match": "AID097",
+    "distance": 1.3737,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "96",
+    "anid": "AID299",
+    "match": "AID173",
+    "distance": 2.2356,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "96",
+    "anid": "AID299",
+    "match": "MAP105",
+    "distance": 2.7935,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "98",
+    "anid": "AID301",
+    "match": "AID180",
+    "distance": 2.2999,
+    "CORE": "D3a",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "98",
+    "anid": "AID301",
+    "match": "AID094",
+    "distance": 2.5255,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "98",
+    "anid": "AID301",
+    "match": "AID620",
+    "distance": 2.7294,
+    "CORE": "D3a",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "98",
+    "anid": "AID301",
+    "match": "AID404",
+    "distance": 2.893,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "98",
+    "anid": "AID301",
+    "match": "AID140",
+    "distance": 3.442,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "100",
+    "anid": "AID305",
+    "match": "AID090",
+    "distance": 0.8066,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "100",
+    "anid": "AID305",
+    "match": "AID256",
+    "distance": 2.2231,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "100",
+    "anid": "AID305",
+    "match": "AID484",
+    "distance": 2.4139,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "100",
+    "anid": "AID305",
+    "match": "AID406",
+    "distance": 2.441,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "100",
+    "anid": "AID305",
+    "match": "AID501",
+    "distance": 2.4479,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "101",
+    "anid": "AID308",
+    "match": "AID682",
+    "distance": 0.6713,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "101",
+    "anid": "AID308",
+    "match": "AID141",
+    "distance": 2.1111,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "101",
+    "anid": "AID308",
+    "match": "AID491",
+    "distance": 2.368,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "101",
+    "anid": "AID308",
+    "match": "AID233",
+    "distance": 2.392,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "104",
+    "anid": "AID387",
+    "match": "AID644",
+    "distance": 1.4833,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "104",
+    "anid": "AID387",
+    "match": "AID616",
+    "distance": 2.1299,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "104",
+    "anid": "AID387",
+    "match": "AID611",
+    "distance": 2.5905,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "105",
+    "anid": "AID389",
+    "match": "MAP550",
+    "distance": 1.857,
+    "CORE": "D2",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "105",
+    "anid": "AID389",
+    "match": "AID232",
+    "distance": 1.914,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "106",
+    "anid": "AID390",
+    "match": "AID183",
+    "distance": 2.4784,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "107",
+    "anid": "AID393",
+    "match": "AID178",
+    "distance": 1.3838,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "107",
+    "anid": "AID393",
+    "match": "AID628",
+    "distance": 1.6569,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "107",
+    "anid": "AID393",
+    "match": "AID193",
+    "distance": 1.7822,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "107",
+    "anid": "AID393",
+    "match": "AID192",
+    "distance": 1.9399,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "108",
+    "anid": "AID394",
+    "match": "AID137",
+    "distance": 1.9363,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "109",
+    "anid": "AID395",
+    "match": "AID210",
+    "distance": 2.6676,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "109",
+    "anid": "AID395",
+    "match": "AID188",
+    "distance": 2.7303,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "110",
+    "anid": "AID398",
+    "match": "AID247",
+    "distance": 2.5489,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "110",
+    "anid": "AID398",
+    "match": "AID699",
+    "distance": 2.6326,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "110",
+    "anid": "AID398",
+    "match": "AID251",
+    "distance": 2.9678,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "110",
+    "anid": "AID398",
+    "match": "AID242",
+    "distance": 2.999,
+    "CORE": "D2",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "110",
+    "anid": "AID398",
+    "match": "AID419",
+    "distance": 3.0493,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "111",
+    "anid": "AID401",
+    "match": "MAP122",
+    "distance": 1.6133,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "111",
+    "anid": "AID401",
+    "match": "MAP487",
+    "distance": 1.9329,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "112",
+    "anid": "AID404",
+    "match": "AID231",
+    "distance": 0.8528,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "112",
+    "anid": "AID404",
+    "match": "AID620",
+    "distance": 2.2325,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "112",
+    "anid": "AID404",
+    "match": "AID680",
+    "distance": 2.2718,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "112",
+    "anid": "AID404",
+    "match": "AID611",
+    "distance": 2.2896,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "114",
+    "anid": "AID407",
+    "match": "AID516",
+    "distance": 1.3522,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "114",
+    "anid": "AID407",
+    "match": "AID191",
+    "distance": 1.795,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "114",
+    "anid": "AID407",
+    "match": "AID702",
+    "distance": 2.178,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "115",
+    "anid": "AID409",
+    "match": "MAP473",
+    "distance": 0.6945,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "115",
+    "anid": "AID409",
+    "match": "MAP476",
+    "distance": 1.0442,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "115",
+    "anid": "AID409",
+    "match": "MAP482",
+    "distance": 1.0529,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "116",
+    "anid": "AID411",
+    "match": "MAP474",
+    "distance": 1.0166,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "116",
+    "anid": "AID411",
+    "match": "MAP476",
+    "distance": 1.1158,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "116",
+    "anid": "AID411",
+    "match": "MAP549",
+    "distance": 1.1382,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "116",
+    "anid": "AID411",
+    "match": "MAP115",
+    "distance": 1.2405,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "117",
+    "anid": "AID415",
+    "match": "AID161",
+    "distance": 1.3773,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "117",
+    "anid": "AID415",
+    "match": "AID419",
+    "distance": 2.1935,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "117",
+    "anid": "AID415",
+    "match": "AID094",
+    "distance": 2.322,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "117",
+    "anid": "AID415",
+    "match": "AID258",
+    "distance": 2.8985,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "117",
+    "anid": "AID415",
+    "match": "AID656",
+    "distance": 3.4128,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "119",
+    "anid": "AID417",
+    "match": "AID210",
+    "distance": 2.5047,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "119",
+    "anid": "AID417",
+    "match": "MAP554",
+    "distance": 2.8001,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "120",
+    "anid": "AID419",
+    "match": "AID415",
+    "distance": 2.1935,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "120",
+    "anid": "AID419",
+    "match": "AID398",
+    "distance": 3.0493,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "120",
+    "anid": "AID419",
+    "match": "AID527",
+    "distance": 3.2643,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "127",
+    "anid": "AID458",
+    "match": "AID728",
+    "distance": 4.1524,
+    "CORE": "D2",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "128",
+    "anid": "AID459",
+    "match": "AID601",
+    "distance": 1.6891,
+    "CORE": "D2",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "128",
+    "anid": "AID459",
+    "match": "AID718",
+    "distance": 1.7438,
+    "CORE": "D2",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "133",
+    "anid": "AID467",
+    "match": "AID718",
+    "distance": 1.0109,
+    "CORE": "D2",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "133",
+    "anid": "AID467",
+    "match": "MAP558",
+    "distance": 1.7817,
+    "CORE": "D2",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "134",
+    "anid": "AID468",
+    "match": "MAP560",
+    "distance": 1.7421,
+    "CORE": "D2",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "137",
+    "anid": "AID471",
+    "match": "AID728",
+    "distance": 3.6388,
+    "CORE": "D2",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "138",
+    "anid": "AID472",
+    "match": "AID510",
+    "distance": 5.5687,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "139",
+    "anid": "AID473",
+    "match": "MAP560",
+    "distance": 3.6154,
+    "CORE": "D2",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "142",
+    "anid": "AID478",
+    "match": "AID248",
+    "distance": 2.2884,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "142",
+    "anid": "AID478",
+    "match": "AID252",
+    "distance": 3.1405,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "143",
+    "anid": "AID480",
+    "match": "MAP560",
+    "distance": 0.5759,
+    "CORE": "D2",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "144",
+    "anid": "AID482",
+    "match": "AID622",
+    "distance": 2.8067,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "144",
+    "anid": "AID482",
+    "match": "AID680",
+    "distance": 3.0812,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "144",
+    "anid": "AID482",
+    "match": "AID611",
+    "distance": 3.2145,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "145",
+    "anid": "AID483",
+    "match": "AID197",
+    "distance": 2.0131,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "146",
+    "anid": "AID484",
+    "match": "AID295",
+    "distance": 1.1695,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "146",
+    "anid": "AID484",
+    "match": "AID554",
+    "distance": 1.54,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "146",
+    "anid": "AID484",
+    "match": "AID635",
+    "distance": 1.5864,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "148",
+    "anid": "AID488",
+    "match": "AID301",
+    "distance": 3.4878,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "148",
+    "anid": "AID488",
+    "match": "AID620",
+    "distance": 3.9727,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "149",
+    "anid": "AID489",
+    "match": "AID188",
+    "distance": 2.3953,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "150",
+    "anid": "AID490",
+    "match": "AID295",
+    "distance": 1.0151,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "150",
+    "anid": "AID490",
+    "match": "AID197",
+    "distance": 1.5861,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "151",
+    "anid": "AID491",
+    "match": "AID308",
+    "distance": 2.368,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "152",
+    "anid": "AID492",
+    "match": "MAP557",
+    "distance": 2.0351,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "152",
+    "anid": "AID492",
+    "match": "AID137",
+    "distance": 3.3661,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "154",
+    "anid": "AID494",
+    "match": "MAP485",
+    "distance": 1.5835,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "154",
+    "anid": "AID494",
+    "match": "MAP550",
+    "distance": 2.4149,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "161",
+    "anid": "AID503",
+    "match": "AID635",
+    "distance": 0.6723,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "161",
+    "anid": "AID503",
+    "match": "AID554",
+    "distance": 1.0885,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "161",
+    "anid": "AID503",
+    "match": "MAP480",
+    "distance": 1.7934,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "162",
+    "anid": "AID504",
+    "match": "AID173",
+    "distance": 3.1957,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "162",
+    "anid": "AID504",
+    "match": "MAP105",
+    "distance": 3.2942,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "163",
+    "anid": "AID505",
+    "match": "AID183",
+    "distance": 2.0295,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "163",
+    "anid": "AID505",
+    "match": "AID670",
+    "distance": 2.1656,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "165",
+    "anid": "AID510",
+    "match": "AID728",
+    "distance": 3.9773,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "165",
+    "anid": "AID510",
+    "match": "AID458",
+    "distance": 5.1173,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "165",
+    "anid": "AID510",
+    "match": "AID466",
+    "distance": 5.32,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "165",
+    "anid": "AID510",
+    "match": "AID472",
+    "distance": 5.5687,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "165",
+    "anid": "AID510",
+    "match": "AID535",
+    "distance": 5.616,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "166",
+    "anid": "AID511",
+    "match": "AID584",
+    "distance": 1.914,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "167",
+    "anid": "AID512",
+    "match": "AID279",
+    "distance": 1.5877,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "167",
+    "anid": "AID512",
+    "match": "AID584",
+    "distance": 1.9178,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "167",
+    "anid": "AID512",
+    "match": "MAP122",
+    "distance": 1.9722,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "168",
+    "anid": "AID513",
+    "match": "AID718",
+    "distance": 2.176,
+    "CORE": "D2",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "168",
+    "anid": "AID513",
+    "match": "MAP558",
+    "distance": 2.4003,
+    "CORE": "D2",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "169",
+    "anid": "AID515",
+    "match": "AID248",
+    "distance": 2.0609,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "169",
+    "anid": "AID515",
+    "match": "AID252",
+    "distance": 2.2105,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "170",
+    "anid": "AID516",
+    "match": "AID191",
+    "distance": 0.7956,
+    "CORE": "D2",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "170",
+    "anid": "AID516",
+    "match": "AID407",
+    "distance": 1.3522,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "170",
+    "anid": "AID516",
+    "match": "AID601",
+    "distance": 1.3932,
+    "CORE": "D2",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "170",
+    "anid": "AID516",
+    "match": "AID511",
+    "distance": 2.3965,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "171",
+    "anid": "AID517",
+    "match": "AID252",
+    "distance": 2.8148,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "172",
+    "anid": "AID518",
+    "match": "AID644",
+    "distance": 2.2128,
+    "CORE": "D2",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "172",
+    "anid": "AID518",
+    "match": "AID232",
+    "distance": 2.4146,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "173",
+    "anid": "AID519",
+    "match": "AID718",
+    "distance": 2.1602,
+    "CORE": "D2",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "173",
+    "anid": "AID519",
+    "match": "MAP558",
+    "distance": 2.7031,
+    "CORE": "D2",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "174",
+    "anid": "AID527",
+    "match": "AID699",
+    "distance": 2.327,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "174",
+    "anid": "AID527",
+    "match": "AID419",
+    "distance": 3.2643,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "174",
+    "anid": "AID527",
+    "match": "AID665",
+    "distance": 3.5777,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "174",
+    "anid": "AID527",
+    "match": "AID161",
+    "distance": 4.113,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "175",
+    "anid": "AID528",
+    "match": "AID232",
+    "distance": 1.9717,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "175",
+    "anid": "AID528",
+    "match": "AID617",
+    "distance": 2.5055,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "176",
+    "anid": "AID530",
+    "match": "MAP560",
+    "distance": 0.846,
+    "CORE": "D2",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "181",
+    "anid": "AID554",
+    "match": "AID503",
+    "distance": 1.0885,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "181",
+    "anid": "AID554",
+    "match": "AID139",
+    "distance": 1.1244,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "181",
+    "anid": "AID554",
+    "match": "AID635",
+    "distance": 1.1477,
+    "CORE": "D3a",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "181",
+    "anid": "AID554",
+    "match": "AID484",
+    "distance": 1.54,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "182",
+    "anid": "AID559",
+    "match": "AID561",
+    "distance": 4.4843,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "182",
+    "anid": "AID559",
+    "match": "AID401",
+    "distance": 4.6876,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "182",
+    "anid": "AID559",
+    "match": "AID511",
+    "distance": 4.9337,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "183",
+    "anid": "AID561",
+    "match": "MAP554",
+    "distance": 0.8023,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "183",
+    "anid": "AID561",
+    "match": "AID210",
+    "distance": 1.6162,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "183",
+    "anid": "AID561",
+    "match": "MAP485",
+    "distance": 2.0228,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "184",
+    "anid": "AID562",
+    "match": "MAP550",
+    "distance": 1.7441,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "184",
+    "anid": "AID562",
+    "match": "AID670",
+    "distance": 2.2453,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "185",
+    "anid": "AID563",
+    "match": "AID720",
+    "distance": 1.976,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "185",
+    "anid": "AID563",
+    "match": "AID272",
+    "distance": 2.3528,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "186",
+    "anid": "AID565",
+    "match": "AID183",
+    "distance": 0.476,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "186",
+    "anid": "AID565",
+    "match": "AID670",
+    "distance": 0.8611,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "186",
+    "anid": "AID565",
+    "match": "MAP550",
+    "distance": 2.3739,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "187",
+    "anid": "AID567",
+    "match": "AID577",
+    "distance": 1.6855,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "187",
+    "anid": "AID567",
+    "match": "AID639",
+    "distance": 1.9035,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "187",
+    "anid": "AID567",
+    "match": "AID275",
+    "distance": 2.1848,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "188",
+    "anid": "AID568",
+    "match": "AID308",
+    "distance": 2.7048,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "188",
+    "anid": "AID568",
+    "match": "AID210",
+    "distance": 2.8016,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "189",
+    "anid": "AID570",
+    "match": "MAP126",
+    "distance": 0.1709,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "189",
+    "anid": "AID570",
+    "match": "MAP468",
+    "distance": 0.8752,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "189",
+    "anid": "AID570",
+    "match": "AID636",
+    "distance": 1.9474,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "189",
+    "anid": "AID570",
+    "match": "MAP115",
+    "distance": 2.641,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "190",
+    "anid": "AID571",
+    "match": "AID744",
+    "distance": 1.5101,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "190",
+    "anid": "AID571",
+    "match": "AID411",
+    "distance": 1.5645,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "191",
+    "anid": "AID572",
+    "match": "MAP485",
+    "distance": 1.81,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "192",
+    "anid": "AID577",
+    "match": "MAP125",
+    "distance": 0.91,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "192",
+    "anid": "AID577",
+    "match": "MAP487",
+    "distance": 1.5048,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "192",
+    "anid": "AID577",
+    "match": "AID168",
+    "distance": 1.602,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "192",
+    "anid": "AID577",
+    "match": "AID719",
+    "distance": 1.6343,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "192",
+    "anid": "AID577",
+    "match": "AID567",
+    "distance": 1.6855,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "193",
+    "anid": "AID579",
+    "match": "AID636",
+    "distance": 1.3376,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "193",
+    "anid": "AID579",
+    "match": "AID595",
+    "distance": 2.3581,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "193",
+    "anid": "AID579",
+    "match": "AID580",
+    "distance": 2.5614,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "194",
+    "anid": "AID580",
+    "match": "AID602",
+    "distance": 0.5201,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "194",
+    "anid": "AID580",
+    "match": "AID595",
+    "distance": 0.7621,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "194",
+    "anid": "AID580",
+    "match": "AID186",
+    "distance": 1.9978,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "194",
+    "anid": "AID580",
+    "match": "MAP530",
+    "distance": 2.2312,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "194",
+    "anid": "AID580",
+    "match": "AID636",
+    "distance": 2.2518,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "195",
+    "anid": "AID584",
+    "match": "AID279",
+    "distance": 0.481,
+    "CORE": "D3b",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "195",
+    "anid": "AID584",
+    "match": "AID229",
+    "distance": 0.9209,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "195",
+    "anid": "AID584",
+    "match": "AID633",
+    "distance": 1.1836,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "195",
+    "anid": "AID584",
+    "match": "MAP122",
+    "distance": 1.6652,
+    "CORE": "D3b",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "195",
+    "anid": "AID584",
+    "match": "AID255",
+    "distance": 1.8809,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "196",
+    "anid": "AID586",
+    "match": "AID197",
+    "distance": 2.2173,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "196",
+    "anid": "AID586",
+    "match": "AID295",
+    "distance": 2.9519,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "196",
+    "anid": "AID586",
+    "match": "AID305",
+    "distance": 3.4656,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "197",
+    "anid": "AID589",
+    "match": "MAP548",
+    "distance": 1.4962,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "197",
+    "anid": "AID589",
+    "match": "MAP549",
+    "distance": 1.5243,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "198",
+    "anid": "AID592",
+    "match": "MAP548",
+    "distance": 1.7513,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "199",
+    "anid": "AID593",
+    "match": "AID092",
+    "distance": 2.5231,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "199",
+    "anid": "AID593",
+    "match": "MAP557",
+    "distance": 3.4205,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "199",
+    "anid": "AID593",
+    "match": "AID489",
+    "distance": 3.5335,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "199",
+    "anid": "AID593",
+    "match": "AID492",
+    "distance": 3.7899,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "199",
+    "anid": "AID593",
+    "match": "AID519",
+    "distance": 4.1142,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "200",
+    "anid": "AID595",
+    "match": "AID580",
+    "distance": 0.7621,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "200",
+    "anid": "AID595",
+    "match": "AID579",
+    "distance": 2.3581,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "203",
+    "anid": "AID599",
+    "match": "AID580",
+    "distance": 3.6218,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "204",
+    "anid": "AID601",
+    "match": "AID516",
+    "distance": 1.3932,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "204",
+    "anid": "AID601",
+    "match": "AID702",
+    "distance": 1.4451,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "204",
+    "anid": "AID601",
+    "match": "AID459",
+    "distance": 1.6891,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "204",
+    "anid": "AID601",
+    "match": "AID407",
+    "distance": 2.429,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "205",
+    "anid": "AID602",
+    "match": "AID580",
+    "distance": 0.5201,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "205",
+    "anid": "AID602",
+    "match": "AID264",
+    "distance": 2.5656,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "206",
+    "anid": "AID611",
+    "match": "AID644",
+    "distance": 1.4658,
+    "CORE": "D2",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "206",
+    "anid": "AID611",
+    "match": "AID680",
+    "distance": 1.5485,
+    "CORE": "D2",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "206",
+    "anid": "AID611",
+    "match": "AID231",
+    "distance": 1.8968,
+    "CORE": "D2",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "206",
+    "anid": "AID611",
+    "match": "AID696",
+    "distance": 1.8989,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "207",
+    "anid": "AID613",
+    "match": "MAP473",
+    "distance": 1.1658,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "207",
+    "anid": "AID613",
+    "match": "MAP482",
+    "distance": 1.4177,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "207",
+    "anid": "AID613",
+    "match": "MAP476",
+    "distance": 1.4272,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "208",
+    "anid": "AID616",
+    "match": "AID622",
+    "distance": 1.6738,
+    "CORE": "D3a",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "208",
+    "anid": "AID616",
+    "match": "AID243",
+    "distance": 1.6814,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "208",
+    "anid": "AID616",
+    "match": "AID696",
+    "distance": 1.695,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "208",
+    "anid": "AID616",
+    "match": "AID260",
+    "distance": 1.9921,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "209",
+    "anid": "AID617",
+    "match": "AID670",
+    "distance": 0.5391,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "209",
+    "anid": "AID617",
+    "match": "AID183",
+    "distance": 1.2328,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "209",
+    "anid": "AID617",
+    "match": "MAP550",
+    "distance": 1.3688,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "210",
+    "anid": "AID620",
+    "match": "AID404",
+    "distance": 2.2325,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "210",
+    "anid": "AID620",
+    "match": "AID201",
+    "distance": 2.6401,
+    "CORE": "D2",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "210",
+    "anid": "AID620",
+    "match": "AID301",
+    "distance": 2.7294,
+    "CORE": "D2",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "210",
+    "anid": "AID620",
+    "match": "AID231",
+    "distance": 2.902,
+    "CORE": "D2",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "210",
+    "anid": "AID620",
+    "match": "AID680",
+    "distance": 3.2843,
+    "CORE": "D2",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "211",
+    "anid": "AID622",
+    "match": "AID243",
+    "distance": 0.993,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "211",
+    "anid": "AID622",
+    "match": "AID148",
+    "distance": 1.1832,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "211",
+    "anid": "AID622",
+    "match": "AID616",
+    "distance": 1.6738,
+    "CORE": "D2",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "211",
+    "anid": "AID622",
+    "match": "AID089",
+    "distance": 1.9421,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "212",
+    "anid": "AID623",
+    "match": "MAP471",
+    "distance": 2.0103,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "212",
+    "anid": "AID623",
+    "match": "MAP544",
+    "distance": 2.0511,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "212",
+    "anid": "AID623",
+    "match": "AID184",
+    "distance": 2.0887,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "213",
+    "anid": "AID624",
+    "match": "AID137",
+    "distance": 0.6063,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "214",
+    "anid": "AID628",
+    "match": "AID393",
+    "distance": 1.6569,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "214",
+    "anid": "AID628",
+    "match": "AID654",
+    "distance": 2.0958,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "214",
+    "anid": "AID628",
+    "match": "AID100",
+    "distance": 2.3214,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "214",
+    "anid": "AID628",
+    "match": "AID250",
+    "distance": 2.6776,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "215",
+    "anid": "AID629",
+    "match": "AID393",
+    "distance": 5.3463,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "216",
+    "anid": "AID631",
+    "match": "MAP550",
+    "distance": 1.8309,
+    "CORE": "D2",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "216",
+    "anid": "AID631",
+    "match": "AID617",
+    "distance": 2.3361,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "218",
+    "anid": "AID633",
+    "match": "AID279",
+    "distance": 1.0434,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "218",
+    "anid": "AID633",
+    "match": "MAP122",
+    "distance": 1.104,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "218",
+    "anid": "AID633",
+    "match": "AID584",
+    "distance": 1.1836,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "219",
+    "anid": "AID634",
+    "match": "AID182",
+    "distance": 1.4334,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "219",
+    "anid": "AID634",
+    "match": "AID282",
+    "distance": 1.8678,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "220",
+    "anid": "AID635",
+    "match": "AID503",
+    "distance": 0.6723,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "220",
+    "anid": "AID635",
+    "match": "AID554",
+    "distance": 1.1477,
+    "CORE": "D4",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "220",
+    "anid": "AID635",
+    "match": "AID484",
+    "distance": 1.5864,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "220",
+    "anid": "AID635",
+    "match": "AID694",
+    "distance": 1.715,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "220",
+    "anid": "AID635",
+    "match": "AID246",
+    "distance": 1.9213,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "221",
+    "anid": "AID636",
+    "match": "AID579",
+    "distance": 1.3376,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "221",
+    "anid": "AID636",
+    "match": "AID570",
+    "distance": 1.9474,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "221",
+    "anid": "AID636",
+    "match": "MAP126",
+    "distance": 2.0291,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "221",
+    "anid": "AID636",
+    "match": "AID580",
+    "distance": 2.2518,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "221",
+    "anid": "AID636",
+    "match": "MAP468",
+    "distance": 2.2682,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "222",
+    "anid": "AID639",
+    "match": "MAP532",
+    "distance": 0.9943,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "222",
+    "anid": "AID639",
+    "match": "MAP533",
+    "distance": 1.5106,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "222",
+    "anid": "AID639",
+    "match": "MAP547",
+    "distance": 1.6226,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "222",
+    "anid": "AID639",
+    "match": "AID567",
+    "distance": 1.9035,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "223",
+    "anid": "AID643",
+    "match": "AID248",
+    "distance": 1.824,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "224",
+    "anid": "AID644",
+    "match": "AID696",
+    "distance": 1.0016,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "224",
+    "anid": "AID644",
+    "match": "AID260",
+    "distance": 1.0029,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "224",
+    "anid": "AID644",
+    "match": "AID611",
+    "distance": 1.4658,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "224",
+    "anid": "AID644",
+    "match": "AID387",
+    "distance": 1.4833,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "224",
+    "anid": "AID644",
+    "match": "AID518",
+    "distance": 2.2128,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "227",
+    "anid": "AID647",
+    "match": "MAP550",
+    "distance": 2.6616,
+    "CORE": "D2",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "228",
+    "anid": "AID651",
+    "match": "MAP482",
+    "distance": 0.6096,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "228",
+    "anid": "AID651",
+    "match": "MAP473",
+    "distance": 0.8809,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "229",
+    "anid": "AID652",
+    "match": "AID249",
+    "distance": 0.4931,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "229",
+    "anid": "AID652",
+    "match": "AID140",
+    "distance": 0.7086,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "230",
+    "anid": "AID654",
+    "match": "AID628",
+    "distance": 2.0958,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "232",
+    "anid": "AID665",
+    "match": "AID527",
+    "distance": 3.5777,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "233",
+    "anid": "AID668",
+    "match": "AID272",
+    "distance": 1.3667,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "233",
+    "anid": "AID668",
+    "match": "MAP471",
+    "distance": 1.4147,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "234",
+    "anid": "AID669",
+    "match": "AID219",
+    "distance": 3.1768,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "234",
+    "anid": "AID669",
+    "match": "MAP557",
+    "distance": 3.7137,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "235",
+    "anid": "AID670",
+    "match": "AID617",
+    "distance": 0.5391,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "235",
+    "anid": "AID670",
+    "match": "AID183",
+    "distance": 0.8099,
+    "CORE": "D2",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "235",
+    "anid": "AID670",
+    "match": "AID565",
+    "distance": 0.8611,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "235",
+    "anid": "AID670",
+    "match": "MAP550",
+    "distance": 1.8349,
+    "CORE": "D2",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "235",
+    "anid": "AID670",
+    "match": "AID505",
+    "distance": 2.1656,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "236",
+    "anid": "AID671",
+    "match": "AID679",
+    "distance": 10.9493,
+    "CORE": "D4",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "236",
+    "anid": "AID671",
+    "match": "AID708",
+    "distance": 13.0158,
+    "CORE": "D4",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "237",
+    "anid": "AID672",
+    "match": "AID089",
+    "distance": 2.2762,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "237",
+    "anid": "AID672",
+    "match": "AID243",
+    "distance": 2.669,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "237",
+    "anid": "AID672",
+    "match": "AID092",
+    "distance": 2.676,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "237",
+    "anid": "AID672",
+    "match": "AID390",
+    "distance": 3.2373,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "238",
+    "anid": "AID675",
+    "match": "MAP549",
+    "distance": 0.9677,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "238",
+    "anid": "AID675",
+    "match": "MAP482",
+    "distance": 1.0495,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "238",
+    "anid": "AID675",
+    "match": "MAP476",
+    "distance": 1.0527,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "240",
+    "anid": "AID679",
+    "match": "AID203",
+    "distance": 4.8608,
+    "CORE": "D3a",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "240",
+    "anid": "AID679",
+    "match": "AID173",
+    "distance": 8.6208,
+    "CORE": "D3a",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "240",
+    "anid": "AID679",
+    "match": "AID096",
+    "distance": 8.6993,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "241",
+    "anid": "AID680",
+    "match": "AID611",
+    "distance": 1.5485,
+    "CORE": "D3a",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "241",
+    "anid": "AID680",
+    "match": "AID207",
+    "distance": 2.2431,
+    "CORE": "D3a",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "241",
+    "anid": "AID680",
+    "match": "AID404",
+    "distance": 2.2718,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "241",
+    "anid": "AID680",
+    "match": "AID518",
+    "distance": 2.4982,
+    "CORE": "D3a",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "242",
+    "anid": "AID682",
+    "match": "AID308",
+    "distance": 0.6713,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "242",
+    "anid": "AID682",
+    "match": "AID137",
+    "distance": 2.2322,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "244",
+    "anid": "AID694",
+    "match": "AID744",
+    "distance": 1.1445,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "244",
+    "anid": "AID694",
+    "match": "AID635",
+    "distance": 1.715,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "245",
+    "anid": "AID696",
+    "match": "AID644",
+    "distance": 1.0016,
+    "CORE": "D1",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "245",
+    "anid": "AID696",
+    "match": "AID616",
+    "distance": 1.695,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "245",
+    "anid": "AID696",
+    "match": "AID611",
+    "distance": 1.8989,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "246",
+    "anid": "AID699",
+    "match": "AID527",
+    "distance": 2.327,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "246",
+    "anid": "AID699",
+    "match": "AID398",
+    "distance": 2.6326,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "246",
+    "anid": "AID699",
+    "match": "AID242",
+    "distance": 3.4388,
+    "CORE": "D1",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "247",
+    "anid": "AID702",
+    "match": "AID191",
+    "distance": 1.006,
+    "CORE": "D2",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "247",
+    "anid": "AID702",
+    "match": "AID601",
+    "distance": 1.4451,
+    "CORE": "D2",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "247",
+    "anid": "AID702",
+    "match": "AID407",
+    "distance": 2.178,
+    "CORE": "D2",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "248",
+    "anid": "AID708",
+    "match": "AID656",
+    "distance": 4.5335,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "248",
+    "anid": "AID708",
+    "match": "AID258",
+    "distance": 4.6204,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "248",
+    "anid": "AID708",
+    "match": "AID161",
+    "distance": 5.4413,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "248",
+    "anid": "AID708",
+    "match": "AID094",
+    "distance": 5.8105,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "251",
+    "anid": "AID716",
+    "match": "MAP479",
+    "distance": 0.9851,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "251",
+    "anid": "AID716",
+    "match": "MAP478",
+    "distance": 1.2811,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "253",
+    "anid": "AID718",
+    "match": "AID467",
+    "distance": 1.0109,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "253",
+    "anid": "AID718",
+    "match": "AID459",
+    "distance": 1.7438,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "253",
+    "anid": "AID718",
+    "match": "MAP558",
+    "distance": 1.8381,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "253",
+    "anid": "AID718",
+    "match": "AID519",
+    "distance": 2.1602,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "253",
+    "anid": "AID718",
+    "match": "AID513",
+    "distance": 2.176,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "254",
+    "anid": "AID719",
+    "match": "MAP125",
+    "distance": 1.0446,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "254",
+    "anid": "AID719",
+    "match": "AID577",
+    "distance": 1.6343,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "254",
+    "anid": "AID719",
+    "match": "MAP487",
+    "distance": 1.7384,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "255",
+    "anid": "AID720",
+    "match": "MAP549",
+    "distance": 1.0036,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "255",
+    "anid": "AID720",
+    "match": "MAP480",
+    "distance": 1.6934,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "256",
+    "anid": "AID721",
+    "match": "MAP544",
+    "distance": 1.0704,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "256",
+    "anid": "AID721",
+    "match": "MAP482",
+    "distance": 1.2577,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "256",
+    "anid": "AID721",
+    "match": "MAP478",
+    "distance": 1.357,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "257",
+    "anid": "AID722",
+    "match": "AID472",
+    "distance": 10.0851,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "257",
+    "anid": "AID722",
+    "match": "AID458",
+    "distance": 10.5251,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "257",
+    "anid": "AID722",
+    "match": "AID647",
+    "distance": 11.5331,
+    "CORE": "D4",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "258",
+    "anid": "AID728",
+    "match": "AID471",
+    "distance": 3.6388,
+    "CORE": "D3b",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "258",
+    "anid": "AID728",
+    "match": "AID214",
+    "distance": 3.8828,
+    "CORE": "D3b",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "258",
+    "anid": "AID728",
+    "match": "AID510",
+    "distance": 3.9773,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "259",
+    "anid": "AID740",
+    "match": "AID214",
+    "distance": 1.3533,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "259",
+    "anid": "AID740",
+    "match": "MAP556",
+    "distance": 1.644,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "259",
+    "anid": "AID740",
+    "match": "AID468",
+    "distance": 1.9455,
+    "CORE": "D1",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "259",
+    "anid": "AID740",
+    "match": "MAP499",
+    "distance": 2.0565,
+    "CORE": "D1",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "260",
+    "anid": "AID744",
+    "match": "AID694",
+    "distance": 1.1445,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "260",
+    "anid": "AID744",
+    "match": "AID138",
+    "distance": 1.4288,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "260",
+    "anid": "AID744",
+    "match": "AID571",
+    "distance": 1.5101,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "260",
+    "anid": "AID744",
+    "match": "AID264",
+    "distance": 1.6312,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "260",
+    "anid": "AID744",
+    "match": "AID246",
+    "distance": 1.6775,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "261",
+    "anid": "MAP103",
+    "match": "AID173",
+    "distance": 2.157,
+    "CORE": "D3a",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "261",
+    "anid": "MAP103",
+    "match": "AID299",
+    "distance": 3.4388,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "261",
+    "anid": "MAP103",
+    "match": "AID096",
+    "distance": 3.7732,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "261",
+    "anid": "MAP103",
+    "match": "AID504",
+    "distance": 4.0233,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "262",
+    "anid": "MAP105",
+    "match": "AID173",
+    "distance": 2.0537,
+    "CORE": "D3a",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "262",
+    "anid": "MAP105",
+    "match": "AID299",
+    "distance": 2.7935,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "262",
+    "anid": "MAP105",
+    "match": "AID504",
+    "distance": 3.2942,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "262",
+    "anid": "MAP105",
+    "match": "AID096",
+    "distance": 3.3709,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "263",
+    "anid": "MAP108",
+    "match": "AID096",
+    "distance": 8.0434,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "263",
+    "anid": "MAP108",
+    "match": "AID299",
+    "distance": 8.2596,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "263",
+    "anid": "MAP108",
+    "match": "AID504",
+    "distance": 8.5447,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "264",
+    "anid": "MAP109",
+    "match": "MAP478",
+    "distance": 1.4433,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "264",
+    "anid": "MAP109",
+    "match": "MAP532",
+    "distance": 1.5952,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "264",
+    "anid": "MAP109",
+    "match": "MAP479",
+    "distance": 1.9174,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "265",
+    "anid": "MAP112",
+    "match": "MAP548",
+    "distance": 1.9282,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "267",
+    "anid": "MAP115",
+    "match": "AID411",
+    "distance": 1.2405,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "267",
+    "anid": "MAP115",
+    "match": "MAP117",
+    "distance": 1.3104,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "267",
+    "anid": "MAP115",
+    "match": "AID571",
+    "distance": 1.8799,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "268",
+    "anid": "MAP117",
+    "match": "MAP474",
+    "distance": 1.0929,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "268",
+    "anid": "MAP117",
+    "match": "MAP115",
+    "distance": 1.3104,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "268",
+    "anid": "MAP117",
+    "match": "MAP479",
+    "distance": 1.3211,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "268",
+    "anid": "MAP117",
+    "match": "MAP475",
+    "distance": 1.3831,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "269",
+    "anid": "MAP121",
+    "match": "AID180",
+    "distance": 2.9745,
+    "CORE": "D3a",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "269",
+    "anid": "MAP121",
+    "match": "AID652",
+    "distance": 3.6745,
+    "CORE": "D3a",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "269",
+    "anid": "MAP121",
+    "match": "AID249",
+    "distance": 3.7418,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "269",
+    "anid": "MAP121",
+    "match": "AID419",
+    "distance": 3.8329,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "269",
+    "anid": "MAP121",
+    "match": "AID140",
+    "distance": 3.9631,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "270",
+    "anid": "MAP122",
+    "match": "AID255",
+    "distance": 0.6719,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "270",
+    "anid": "MAP122",
+    "match": "AID633",
+    "distance": 1.104,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "270",
+    "anid": "MAP122",
+    "match": "AID401",
+    "distance": 1.6133,
+    "CORE": "D3a",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "270",
+    "anid": "MAP122",
+    "match": "AID584",
+    "distance": 1.6652,
+    "CORE": "D3a",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "271",
+    "anid": "MAP123",
+    "match": "MAP526",
+    "distance": 2.0475,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "272",
+    "anid": "MAP125",
+    "match": "AID577",
+    "distance": 0.91,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "272",
+    "anid": "MAP125",
+    "match": "AID719",
+    "distance": 1.0446,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "272",
+    "anid": "MAP125",
+    "match": "AID168",
+    "distance": 1.8936,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "272",
+    "anid": "MAP125",
+    "match": "AID189",
+    "distance": 2.4758,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "273",
+    "anid": "MAP126",
+    "match": "AID570",
+    "distance": 0.1709,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "273",
+    "anid": "MAP126",
+    "match": "AID636",
+    "distance": 2.0291,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "273",
+    "anid": "MAP126",
+    "match": "AID571",
+    "distance": 2.6701,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "274",
+    "anid": "MAP468",
+    "match": "AID570",
+    "distance": 0.8752,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "274",
+    "anid": "MAP468",
+    "match": "AID636",
+    "distance": 2.2682,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "274",
+    "anid": "MAP468",
+    "match": "AID571",
+    "distance": 2.6197,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "274",
+    "anid": "MAP468",
+    "match": "AID138",
+    "distance": 2.6261,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "275",
+    "anid": "MAP469",
+    "match": "AID401",
+    "distance": 2.3616,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "275",
+    "anid": "MAP469",
+    "match": "AID511",
+    "distance": 2.8964,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "275",
+    "anid": "MAP469",
+    "match": "AID255",
+    "distance": 3.2266,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "276",
+    "anid": "MAP470",
+    "match": "AID411",
+    "distance": 1.4899,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "276",
+    "anid": "MAP470",
+    "match": "AID571",
+    "distance": 2.1163,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "277",
+    "anid": "MAP471",
+    "match": "AID272",
+    "distance": 1.3527,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "277",
+    "anid": "MAP471",
+    "match": "AID668",
+    "distance": 1.4147,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "277",
+    "anid": "MAP471",
+    "match": "AID275",
+    "distance": 1.9368,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "278",
+    "anid": "MAP473",
+    "match": "AID409",
+    "distance": 0.6945,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "278",
+    "anid": "MAP473",
+    "match": "AID651",
+    "distance": 0.8809,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "278",
+    "anid": "MAP473",
+    "match": "AID675",
+    "distance": 1.1403,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "279",
+    "anid": "MAP474",
+    "match": "AID411",
+    "distance": 1.0166,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "279",
+    "anid": "MAP474",
+    "match": "MAP117",
+    "distance": 1.0929,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "279",
+    "anid": "MAP474",
+    "match": "AID571",
+    "distance": 1.8463,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "280",
+    "anid": "MAP475",
+    "match": "MAP117",
+    "distance": 1.3831,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "281",
+    "anid": "MAP476",
+    "match": "AID409",
+    "distance": 1.0442,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "281",
+    "anid": "MAP476",
+    "match": "AID675",
+    "distance": 1.0527,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "281",
+    "anid": "MAP476",
+    "match": "AID411",
+    "distance": 1.1158,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "282",
+    "anid": "MAP477",
+    "match": "AID217",
+    "distance": 1.7014,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "282",
+    "anid": "MAP477",
+    "match": "AID275",
+    "distance": 1.7015,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "282",
+    "anid": "MAP477",
+    "match": "AID639",
+    "distance": 1.9142,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "283",
+    "anid": "MAP478",
+    "match": "AID150",
+    "distance": 0.4215,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "283",
+    "anid": "MAP478",
+    "match": "AID716",
+    "distance": 1.2811,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "283",
+    "anid": "MAP478",
+    "match": "AID721",
+    "distance": 1.357,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "284",
+    "anid": "MAP479",
+    "match": "AID716",
+    "distance": 0.9851,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "284",
+    "anid": "MAP479",
+    "match": "MAP117",
+    "distance": 1.3211,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "285",
+    "anid": "MAP480",
+    "match": "AID675",
+    "distance": 1.2996,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "285",
+    "anid": "MAP480",
+    "match": "AID613",
+    "distance": 1.524,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "285",
+    "anid": "MAP480",
+    "match": "AID651",
+    "distance": 1.6813,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "286",
+    "anid": "MAP482",
+    "match": "AID651",
+    "distance": 0.6096,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "286",
+    "anid": "MAP482",
+    "match": "AID675",
+    "distance": 1.0495,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "286",
+    "anid": "MAP482",
+    "match": "AID409",
+    "distance": 1.0529,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "287",
+    "anid": "MAP483",
+    "match": "AID168",
+    "distance": 1.4699,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "287",
+    "anid": "MAP483",
+    "match": "AID255",
+    "distance": 1.8485,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "288",
+    "anid": "MAP485",
+    "match": "AID494",
+    "distance": 1.5835,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "288",
+    "anid": "MAP485",
+    "match": "AID572",
+    "distance": 1.81,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "288",
+    "anid": "MAP485",
+    "match": "AID561",
+    "distance": 2.0228,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "288",
+    "anid": "MAP485",
+    "match": "AID407",
+    "distance": 2.9603,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "289",
+    "anid": "MAP486",
+    "match": "AID168",
+    "distance": 0.9222,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "289",
+    "anid": "MAP486",
+    "match": "AID189",
+    "distance": 1.0802,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "289",
+    "anid": "MAP486",
+    "match": "MAP122",
+    "distance": 1.8257,
+    "CORE": "D3b",
+    "CORE_match": "D3a"
+  },
+  {
+    "rowid": "289",
+    "anid": "MAP486",
+    "match": "AID164",
+    "distance": 1.9105,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "290",
+    "anid": "MAP487",
+    "match": "AID255",
+    "distance": 1.465,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "290",
+    "anid": "MAP487",
+    "match": "AID577",
+    "distance": 1.5048,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "290",
+    "anid": "MAP487",
+    "match": "AID719",
+    "distance": 1.7384,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "290",
+    "anid": "MAP487",
+    "match": "AID401",
+    "distance": 1.9329,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "291",
+    "anid": "MAP499",
+    "match": "AID740",
+    "distance": 2.0565,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "291",
+    "anid": "MAP499",
+    "match": "AID214",
+    "distance": 2.536,
+    "CORE": "D3b",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "291",
+    "anid": "MAP499",
+    "match": "AID232",
+    "distance": 3.0272,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "292",
+    "anid": "MAP526",
+    "match": "MAP117",
+    "distance": 1.6103,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "292",
+    "anid": "MAP526",
+    "match": "AID716",
+    "distance": 1.8621,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "292",
+    "anid": "MAP526",
+    "match": "MAP123",
+    "distance": 2.0475,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "293",
+    "anid": "MAP530",
+    "match": "MAP474",
+    "distance": 2.1214,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "294",
+    "anid": "MAP532",
+    "match": "AID639",
+    "distance": 0.9943,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "294",
+    "anid": "MAP532",
+    "match": "AID275",
+    "distance": 1.3521,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "294",
+    "anid": "MAP532",
+    "match": "AID150",
+    "distance": 1.4852,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "294",
+    "anid": "MAP532",
+    "match": "MAP109",
+    "distance": 1.5952,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "295",
+    "anid": "MAP533",
+    "match": "AID275",
+    "distance": 1.118,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "295",
+    "anid": "MAP533",
+    "match": "AID639",
+    "distance": 1.5106,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "295",
+    "anid": "MAP533",
+    "match": "AID613",
+    "distance": 2.4316,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "296",
+    "anid": "MAP536",
+    "match": "MAP469",
+    "distance": 4.2192,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "296",
+    "anid": "MAP536",
+    "match": "MAP125",
+    "distance": 4.4634,
+    "CORE": "D4",
+    "CORE_match": "D3b"
+  },
+  {
+    "rowid": "296",
+    "anid": "MAP536",
+    "match": "AID577",
+    "distance": 4.5459,
+    "CORE": "D4",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "297",
+    "anid": "MAP544",
+    "match": "AID721",
+    "distance": 1.0704,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "297",
+    "anid": "MAP544",
+    "match": "AID651",
+    "distance": 1.2278,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "297",
+    "anid": "MAP544",
+    "match": "AID150",
+    "distance": 1.4347,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "299",
+    "anid": "MAP547",
+    "match": "AID275",
+    "distance": 1.3806,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "299",
+    "anid": "MAP547",
+    "match": "AID150",
+    "distance": 1.4942,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "299",
+    "anid": "MAP547",
+    "match": "AID409",
+    "distance": 1.5069,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "300",
+    "anid": "MAP548",
+    "match": "AID221",
+    "distance": 1.1618,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "300",
+    "anid": "MAP548",
+    "match": "AID185",
+    "distance": 1.2135,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "300",
+    "anid": "MAP548",
+    "match": "AID589",
+    "distance": 1.4962,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "300",
+    "anid": "MAP548",
+    "match": "AID592",
+    "distance": 1.7513,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "300",
+    "anid": "MAP548",
+    "match": "AID717",
+    "distance": 1.8072,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "301",
+    "anid": "MAP549",
+    "match": "AID675",
+    "distance": 0.9677,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "301",
+    "anid": "MAP549",
+    "match": "AID720",
+    "distance": 1.0036,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "301",
+    "anid": "MAP549",
+    "match": "AID411",
+    "distance": 1.1382,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "302",
+    "anid": "MAP550",
+    "match": "AID617",
+    "distance": 1.3688,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "302",
+    "anid": "MAP550",
+    "match": "AID562",
+    "distance": 1.7441,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "302",
+    "anid": "MAP550",
+    "match": "AID631",
+    "distance": 1.8309,
+    "CORE": "D3b",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "302",
+    "anid": "MAP550",
+    "match": "AID670",
+    "distance": 1.8349,
+    "CORE": "D3b",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "302",
+    "anid": "MAP550",
+    "match": "AID389",
+    "distance": 1.857,
+    "CORE": "D3b",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "303",
+    "anid": "MAP554",
+    "match": "AID561",
+    "distance": 0.8023,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "303",
+    "anid": "MAP554",
+    "match": "AID210",
+    "distance": 1.7495,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "303",
+    "anid": "MAP554",
+    "match": "AID572",
+    "distance": 2.5925,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "303",
+    "anid": "MAP554",
+    "match": "AID417",
+    "distance": 2.8001,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "304",
+    "anid": "MAP556",
+    "match": "AID740",
+    "distance": 1.644,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "304",
+    "anid": "MAP556",
+    "match": "AID232",
+    "distance": 2.2245,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "304",
+    "anid": "MAP556",
+    "match": "AID214",
+    "distance": 2.4032,
+    "CORE": "D3b",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "304",
+    "anid": "MAP556",
+    "match": "AID518",
+    "distance": 2.668,
+    "CORE": "D3b",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "305",
+    "anid": "MAP557",
+    "match": "AID241",
+    "distance": 1.9375,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "305",
+    "anid": "MAP557",
+    "match": "AID492",
+    "distance": 2.0351,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "305",
+    "anid": "MAP557",
+    "match": "AID593",
+    "distance": 3.4205,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "305",
+    "anid": "MAP557",
+    "match": "AID395",
+    "distance": 3.474,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "305",
+    "anid": "MAP557",
+    "match": "AID669",
+    "distance": 3.7137,
+    "CORE": "D3b",
+    "CORE_match": "D1"
+  },
+  {
+    "rowid": "306",
+    "anid": "MAP558",
+    "match": "AID467",
+    "distance": 1.7817,
+    "CORE": "D3b",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "306",
+    "anid": "MAP558",
+    "match": "AID718",
+    "distance": 1.8381,
+    "CORE": "D3b",
+    "CORE_match": "D4"
+  },
+  {
+    "rowid": "306",
+    "anid": "MAP558",
+    "match": "AID513",
+    "distance": 2.4003,
+    "CORE": "D3b",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "306",
+    "anid": "MAP558",
+    "match": "AID461",
+    "distance": 2.4487,
+    "CORE": "D3b",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "306",
+    "anid": "MAP558",
+    "match": "AID389",
+    "distance": 2.6771,
+    "CORE": "D3b",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "307",
+    "anid": "MAP560",
+    "match": "AID480",
+    "distance": 0.5759,
+    "CORE": "D3b",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "307",
+    "anid": "MAP560",
+    "match": "AID530",
+    "distance": 0.846,
+    "CORE": "D3b",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "307",
+    "anid": "MAP560",
+    "match": "AID167",
+    "distance": 0.8696,
+    "CORE": "D3b",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "307",
+    "anid": "MAP560",
+    "match": "AID468",
+    "distance": 1.7421,
+    "CORE": "D3b",
+    "CORE_match": "D2"
+  },
+  {
+    "rowid": "307",
+    "anid": "MAP560",
+    "match": "AID461",
+    "distance": 2.1334,
+    "CORE": "D3b",
+    "CORE_match": "D2"
+  }
+]

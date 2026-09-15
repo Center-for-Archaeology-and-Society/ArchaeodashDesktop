@@ -1,0 +1,29 @@
+{
+  "columns": ["rowid", "anid", "site_name", "site_numbe", "Sub_region", "cer_type", "Cer_grp", "Ware", "CORE", "as", "la", "lu", "nd", "sm", "u", "yb", "ce", "co", "cr", "cs", "eu", "fe", "hf", "ni", "rb", "sb", "sc", "sr", "ta", "tb", "th", "zn", "zr", "al", "ba", "ca", "dy", "k", "mn", "na", "ti", "v"],
+  "row_count": 307,
+  "id_column": "anid",
+  "default_chem_columns": ["as", "la", "lu", "nd", "sm", "u", "yb", "ce", "co", "cr", "cs", "eu", "fe", "hf", "ni", "rb", "sb", "sc", "sr", "ta", "tb", "th", "zn", "zr", "al", "ba", "ca", "dy", "k", "mn", "na", "ti", "v"],
+  "numeric_like_columns": ["as", "la", "lu", "nd", "sm", "u", "yb", "ce", "co", "cr", "cs", "eu", "fe", "hf", "ni", "rb", "sb", "sc", "sr", "ta", "tb", "th", "zn", "zr", "al", "ba", "ca", "dy", "k", "mn", "na", "ti", "v"],
+  "group_partitions": [
+    {
+      "CORE": "D1",
+      "row_count": 104
+    },
+    {
+      "CORE": "D2",
+      "row_count": 50
+    },
+    {
+      "CORE": "D3a",
+      "row_count": 50
+    },
+    {
+      "CORE": "D3b",
+      "row_count": 40
+    },
+    {
+      "CORE": "D4",
+      "row_count": 63
+    }
+  ]
+}

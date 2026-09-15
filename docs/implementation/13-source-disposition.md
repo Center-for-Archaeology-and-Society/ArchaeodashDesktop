@@ -31,7 +31,7 @@ Disposition terms: **Port** means preserve behavior in supported runtime; **Repl
 | `R/runApp.R` | Replace launcher with Vite dev commands, Axum binary, and Tauri run/build commands; preserve verbose option through config |
 | `R/homeTab.R` | Port the welcome, help link, hosted URL, data-ownership/account guidance, beta/status wording, MIT/no-warranty notice, issue link, support attribution, and displayed version to the Home route; revise stale claims before release |
 | `R/infoTab.R` | Port Help/Terms/Privacy navigation; replace the help iframe/reload JavaScript with native client routing plus an explicit open-separately action |
-| `R/connect.R` | Remove runtime MySQL/DBI. Hosted mode uses a bounded SQLx pool for control-plane state and `UserFileStore` for user files; desktop uses project manifests/local files. Legacy MySQL is read-only migrator only |
+| `R/connect.R` | Remove runtime MySQL/DBI. Hosted mode uses a bounded SQLx pool for necessary identity/contact and authentication-security state and `UserFileStore` for user files; desktop uses project manifests/local files. No MySQL migrator is created. |
 | `R/DataLoader.R` | Port import/name/ANID/elemental/descriptive/blank/missing/append semantics to `data-io` and the group import wizard; read the selected in-project source in place and atomically emit one profile-valid Parquet file per group |
 | `R/columnTypeHints.R` | Port sampled 95%-parse numeric inference with tests |
 | `R/datasetLoadTimeout.R` | Replace process time limits with job deadlines/cancellation and stage-specific timeout errors |
@@ -42,7 +42,7 @@ Disposition terms: **Port** means preserve behavior in supported runtime; **Repl
 | `R/datainputTab.R` | Split across import, catalog, workspace, selection, ratio, transformation, jobs, and add-column features; preserve every reachable observer/action described above |
 | `R/transformationStore.R` | Port snapshot fields to structured definitions and ephemeral results; preserve metadata refresh/group filtering; remove in-memory nullable-list model |
 | `R/transformationPersistence.R` | Replace index + six dynamic tables + delimiter encoding with versioned JSON definitions containing inputs/configuration/seeds only; never persist transformed/permuted elemental matrices in group files; legacy decoder remains in migrator |
-| `R/tableNameMigration.R` | Archive behavior in legacy inventory/migrator; no runtime table-name migration |
+| `R/tableNameMigration.R` | Archive as legacy behavior; no runtime table-name migration. MySQL analytical-data inventory is prohibited. |
 | `R/updateCurrent.R` | Replace database autosave with hidden-UUID-addressed descriptive edits and atomic group Parquet revisions; elemental columns are never edited and calculated values are never written back |
 | `R/rowidIntegrity.R` | Port invariant using hidden immutable typed `AnalyticalUuid`; legacy repairs logged in migration report |
 | `R/editData.R` | Port assignment propagation as one transactional move/copy-analytical-units command across group files; invalidate ephemeral results explicitly |
@@ -131,7 +131,7 @@ Every tracked file under `quarto/.quarto/idx/**`, `quarto/.quarto/xref/**`, and 
 | `security/install_live_healthcheck_timer.sh` | Retire host-mutating health timer installer; use deployment-owned probes/synthetics, or declaratively package units if systemd is an approved target |
 | `security/README.md` | Rewrite as hosted/desktop security operations runbook and validation checklist |
 
-The external `../docker-compose.yml` referenced by current scripts is part of the migration inventory even though it is not tracked here. Capture its services, volumes, ports, proxy routes, environment injection, MySQL data, and restart behavior before cutover. The replacement development stack declares the Rust API, PostgreSQL control plane, and durable local or S3-compatible user-file store explicitly; replace external definitions with checked-in sanitized deployment configuration or document why environment-owned configuration remains external.
+The external `../docker-compose.yml` referenced by current scripts is part of the deployment inventory even though it is not tracked here. Capture its services, volumes, ports, proxy routes, environment injection, and restart behavior before cutover; do not inspect MySQL analytical data. The replacement development stack declares the Rust API, PostgreSQL identity/contact control plane, and durable local or S3-compatible user-file store explicitly; replace external definitions with checked-in sanitized deployment configuration or document why environment-owned configuration remains external.
 
 ### 13.7 Tests: every current test file/group
 
@@ -187,7 +187,7 @@ Keep the intent of skipped browser/DB tests, but make required CI environments d
 | ICSNP | validated Hotelling T² implementation |
 | candisc | no production dependency; CDA archived |
 | umap | validated Rust UMAP/KNN/init implementation |
-| DBI, RMySQL | SQLx hosted control-plane repository plus filesystem/S3 `UserFileStore`; MySQL only in read-only migration tool |
+| DBI, RMySQL | SQLx identity/contact control-plane repository plus filesystem/S3 `UserFileStore`; no MySQL runtime or migration tool |
 | sodium | Argon2id/password-hash plus cryptographic RNG and SHA-256/HMAC token digest; verify legacy hashes |
 | curl | Rust email adapter (`lettre` or audited equivalent) and HTTP clients where needed |
 | later, future, promises | Tokio + Rayon/bounded jobs + progress/cancellation |

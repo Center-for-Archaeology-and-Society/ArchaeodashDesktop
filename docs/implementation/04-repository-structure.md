@@ -50,7 +50,7 @@ ArchaeoDash/
 │   └── golden/
 ├── tools/
 │   ├── legacy-export-r/             # Temporary oracle/export tools only
-│   └── legacy-mysql-migrator/       # Read-only inventory + controlled import
+│   └── legacy-account-transition/   # Optional, authorized identity/contact transition only
 ├── docs/
 │   ├── architecture/
 │   ├── operations/

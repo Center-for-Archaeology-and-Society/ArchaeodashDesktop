@@ -1,0 +1,282 @@
+{
+  "schema_version": 1,
+  "generated_at_utc": "2026-09-14 15:33:02 UTC",
+  "source_fixture": {
+    "path": "inst/app/INAA_test.csv",
+    "sha256": "05b6aa1d7aae45a467f517c81cfee66219c4d8ee578b28ce9a3cfd08de51d4b7"
+  },
+  "canonical_fixture": {
+    "path": "fixtures/INAA_test.csv",
+    "sha256": "05b6aa1d7aae45a467f517c81cfee66219c4d8ee578b28ce9a3cfd08de51d4b7"
+  },
+  "r": {
+    "version": "R version 4.6.1 (2026-06-24)",
+    "rng_kind": ["Mersenne-Twister", "Inversion", "Rejection"]
+  },
+  "legacy_source": {
+    "git_commit": "3b3169ce0e7ec294e5c1b31a6b03c1218591d610",
+    "oracle_script_sha256": "e1bd33bdf9da269070b594aee1b68ac74ef280cf271e9230acaa99a7ebb38c95",
+    "sourced_files": {
+      "R/quietly.R": "ad642f84ce583edfcf854f14cbde08f9e79b89754673ac7a60f43d551ea57375",
+      "R/zScore.R": "428a3f0278b905fdc9c506c8ab3716363307080aea8d09935877d9f5780e5b8a",
+      "R/columnTypeHints.R": "e10c079f85ac01737d8c8424a86d235f8ccbd8d1ca8d3b6e86da67c2a1831614",
+      "R/DataLoader.R": "3496011322faab7f4cb12d51e636960944e3399504af812b9c91d16c83c54c92",
+      "R/Group_probs.R": "e616b4be7b43c1adf1ef8def70545d877b703140c47a39e102365014b08a0f7b",
+      "R/EuclideanDistance.R": "f7fc9fc93bb4a352a1dedae6befc7c27f400cb0e4fb76e0839dc93972599ead4",
+      "R/plot_missing.R": "e0d44538c262a7201978d7418aa76c29fd41ea201a7aa26a48eda277393b4702"
+    }
+  },
+  "packages": ["3.19.0", "0.2.10.0", "7.3.66", "2.1.8.3", "2.2.0", "1.1.3", "1.1.1", "1.3.0", "2.0.0"],
+  "captured_defaults": {
+    "mice": {
+      "data": "",
+      "m": "5",
+      "method": "NULL",
+      "predictorMatrix": "",
+      "ignore": "NULL",
+      "where": "NULL",
+      "blocks": "",
+      "visitSequence": "NULL",
+      "formulas": "",
+      "calltype": "NULL",
+      "blots": "NULL",
+      "post": "NULL",
+      "defaultMethod": "c(\"pmm\", \"logreg\", \"polyreg\", \"polr\")",
+      "maxit": "5",
+      "printFlag": "TRUE",
+      "seed": "NA",
+      "data.init": "NULL",
+      "...": ""
+    },
+    "umap": {
+      "d": "",
+      "config": "umap.defaults",
+      "method": "c(\"naive\", \"umap-learn\")",
+      "preserve.seed": "TRUE",
+      "...": ""
+    },
+    "prcomp": {
+      "x": "",
+      "retx": "TRUE",
+      "center": "TRUE",
+      "scale.": "FALSE",
+      "tol": "NULL",
+      "rank.": "NULL",
+      "...": ""
+    },
+    "lda": {
+      "x": "",
+      "grouping": "",
+      "prior": "proportions",
+      "tol": "1e-04",
+      "method": "c(\"moment\", \"mle\", \"mve\", \"t\")",
+      "CV": "FALSE",
+      "nu": "5",
+      "...": ""
+    }
+  },
+  "seed": 20260914,
+  "procedures": [
+    {
+      "id": 1,
+      "title": "CSV import and numeric inference",
+      "parity_class": "E",
+      "entry_point": "DataLoader.R; columnTypeHints.R",
+      "config": {
+        "sample_n": 1500,
+        "min_parse_rate": 0.95
+      },
+      "artifact": {
+        "file": "fixtures/golden/01_csv_import_and_numeric_inference.json",
+        "sha256": "a2511aac39ee835f032a2a9299904894ecb4bca65f908eb1bd1716de4574d3d1"
+      }
+    },
+    {
+      "id": 2,
+      "title": "zScore",
+      "parity_class": "E",
+      "entry_point": "zScore.R",
+      "config": {
+        "columns": ["as", "la", "lu", "nd", "sm", "u", "yb", "ce"]
+      },
+      "artifact": {
+        "file": "fixtures/golden/02_zscore.json",
+        "sha256": "d447072821a9f958885ef0406ff344999fdd5fec6e2582f36361b041942193a0"
+      }
+    },
+    {
+      "id": 3,
+      "title": "log transforms",
+      "parity_class": "E",
+      "entry_point": "datainputTab.R",
+      "config": {
+        "columns": ["as", "la", "lu", "nd", "sm", "u", "yb", "ce"],
+        "round_digits": 3
+      },
+      "artifact": {
+        "file": "fixtures/golden/03_log_transforms.json",
+        "sha256": "12741c6db638d17d2bdb1885a96a72a475d21058e6ed69b4abc37de96de6bc7f"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Ratio construction and application",
+      "parity_class": "E",
+      "entry_point": "datainputTab.R",
+      "config": {
+        "mode": "append"
+      },
+      "artifact": {
+        "file": "fixtures/golden/04_ratio_construction_and_application.json",
+        "sha256": "0f2ded6c4cf82b157805fc5a9c522a77c105c6536f40a61f049391b2e6361205"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Imputation",
+      "parity_class": "D",
+      "entry_point": "datainputTab.R; mice",
+      "config": {
+        "seed": 20260914,
+        "methods": ["none", "pmm", "midastouch", "rf"],
+        "maxit": 5
+      },
+      "artifact": {
+        "file": "fixtures/golden/05_imputation.json",
+        "sha256": "5127380eb82b38309923078371067c5681ee799d636e7abaac411e507658538c"
+      }
+    },
+    {
+      "id": 6,
+      "title": "PCA",
+      "parity_class": "T",
+      "entry_point": "ordinationTab.R",
+      "config": {
+        "columns": ["as", "la", "lu", "nd", "sm", "u", "yb", "ce"],
+        "center": true,
+        "scale": false
+      },
+      "artifact": {
+        "file": "fixtures/golden/06_pca.json",
+        "sha256": "bde56b01fc7cde4330bcac82098a9b3de114d60bce7257b463f28d64e4d8f39d"
+      }
+    },
+    {
+      "id": 7,
+      "title": "UMAP",
+      "parity_class": "D",
+      "entry_point": "ordinationTab.R; umap",
+      "config": {
+        "seeds": [20260914, 20260915, 20260916]
+      },
+      "artifact": {
+        "file": "fixtures/golden/07_umap.json",
+        "sha256": "f873134adbd654b92360e155c2e34a178f0ff2cf49270511734c5652f76efb01"
+      }
+    },
+    {
+      "id": 8,
+      "title": "LDA",
+      "parity_class": "T",
+      "entry_point": "lda.R",
+      "config": {
+        "group": "CORE",
+        "columns": ["as", "la", "lu", "nd", "sm", "u", "yb", "ce"]
+      },
+      "artifact": {
+        "file": "fixtures/golden/08_lda.json",
+        "sha256": "afa70c7cee20e3b6adc2380eb5d05e1137aa2d7facc143f0dc4f615f472bad4a"
+      }
+    },
+    {
+      "id": 9,
+      "title": "Clustering",
+      "parity_class": "T",
+      "entry_point": "clusterTab.R",
+      "config": {
+        "seed": 20260914,
+        "centers": 5,
+        "nstart": 25,
+        "iter_max": 100
+      },
+      "artifact": {
+        "file": "fixtures/golden/09_clustering.json",
+        "sha256": "3d8254b2cce8a867922b22a21e849c26ffbfbc29b56c1386f3c69b7b19b9f975"
+      }
+    },
+    {
+      "id": 10,
+      "title": "Membership probabilities",
+      "parity_class": "T",
+      "entry_point": "Group_probs.R",
+      "config": {
+        "group": "CORE",
+        "columns": ["as", "la", "lu", "nd"]
+      },
+      "artifact": {
+        "file": "fixtures/golden/10_membership_probabilities.json",
+        "sha256": "2c2bcdef72dd152698b1c25567230d5d4ae786eccf5168cbcad6cc2eb5fafde6"
+      }
+    },
+    {
+      "id": 11,
+      "title": "Euclidean nearest matches",
+      "parity_class": "E",
+      "entry_point": "EuclideanDistance.R",
+      "config": {
+        "group": "CORE",
+        "columns": ["as", "la", "lu", "nd"],
+        "limit": 5,
+        "within_group": false
+      },
+      "artifact": {
+        "file": "fixtures/golden/11_euclidean_nearest_matches.json",
+        "sha256": "8b336a0871dc242b37e16c3fd4c1858dcbf2a3199b581ef8591f02fa937cf91a"
+      }
+    },
+    {
+      "id": 12,
+      "title": "Explore views",
+      "parity_class": "E",
+      "entry_point": "plot_missing.R; exploreTab.R; comp.profile.R",
+      "config": {
+        "histogram_bins": 30
+      },
+      "artifact": {
+        "file": "fixtures/golden/12_explore_views.json",
+        "sha256": "9da20596e866e98be95aa976c188b6d69c9ff5672a54869c8b4aa5aed932945b"
+      }
+    },
+    {
+      "id": 13,
+      "title": "Multiplot interactive sampling",
+      "parity_class": "E",
+      "entry_point": "plot.R",
+      "config": {
+        "strategy": "group_by(xvar, yvar, group) |> slice_head"
+      },
+      "artifact": {
+        "file": "fixtures/golden/13_multiplot_interactive_sampling.json",
+        "sha256": "d85a0741dd207d6057b34f91d4605f3bf7ea92a163f6d8a172270e8ed4b481a3"
+      }
+    },
+    {
+      "id": 14,
+      "title": "Measured-data export round trip",
+      "parity_class": "E",
+      "entry_point": "saveexportTab.R; rio",
+      "config": {
+        "format": "CSV"
+      },
+      "artifact": {
+        "file": "fixtures/golden/14_measured_data_export_round_trip.json",
+        "sha256": "57f4fad2cd38c2a867228a78c80407c5d7cddfec668039fe987bd1c11eba675a"
+      }
+    }
+  ],
+  "limitations": [
+    "Legacy application does not record seeds for MICE or UMAP; capture 5 and 7 are deterministic replay baselines, not historical-run equivalence.",
+    "JSON is the canonical Phase-0 interchange artifact; Arrow output is deferred until an Arrow producer is pinned."
+  ],
+  "regeneration": "Run this script through the pinned uvr oracle environment. Do not hand-edit generated files."
+}

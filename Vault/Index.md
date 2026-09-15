@@ -26,6 +26,10 @@ Up: [[../../Vault/Index]]
 - [[Implementation_Plan_Revision_And_Split_2026-09-09]]
 - [[Implementation_Plan_Open_Question_Recommendations_2026-09-09]]
 - [[Install_Dev_Prereqs_Script_2026-09-10]]
+- [[Implementation_Readiness_Audit_2026-09-14]]
+- [[R_Oracle_Baseline_Capture_2026-09-14]]
+- [[Phase_0_Production_Inventory_2026-09-14]]
+- [[Phase_1_Monorepo_Skeleton_2026-09-14]]
 
 ## Notes
 - This vault uses atomic notes (one concept per file) linked with `[[Wikilinks]]`.

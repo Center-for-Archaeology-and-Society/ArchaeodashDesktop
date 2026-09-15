@@ -1,0 +1,9 @@
+{
+  "export_file": "fixtures/golden/14_measured_data_export.csv",
+  "export_sha256": "6af5c656ff02fa51731d90d32a41b71f5bba63d1acd1ce16337d9555c34ba77d",
+  "source_columns": ["rowid", "anid", "site_name", "site_numbe", "Sub_region", "cer_type", "Cer_grp", "Ware", "CORE", "as", "la", "lu", "nd", "sm", "u", "yb", "ce", "co", "cr", "cs", "eu", "fe", "hf", "ni", "rb", "sb", "sc", "sr", "ta", "tb", "th", "zn", "zr", "al", "ba", "ca", "dy", "k", "mn", "na", "ti", "v"],
+  "round_trip_columns": ["rowid", "anid", "site_name", "site_numbe", "Sub_region", "cer_type", "Cer_grp", "Ware", "CORE", "as", "la", "lu", "nd", "sm", "u", "yb", "ce", "co", "cr", "cs", "eu", "fe", "hf", "ni", "rb", "sb", "sc", "sr", "ta", "tb", "th", "zn", "zr", "al", "ba", "ca", "dy", "k", "mn", "na", "ti", "v"],
+  "source_rows": 307,
+  "round_trip_rows": 307,
+  "cell_text_equal": true
+}

@@ -1,0 +1,17 @@
+[package]
+name = "archaeodash-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Tauri command payloads and invocation logic for the desktop adapter."
+
+[dependencies]
+archaeodash-application = { workspace = true }
+archaeodash-contracts = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "archaeodash-data-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+csv = { workspace = true }
+calamine = { workspace = true }
+rust_xlsxwriter = { workspace = true }
+arrow = { workspace = true }
+parquet = { workspace = true }
+
+[lints]
+workspace = true
