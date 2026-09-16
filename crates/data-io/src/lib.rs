@@ -2,16 +2,19 @@
 //! ArchaeoDash Group Parquet profile (IMPLEMENTATION.md Sections 6.6 and 7).
 
 pub mod clean_names;
+pub mod export;
 pub mod group_profile;
 pub mod loader;
 pub mod rnum;
 
 pub use clean_names::{clean_name_case_none, clean_names_case_none, dedupe_names};
+pub use export::{csv_field, sync_dir, write_text_csv};
 pub use group_profile::{
-    assert_no_derived_columns, measured_elemental_checksum, partition_by_group, read_group_uuids,
-    read_profile_metadata, sanitize_group_name, scan_project, validate_group_file,
-    write_group_file, CandidateStatus, ColumnRoles, GroupProfile, ImportRecipe, Partition,
-    ScanCandidate, IDENTITY_COLUMN, LEGACY_ROWID_COLUMN, PROFILE_KEY, PROFILE_VERSION,
+    assert_no_derived_columns, measured_elemental_checksum, partition_by_group, read_group_file,
+    read_group_uuids, read_profile_metadata, sanitize_group_name, scan_project,
+    validate_group_file, write_group_file, write_group_rows, CandidateStatus, ColumnRoles,
+    GroupFileData, GroupProfile, GroupRow, ImportRecipe, Partition, ScanCandidate, IDENTITY_COLUMN,
+    LEGACY_ROWID_COLUMN, PROFILE_KEY, PROFILE_VERSION,
 };
 pub use loader::{
     data_loader, default_chem_columns, default_id_column, group_partitions,

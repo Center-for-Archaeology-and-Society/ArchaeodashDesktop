@@ -178,6 +178,26 @@ fn apply_recipe(raw: Option<f64>, recipe: &ImportRecipe) -> Option<f64> {
     value
 }
 
+/// One analytical-unit row of a group file, aligned with the profile roles.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupRow {
+    pub uuid: Uuid,
+    pub visible: Option<String>,
+    pub legacy_rowid: Option<String>,
+    /// Descriptive cell values in `roles.descriptive` order.
+    pub descriptive: Vec<Option<String>>,
+    /// Measured elemental values in `roles.elemental` order. Immutable after
+    /// import; group operations must preserve them exactly.
+    pub elemental: Vec<Option<f64>>,
+}
+
+/// Full row data of one group file plus its validated profile.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupFileData {
+    pub profile: GroupProfile,
+    pub rows: Vec<GroupRow>,
+}
+
 /// Builds and writes one group Parquet file from a partition of a loaded
 /// frame. Elemental columns coerce through `parse_r_numeric` with the recipe;
 /// descriptive columns keep raw text. Returns the profile plus the checksum.
@@ -204,20 +224,12 @@ pub fn write_group_file(
         return Err(ImportError::Parse("cannot write an empty group".into()));
     }
     let mut descriptive: Vec<String> = Vec::new();
-    for (i, name) in frame.columns.iter().enumerate() {
+    for name in &frame.columns {
         if name == "rowid" || elemental.contains(name) || *name == visible_id_col {
             continue;
         }
-        let _ = i;
         descriptive.push(name.clone());
     }
-
-    let mut uuids: Vec<Uuid> = Vec::with_capacity(n);
-    let mut rowids: Vec<Option<String>> = Vec::with_capacity(n);
-    let mut visible: Vec<Option<String>> = Vec::with_capacity(n);
-    let mut descriptive_values: Vec<Vec<Option<String>>> =
-        vec![Vec::with_capacity(n); descriptive.len()];
-    let mut elemental_values: Vec<Vec<Option<f64>>> = vec![Vec::with_capacity(n); elemental.len()];
 
     let visible_idx = frame.column_index(visible_id_col);
     let rowid_idx = frame.column_index("rowid");
@@ -235,31 +247,43 @@ pub fn write_group_file(
         ));
     }
 
+    let mut rows: Vec<GroupRow> = Vec::with_capacity(n);
     for (row, &src) in partition.row_indices.iter().enumerate() {
-        match existing_uuids {
-            Some(existing) => uuids.push(existing[row]),
-            None => uuids.push(Uuid::now_v7()),
-        }
-        rowids.push(rowid_idx.and_then(|i| frame.rows[src][i].clone()));
-        visible.push(visible_idx.and_then(|i| frame.rows[src][i].clone()));
-        for (out, src_idx) in descriptive_values.iter_mut().zip(&descriptive_idx) {
-            let cell = src_idx.and_then(|i| frame.rows[src][i].clone());
-            let cell = match (&cell, &recipe.blank_non_element_label) {
-                (Some(v), Some(label)) if v.trim().is_empty() => Some(label.clone()),
-                (None, Some(label)) => Some(label.clone()),
-                (other, _) => other.clone(),
-            };
-            out.push(cell);
-        }
-        for (out, src_idx) in elemental_values.iter_mut().zip(&elemental_idx) {
-            let raw = src_idx
-                .and_then(|i| frame.rows[src][i].as_deref())
-                .and_then(parse_r_numeric);
-            out.push(apply_recipe(raw, recipe));
-        }
+        let uuid = match existing_uuids {
+            Some(existing) => existing[row],
+            None => Uuid::now_v7(),
+        };
+        let visible = visible_idx.and_then(|i| frame.rows[src][i].clone());
+        let legacy_rowid = rowid_idx.and_then(|i| frame.rows[src][i].clone());
+        let descriptive_values: Vec<Option<String>> = descriptive_idx
+            .iter()
+            .map(|src_idx| {
+                let cell = src_idx.and_then(|i| frame.rows[src][i].clone());
+                match (&cell, &recipe.blank_non_element_label) {
+                    (Some(v), Some(label)) if v.trim().is_empty() => Some(label.clone()),
+                    (None, Some(label)) => Some(label.clone()),
+                    (other, _) => other.clone(),
+                }
+            })
+            .collect();
+        let elemental_values: Vec<Option<f64>> = elemental_idx
+            .iter()
+            .map(|src_idx| {
+                let raw = src_idx
+                    .and_then(|i| frame.rows[src][i].as_deref())
+                    .and_then(parse_r_numeric);
+                apply_recipe(raw, recipe)
+            })
+            .collect();
+        rows.push(GroupRow {
+            uuid,
+            visible,
+            legacy_rowid,
+            descriptive: descriptive_values,
+            elemental: elemental_values,
+        });
     }
 
-    let checksum = measured_elemental_checksum(&uuids, elemental, &elemental_values);
     let profile = GroupProfile {
         profile_version: PROFILE_VERSION,
         file_kind: "group".to_string(),
@@ -270,15 +294,52 @@ pub fn write_group_file(
             identity: IDENTITY_COLUMN.to_string(),
             visible_id: visible_id_col.to_string(),
             legacy_rowid: LEGACY_ROWID_COLUMN.to_string(),
-            descriptive: descriptive.clone(),
+            descriptive,
             elemental: elemental.to_vec(),
         },
         row_count: n,
         source_path,
         source_sha256,
         import_recipe: recipe.clone(),
-        measured_elemental_checksum: checksum,
+        measured_elemental_checksum: String::new(),
     };
+    write_group_rows(path, profile, &rows)
+}
+
+/// Writes a successor group file from full row data (Section 6.7: every
+/// mutation is a full staged rewrite). `row_count` and
+/// `measured_elemental_checksum` in the given profile template are
+/// recomputed from the rows; all other profile fields pass through. The write
+/// is atomic: temp file, fsync, rename, parent-dir sync.
+pub fn write_group_rows(
+    path: &Path,
+    mut profile: GroupProfile,
+    rows: &[GroupRow],
+) -> Result<GroupProfile, ImportError> {
+    if rows.is_empty() {
+        return Err(ImportError::Parse("cannot write an empty group".into()));
+    }
+    let roles = &profile.roles;
+    for row in rows {
+        if row.descriptive.len() != roles.descriptive.len()
+            || row.elemental.len() != roles.elemental.len()
+        {
+            return Err(ImportError::Parse(
+                "row arity does not match declared roles".into(),
+            ));
+        }
+    }
+
+    let uuids: Vec<Uuid> = rows.iter().map(|r| r.uuid).collect();
+    let elemental_values: Vec<Vec<Option<f64>>> = roles
+        .elemental
+        .iter()
+        .enumerate()
+        .map(|(col, _)| rows.iter().map(|r| r.elemental[col]).collect())
+        .collect();
+    profile.row_count = rows.len();
+    profile.measured_elemental_checksum =
+        measured_elemental_checksum(&uuids, &roles.elemental, &elemental_values);
 
     let mut metadata = HashMap::new();
     metadata.insert(
@@ -292,35 +353,39 @@ pub fn write_group_file(
             DataType::FixedSizeBinary(UUID_BYTE_LEN as i32),
             false,
         ),
-        Field::new(visible_id_col, DataType::Utf8, true),
-        Field::new(LEGACY_ROWID_COLUMN, DataType::Utf8, true),
+        Field::new(roles.visible_id.clone(), DataType::Utf8, true),
+        Field::new(roles.legacy_rowid.clone(), DataType::Utf8, true),
     ];
-    for name in &descriptive {
+    for name in &roles.descriptive {
         fields.push(Field::new(name.clone(), DataType::Utf8, true));
     }
-    for name in elemental {
+    for name in &roles.elemental {
         fields.push(Field::new(name.clone(), DataType::Float64, true));
     }
     let schema = Schema::new_with_metadata(fields, metadata);
 
     let mut uuid_builder =
-        arrow::array::FixedSizeBinaryBuilder::with_capacity(n, UUID_BYTE_LEN as i32);
+        arrow::array::FixedSizeBinaryBuilder::with_capacity(rows.len(), UUID_BYTE_LEN as i32);
     for uuid in &uuids {
         uuid_builder
             .append_value(uuid.as_bytes())
             .map_err(|e| ImportError::Parse(format!("uuid: {e}")))?;
     }
     let uuid_array = uuid_builder.finish();
-    let mk_string = |values: &[Option<String>]| -> StringArray {
+    let mk_string = |values: Vec<Option<String>>| -> StringArray {
         StringArray::from(values.iter().map(|v| v.as_deref()).collect::<Vec<_>>())
     };
     let mut columns: Vec<ArrayRef> = vec![
         std::sync::Arc::new(uuid_array),
-        std::sync::Arc::new(mk_string(&visible)),
-        std::sync::Arc::new(mk_string(&rowids)),
+        std::sync::Arc::new(mk_string(rows.iter().map(|r| r.visible.clone()).collect())),
+        std::sync::Arc::new(mk_string(
+            rows.iter().map(|r| r.legacy_rowid.clone()).collect(),
+        )),
     ];
-    for values in &descriptive_values {
-        columns.push(std::sync::Arc::new(mk_string(values)));
+    for col in 0..roles.descriptive.len() {
+        columns.push(std::sync::Arc::new(mk_string(
+            rows.iter().map(|r| r.descriptive[col].clone()).collect(),
+        )));
     }
     for values in &elemental_values {
         columns.push(std::sync::Arc::new(Float64Array::from(values.clone())));
@@ -328,12 +393,14 @@ pub fn write_group_file(
     let batch = RecordBatch::try_new(std::sync::Arc::new(schema), columns)
         .map_err(|e| ImportError::Parse(format!("batch: {e}")))?;
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| ImportError::Io(e.to_string()))?;
-    }
+    let parent = path.parent().ok_or_else(|| {
+        ImportError::Io("group file path must have a parent directory".to_string())
+    })?;
+    std::fs::create_dir_all(parent).map_err(|e| ImportError::Io(e.to_string()))?;
     // Write the profile both as an explicit Parquet footer KV entry (visible to
     // any Parquet reader) and inside the Arrow schema metadata (Section 17.1
-    // item 8: namespaced key-value metadata).
+    // item 8: namespaced key-value metadata). Stage-then-rename so readers
+    // never observe a partial file (Section 6.3).
     let props = WriterProperties::builder()
         .set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new(
             PROFILE_KEY.to_string(),
@@ -343,16 +410,116 @@ pub fn write_group_file(
             ),
         )]))
         .build();
-    let file = File::create(path).map_err(|e| ImportError::Io(e.to_string()))?;
-    let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))
-        .map_err(|e| ImportError::Parse(format!("parquet writer: {e}")))?;
-    writer
-        .write(&batch)
-        .map_err(|e| ImportError::Parse(format!("parquet write: {e}")))?;
-    writer
-        .close()
-        .map_err(|e| ImportError::Parse(format!("parquet close: {e}")))?;
+    let tmp = parent.join(format!(".tmp-group-{}", Uuid::now_v7().simple()));
+    let write = || -> Result<(), ImportError> {
+        let file = File::create(&tmp).map_err(|e| ImportError::Io(e.to_string()))?;
+        let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))
+            .map_err(|e| ImportError::Parse(format!("parquet writer: {e}")))?;
+        writer
+            .write(&batch)
+            .map_err(|e| ImportError::Parse(format!("parquet write: {e}")))?;
+        writer
+            .close()
+            .map_err(|e| ImportError::Parse(format!("parquet close: {e}")))?;
+        if let Ok(f) = File::open(&tmp) {
+            let _ = f.sync_all();
+        }
+        Ok(())
+    };
+    if let Err(e) = write() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        ImportError::Io(e.to_string())
+    })?;
+    crate::export::sync_dir(parent);
     Ok(profile)
+}
+
+/// Reads and fully validates a group file, returning its profile and all row
+/// data (Section 6.6 validation-on-add, reused for move/copy/merge reads).
+pub fn read_group_file(path: &Path) -> Result<GroupFileData, ImportError> {
+    let profile = validate_group_file(path)?;
+    let file = File::open(path).map_err(|e| ImportError::Io(e.to_string()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|e| ImportError::Parse(format!("parquet open: {e}")))?;
+    let batches = builder
+        .build()
+        .map_err(|e| ImportError::Parse(format!("parquet read: {e}")))?
+        .collect::<Result<Vec<RecordBatch>, _>>()
+        .map_err(|e| ImportError::Parse(format!("parquet batch: {e}")))?;
+
+    let roles = &profile.roles;
+    let mut rows: Vec<GroupRow> = Vec::with_capacity(profile.row_count);
+    for batch in &batches {
+        let uuids = batch
+            .column_by_name(IDENTITY_COLUMN)
+            .ok_or_else(|| ImportError::Parse("identity column missing".into()))?
+            .as_any()
+            .downcast_ref::<FixedSizeBinaryArray>()
+            .ok_or_else(|| ImportError::Parse("identity column wrong type".into()))?;
+        let visible = string_column(batch, &roles.visible_id)?;
+        let rowids = string_column(batch, &roles.legacy_rowid)?;
+        let descriptive: Vec<StringArray> = roles
+            .descriptive
+            .iter()
+            .map(|name| string_column(batch, name))
+            .collect::<Result<_, _>>()?;
+        let elemental: Vec<Float64Array> = roles
+            .elemental
+            .iter()
+            .map(|name| {
+                batch
+                    .column_by_name(name)
+                    .ok_or_else(|| ImportError::Parse(format!("column {name} missing")))
+                    .and_then(|c| {
+                        c.as_any()
+                            .downcast_ref::<Float64Array>()
+                            .cloned()
+                            .ok_or_else(|| ImportError::Parse("elemental column wrong type".into()))
+                    })
+            })
+            .collect::<Result<_, _>>()?;
+        for i in 0..batch.num_rows() {
+            rows.push(GroupRow {
+                uuid: Uuid::from_slice(uuids.value(i))
+                    .map_err(|e| ImportError::Parse(format!("uuid: {e}")))?,
+                visible: string_at(&visible, i),
+                legacy_rowid: string_at(&rowids, i),
+                descriptive: descriptive.iter().map(|a| string_at(a, i)).collect(),
+                elemental: elemental.iter().map(|a| scalar_at(a, i)).collect(),
+            });
+        }
+    }
+    Ok(GroupFileData { profile, rows })
+}
+
+fn string_column(batch: &RecordBatch, name: &str) -> Result<StringArray, ImportError> {
+    batch
+        .column_by_name(name)
+        .ok_or_else(|| ImportError::Parse(format!("column {name} missing")))?
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .cloned()
+        .ok_or_else(|| ImportError::Parse(format!("column {name} wrong type")))
+}
+
+fn string_at(array: &StringArray, i: usize) -> Option<String> {
+    if array.is_null(i) {
+        None
+    } else {
+        Some(array.value(i).to_string())
+    }
+}
+
+fn scalar_at(array: &Float64Array, i: usize) -> Option<f64> {
+    if array.is_null(i) {
+        None
+    } else {
+        Some(array.value(i))
+    }
 }
 
 use arrow::array::ArrayRef;
