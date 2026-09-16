@@ -10,6 +10,7 @@ description = "Axum routes, middleware, and problem responses."
 [dependencies]
 archaeodash-application = { workspace = true }
 archaeodash-contracts = { workspace = true }
+archaeodash-data-io = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
@@ -19,6 +20,7 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 http-body-util = "0.1"
+tempfile = "3"
 
 [lints]
 workspace = true

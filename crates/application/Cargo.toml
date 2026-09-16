@@ -9,8 +9,10 @@ publish = false
 [dependencies]
 archaeodash-domain = { workspace = true }
 archaeodash-contracts = { workspace = true }
+archaeodash-data-io = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 
 [lints]
 workspace = true

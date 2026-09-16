@@ -78,10 +78,12 @@ version = "0.1.0"
 dependencies = [
  "archaeodash-application",
  "archaeodash-contracts",
+ "archaeodash-data-io",
  "axum",
  "http-body-util",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tower",
  "tower-http 0.7.1",
@@ -92,9 +94,11 @@ name = "archaeodash-application"
 version = "0.1.0"
 dependencies = [
  "archaeodash-contracts",
+ "archaeodash-data-io",
  "archaeodash-domain",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -146,6 +150,7 @@ version = "0.1.0"
 dependencies = [
  "archaeodash-application",
  "archaeodash-contracts",
+ "archaeodash-data-io",
  "serde",
  "serde_json",
 ]

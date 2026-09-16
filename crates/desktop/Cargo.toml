@@ -10,6 +10,7 @@ description = "Tauri command payloads and invocation logic for the desktop adapt
 [dependencies]
 archaeodash-application = { workspace = true }
 archaeodash-contracts = { workspace = true }
+archaeodash-data-io = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
