@@ -30,6 +30,7 @@ Up: [[../../Vault/Index]]
 - [[R_Oracle_Baseline_Capture_2026-09-14]]
 - [[Phase_0_Production_Inventory_2026-09-14]]
 - [[Phase_1_Monorepo_Skeleton_2026-09-14]]
+- [[Phase_2_Group_Profile_Import_2026-09-14]]
 
 ## Notes
 - This vault uses atomic notes (one concept per file) linked with `[[Wikilinks]]`.

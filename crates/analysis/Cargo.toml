@@ -7,6 +7,8 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+archaeodash-domain = { workspace = true }
+archaeodash-data-io = { workspace = true }
 faer = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }

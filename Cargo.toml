@@ -17,6 +17,7 @@ members = [
     "crates/api",
     "crates/desktop",
     "apps/desktop/src-tauri",
+    "tests/parity",
 ]
 
 [workspace.package]
@@ -59,6 +60,9 @@ kmedoids = "0.5"
 # Randomness (seeded, reproducible)
 rand = "0.10"
 rand_chacha = "0.10"
+
+# Checksums (group-file measured-elemental checksum)
+sha2 = "0.10"
 
 # Auth
 argon2 = "0.6"
