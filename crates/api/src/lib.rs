@@ -3,23 +3,24 @@
 //! Phase 1 smoke surface (`/healthz`), the Phase 2 local import surface
 //! (`POST /api/v1/imports/preview|commit`), and the group-operation surface
 //! (`GET /api/v1/groups`, `POST /api/v1/groups/validate`,
-//! `POST /api/v1/groups/transfer-units`, `POST /api/v1/groups/merge`), all
-//! delegating to the shared application use cases. Errors use the
-//! transport-neutral problem-details-style `ErrorEnvelope`.
+//! `POST /api/v1/groups/transfer-units`, `POST /api/v1/groups/merge`,
+//! `DELETE /api/v1/groups/{*path}`), all delegating to the shared application
+//! use cases. Errors use the transport-neutral problem-details-style
+//! `ErrorEnvelope`.
 
 use std::sync::Arc;
 
 use archaeodash_application::{app_info, GroupService, ImportService};
 use archaeodash_contracts::{
-    AppInfo, ErrorEnvelope, GroupCandidate, GroupSummary, ImportCommitRequest,
+    AppInfo, DeleteGroupRequest, ErrorEnvelope, GroupCandidate, GroupSummary, ImportCommitRequest,
     ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse, MergeGroupsRequest,
     TransactionResponse, TransferUnitsRequest,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_storage::StoreError;
-use axum::extract::State;
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 
 /// Shared adapter state: one project-scoped import and group service.
@@ -127,6 +128,32 @@ async fn groups_merge(
         .map_err(store_error_response)
 }
 
+/// Query parameters for the destructive delete route (Section 10.4: the
+/// client confirms the exact path and names the revision it last read).
+#[derive(Debug, serde::Deserialize)]
+struct DeleteGroupQuery {
+    expected_revision: String,
+    confirm_path: String,
+}
+
+/// `DELETE /api/v1/groups/{*path}`: journaled group deletion guarded by
+/// exact-path confirmation and optimistic concurrency on the revision.
+async fn groups_delete(
+    State(state): State<AppState>,
+    Path(path): Path<String>,
+    Query(query): Query<DeleteGroupQuery>,
+) -> Result<Json<TransactionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .groups
+        .delete_group(&DeleteGroupRequest {
+            path,
+            expected_revision: query.expected_revision,
+            confirm_path: query.confirm_path,
+        })
+        .map(Json)
+        .map_err(store_error_response)
+}
+
 /// Builds the root router. Route groups for transformations, analysis, jobs,
 /// and auth land in their owning phases (Sections 10.1+).
 pub fn root_router(state: AppState) -> Router {
@@ -138,6 +165,7 @@ pub fn root_router(state: AppState) -> Router {
         .route("/api/v1/groups/validate", post(groups_validate))
         .route("/api/v1/groups/transfer-units", post(groups_transfer_units))
         .route("/api/v1/groups/merge", post(groups_merge))
+        .route("/api/v1/groups/{*path}", delete(groups_delete))
         .with_state(state)
 }
 
@@ -395,6 +423,78 @@ mod tests {
         assert_eq!(tx.outputs[0].row_count, 3);
         assert_eq!(tx.deleted_paths, vec![commit.groups[1].path.clone()]);
         assert!(!dir.path().join(&commit.groups[1].path).exists());
+    }
+
+    #[tokio::test]
+    async fn delete_group_route_confirms_revisions_and_removes_file() {
+        let (state, dir) = test_state();
+        let app = root_router(state);
+        let commit = commit_fixture(app.clone(), &dir).await;
+        let path = &commit.groups[0].path;
+
+        // Mismatched exact-path confirmation is rejected (422) and nothing is
+        // deleted.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::delete(&format!("/api/v1/groups/{path}?expected_revision=rev-1&confirm_path=groups/Other.parquet"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert!(dir.path().join(path).exists());
+
+        // Stale revision conflicts (409) before any file is touched.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::delete(&format!(
+                    "/api/v1/groups/{path}?expected_revision=rev-999&confirm_path={path}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+        assert!(dir.path().join(path).exists());
+
+        // Confirmed delete succeeds and removes the file.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::delete(&format!(
+                    "/api/v1/groups/{path}?expected_revision=rev-1&confirm_path={path}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let tx: TransactionResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(tx.action, "delete_group");
+        assert_eq!(tx.deleted_paths, vec![path.clone()]);
+        assert!(!dir.path().join(path).exists());
+
+        // Deleting again now fails: the file no longer validates as a group.
+        let response = app
+            .oneshot(
+                axum::http::Request::delete(&format!(
+                    "/api/v1/groups/{path}?expected_revision=rev-1&confirm_path={path}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

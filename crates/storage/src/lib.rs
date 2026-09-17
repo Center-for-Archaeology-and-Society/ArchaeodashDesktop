@@ -82,6 +82,9 @@ pub enum TransactionAction {
     CopyUnits,
     /// Merge whole groups into one target; sources are removed.
     MergeGroups,
+    /// Delete one group file after revision/checksum preconditions pass;
+    /// the original is archived by the Section 6.8 backup protocol.
+    DeleteGroup,
 }
 
 /// Journal record for one multi-file transaction (Section 6.8). Serialized to

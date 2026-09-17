@@ -2,7 +2,8 @@
 //! crate (crates/desktop), which calls the shared application use cases.
 
 use archaeodash_contracts::{
-    ImportCommitRequest, ImportPreviewRequest, MergeGroupsRequest, TransferUnitsRequest,
+    DeleteGroupRequest, ImportCommitRequest, ImportPreviewRequest, MergeGroupsRequest,
+    TransferUnitsRequest,
 };
 use archaeodash_desktop::{DesktopAppInfo, DesktopGroups, DesktopImport};
 use std::sync::Mutex;
@@ -97,6 +98,20 @@ fn merge_groups(
         .merge_groups(request)
 }
 
+/// Delete one group file after exact-path confirmation and revision check
+/// (`delete_group`, Section 10.4: destructive commands are never implied).
+#[tauri::command]
+fn delete_group(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: DeleteGroupRequest,
+) -> Result<archaeodash_contracts::TransactionResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .groups
+        .delete_group(request)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[allow(clippy::expect_used)] // app entry point: a failed runtime start must abort startup
 pub fn run() {
@@ -112,7 +127,8 @@ pub fn run() {
             scan_group_candidates,
             validate_group_file,
             transfer_units,
-            merge_groups
+            merge_groups,
+            delete_group
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

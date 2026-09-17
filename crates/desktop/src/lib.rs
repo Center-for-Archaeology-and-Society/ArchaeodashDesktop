@@ -5,9 +5,9 @@
 
 use archaeodash_application::{GroupService, ImportService};
 use archaeodash_contracts::{
-    AppInfo, GroupCandidate, GroupSummary, ImportCommitRequest, ImportCommitResponse,
-    ImportPreviewRequest, ImportPreviewResponse, MergeGroupsRequest, TransactionResponse,
-    TransferUnitsRequest,
+    AppInfo, DeleteGroupRequest, GroupCandidate, GroupSummary, ImportCommitRequest,
+    ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse, MergeGroupsRequest,
+    TransactionResponse, TransferUnitsRequest,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_storage::StoreError;
@@ -68,6 +68,12 @@ impl DesktopGroups {
     /// Desktop `merge_groups` command body.
     pub fn merge_groups(&self, req: MergeGroupsRequest) -> Result<TransactionResponse, String> {
         self.with_service(|svc| svc.merge_groups(&req))
+    }
+
+    /// Desktop `delete_group` command body: journaled deletion guarded by
+    /// exact-path confirmation and the revision the caller last read.
+    pub fn delete_group(&self, req: DeleteGroupRequest) -> Result<TransactionResponse, String> {
+        self.with_service(|svc| svc.delete_group(&req))
     }
 }
 
@@ -291,6 +297,31 @@ mod tests {
             })
             .expect_err("empty selection rejected");
         assert!(transfer.contains("selected"));
+
+        // Delete requires confirmation and the current revision.
+        let baca = groups
+            .validate_group_file("groups/Baca.parquet".into())
+            .expect("validate");
+        let err = groups
+            .delete_group(DeleteGroupRequest {
+                path: "groups/Baca.parquet".into(),
+                expected_revision: baca.revision_id.clone(),
+                confirm_path: "groups/Other.parquet".into(),
+            })
+            .expect_err("mismatched confirmation rejected");
+        assert!(err.contains("confirm_path"));
+        assert!(dir.join("groups/Baca.parquet").exists());
+
+        groups
+            .delete_group(DeleteGroupRequest {
+                path: "groups/Baca.parquet".into(),
+                expected_revision: baca.revision_id.clone(),
+                confirm_path: "groups/Baca.parquet".into(),
+            })
+            .expect("delete");
+        assert!(!dir.join("groups/Baca.parquet").exists());
+        // The rejected copy never created its destination.
+        assert!(!dir.join("groups/Copy_Target.parquet").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

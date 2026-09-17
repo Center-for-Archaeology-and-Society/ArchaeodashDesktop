@@ -5,8 +5,8 @@
 use std::path::PathBuf;
 
 use archaeodash_contracts::{
-    GroupCandidate, GroupSummary, MergeGroupsRequest, TransactionResponse, TransferAction,
-    TransferUnitsRequest,
+    DeleteGroupRequest, GroupCandidate, GroupSummary, MergeGroupsRequest, TransactionResponse,
+    TransferAction, TransferUnitsRequest,
 };
 use archaeodash_data_io::{sanitize_group_name, scan_project, GroupFileData, GroupProfile};
 use archaeodash_file_store_fs::FsGroupFileStore;
@@ -213,6 +213,11 @@ impl GroupService {
                     "merge_groups uses merge_groups, not transfer_units".to_string(),
                 ));
             }
+            TransactionAction::DeleteGroup => {
+                return Err(StoreError::Invariant(
+                    "delete_group uses delete_group, not transfer_units".to_string(),
+                ));
+            }
         };
 
         if let Some(dest) = &dest_data {
@@ -284,6 +289,44 @@ impl GroupService {
             action: "merge_groups".to_string(),
             outputs: vec![Self::summary_of_output(&out.path, &out)],
             deleted_paths: req.sources[1..].to_vec(),
+        })
+    }
+
+    /// Deletes one group file through a journaled transaction (Section 10.2
+    /// `DELETE /groups/{id}`, local Phase-2 form). Requires exact-path
+    /// confirmation and the revision the caller last read; the deleted file
+    /// is archived under the bounded history before removal, so recovery can
+    /// restore it if the transaction never committed.
+    pub fn delete_group(
+        &self,
+        req: &DeleteGroupRequest,
+    ) -> Result<TransactionResponse, StoreError> {
+        if req.confirm_path != req.path {
+            return Err(StoreError::Invariant(
+                "confirm_path must exactly equal the path being deleted".to_string(),
+            ));
+        }
+        let data = self.store.read_group(&req.path)?;
+        if data.profile.revision_id != req.expected_revision {
+            return Err(StoreError::RevisionConflict {
+                path: req.path.clone(),
+                expected: req.expected_revision.clone(),
+                found: data.profile.revision_id.clone(),
+            });
+        }
+        let tx = Transaction {
+            action: TransactionAction::DeleteGroup,
+            inputs: vec![Self::input_of(&req.path, &data)],
+            outputs: Vec::new(),
+            delete_paths: vec![req.path.clone()],
+            selected_uuids: Vec::new(),
+        };
+        let transaction_id = self.store.execute(&tx)?;
+        Ok(TransactionResponse {
+            transaction_id,
+            action: "delete_group".to_string(),
+            outputs: Vec::new(),
+            deleted_paths: vec![req.path.clone()],
         })
     }
 }
@@ -461,5 +504,76 @@ mod tests {
         assert_eq!(merged.rows.len(), 3);
         assert_eq!(merged.profile.group_name, "Merged");
         assert!(!dir.path().join(&paths[1]).exists(), "source removed");
+    }
+
+    #[test]
+    fn delete_group_requires_confirmation_and_current_revision() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, paths) = commit_two_groups(dir.path());
+        let baca = read_group_file(&dir.path().join(&paths[0])).expect("read baca");
+
+        // Exact-path confirmation is mandatory (Section 10.4).
+        let err = service
+            .delete_group(&DeleteGroupRequest {
+                path: paths[0].clone(),
+                expected_revision: baca.profile.revision_id.clone(),
+                confirm_path: "groups/other.parquet".into(),
+            })
+            .expect_err("mismatched confirmation rejected");
+        assert!(matches!(err, StoreError::Invariant(_)));
+        assert!(dir.path().join(&paths[0]).exists(), "nothing deleted");
+
+        // Stale revision conflicts before any file is touched.
+        let err = service
+            .delete_group(&DeleteGroupRequest {
+                path: paths[0].clone(),
+                expected_revision: "rev-999".into(),
+                confirm_path: paths[0].clone(),
+            })
+            .expect_err("stale revision rejected");
+        assert!(matches!(err, StoreError::RevisionConflict { .. }));
+        assert!(dir.path().join(&paths[0]).exists(), "nothing deleted");
+    }
+
+    #[test]
+    fn delete_group_removes_file_and_archives_original() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, paths) = commit_two_groups(dir.path());
+        let baca = read_group_file(&dir.path().join(&paths[0])).expect("read baca");
+
+        let resp = service
+            .delete_group(&DeleteGroupRequest {
+                path: paths[0].clone(),
+                expected_revision: baca.profile.revision_id.clone(),
+                confirm_path: paths[0].clone(),
+            })
+            .expect("delete");
+        assert_eq!(resp.action, "delete_group");
+        assert_eq!(resp.outputs, Vec::new());
+        assert_eq!(resp.deleted_paths, vec![paths[0].clone()]);
+        assert!(!dir.path().join(&paths[0]).exists(), "file removed");
+        // The other group is untouched and no transaction journal remains.
+        assert!(dir.path().join(&paths[1]).exists());
+        let tx_root = dir.path().join(archaeodash_file_store_fs::TRANSACTIONS_DIR);
+        assert_eq!(
+            std::fs::read_dir(&tx_root)
+                .expect("transactions root")
+                .filter_map(|e| e.ok())
+                .count(),
+            0,
+            "no journal entries remain"
+        );
+        // The deleted original is archived under the bounded history.
+        let history = dir.path().join(archaeodash_file_store_fs::HISTORY_DIR);
+        let archived: usize = std::fs::read_dir(&history)
+            .expect("history root")
+            .filter_map(|e| e.ok())
+            .filter_map(|e| std::fs::read_dir(e.path()).ok())
+            .flat_map(|entries| entries.filter_map(|e| e.ok()))
+            .count();
+        assert_eq!(archived, 1, "deleted original archived");
+        // The scan no longer lists the deleted group.
+        let candidates = service.scan_candidates().expect("scan");
+        assert!(!candidates.iter().any(|c| c.path == paths[0]));
     }
 }

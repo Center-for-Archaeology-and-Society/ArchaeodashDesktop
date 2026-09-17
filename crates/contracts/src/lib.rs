@@ -191,6 +191,22 @@ pub struct MergeGroupsRequest {
     pub new_group_name: String,
 }
 
+/// Request to delete one group file from the project (Section 10.2
+/// `DELETE /groups/{id}`, local Phase-2 form: the local store keeps no
+/// manifest/active selection, so delete is the whole operation; "unload"
+/// arrives with the workspace/manifest layer). Destructive: requires
+/// exact-path confirmation and the revision the caller last read
+/// (Section 10.4: destructive file commands are never implied).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteGroupRequest {
+    /// Project-relative path of the group file to delete.
+    pub path: String,
+    /// Revision the caller last read; a mismatch is a conflict.
+    pub expected_revision: String,
+    /// Must equal `path` exactly; the client confirms the exact file.
+    pub confirm_path: String,
+}
+
 /// Result of one journaled group transaction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransactionResponse {
@@ -285,6 +301,17 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<MergeGroupsRequest>(&json).unwrap(),
             merge
+        );
+
+        let delete = DeleteGroupRequest {
+            path: "groups/a.parquet".into(),
+            expected_revision: "rev-1".into(),
+            confirm_path: "groups/a.parquet".into(),
+        };
+        let json = serde_json::to_string(&delete).unwrap();
+        assert_eq!(
+            serde_json::from_str::<DeleteGroupRequest>(&json).unwrap(),
+            delete
         );
     }
 }
