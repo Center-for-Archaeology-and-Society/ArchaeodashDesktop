@@ -3,11 +3,11 @@
 //! `apps/desktop/src-tauri` shell; this crate keeps the command payloads and
 //! invocation logic testable without a webview runtime.
 
-use archaeodash_application::{GroupService, ImportService};
+use archaeodash_application::{GroupService, ImportService, SourceFileService};
 use archaeodash_contracts::{
-    AppInfo, DeleteGroupRequest, GroupCandidate, GroupSummary, ImportCommitRequest,
-    ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse, MergeGroupsRequest,
-    TransactionResponse, TransferUnitsRequest,
+    AppInfo, DeleteGroupRequest, FileDownload, FileUploadRequest, GroupCandidate, GroupSummary,
+    ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse,
+    MergeGroupsRequest, StagedFile, TransactionResponse, TransferUnitsRequest,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_storage::StoreError;
@@ -135,6 +135,66 @@ impl DesktopImport {
 }
 
 impl Default for DesktopImport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Desktop source-file state: one project-scoped upload/catalog service
+/// sharing the project root (quarantine lives under `.archaeodash`).
+pub struct DesktopFiles {
+    service: Mutex<Option<SourceFileService>>,
+}
+
+impl DesktopFiles {
+    /// No project open yet; `open_project` sets the root.
+    pub fn new() -> Self {
+        Self {
+            service: Mutex::new(None),
+        }
+    }
+
+    /// Opens (or re-opens) the project root for source-file use cases.
+    pub fn open_project(&self, root: impl Into<PathBuf>) -> Result<(), String> {
+        let service = SourceFileService::new(root).map_err(|e| e.to_string())?;
+        *self.service.lock().map_err(|e| e.to_string())? = Some(service);
+        Ok(())
+    }
+
+    fn with_service<T>(
+        &self,
+        op: impl FnOnce(&SourceFileService) -> Result<T, ImportError>,
+    ) -> Result<T, String> {
+        let guard = self.service.lock().map_err(|e| e.to_string())?;
+        let service = guard.as_ref().ok_or_else(|| {
+            "no project open: call open_project with a directory first".to_string()
+        })?;
+        op(service).map_err(|e| e.to_string())
+    }
+
+    /// Desktop `upload_source_file` command body: bounded-quarantine upload
+    /// promoting to the requested logical path (Section 10.2).
+    pub fn upload_source_file(&self, req: FileUploadRequest) -> Result<StagedFile, String> {
+        self.with_service(|svc| svc.upload(&req.path, &req.content))
+    }
+
+    /// Desktop `source_file_metadata` command body.
+    pub fn source_file_metadata(&self, file_id: String) -> Result<StagedFile, String> {
+        self.with_service(|svc| svc.metadata(&file_id))
+    }
+
+    /// Desktop `download_source_file` command body.
+    pub fn download_source_file(&self, file_id: String) -> Result<FileDownload, String> {
+        self.with_service(|svc| svc.download(&file_id))
+    }
+
+    /// Desktop `delete_source_file` command body: soft delete with tombstone.
+    pub fn delete_source_file(&self, file_id: String) -> Result<StagedFile, String> {
+        self.with_service(|svc| svc.delete(&file_id))
+    }
+}
+
+impl Default for DesktopFiles {
     fn default() -> Self {
         Self::new()
     }
@@ -322,6 +382,53 @@ mod tests {
         assert!(!dir.join("groups/Baca.parquet").exists());
         // The rejected copy never created its destination.
         assert!(!dir.join("groups/Copy_Target.parquet").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_commands_upload_metadata_download_delete() {
+        let dir =
+            std::env::temp_dir().join(format!("archaeodash-desktop-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("project dir");
+
+        let files = DesktopFiles::new();
+        let err = files
+            .source_file_metadata("not-a-uuid".into())
+            .expect_err("no project open");
+        assert!(err.contains("no project open"));
+
+        files.open_project(&dir).expect("open project");
+
+        let staged = files
+            .upload_source_file(FileUploadRequest {
+                path: "sources/mini.csv".into(),
+                content: b"anid,Site,as\nA1,Baca,1.5\n".to_vec(),
+            })
+            .expect("upload");
+        assert_eq!(staged.parse_state, "parsed");
+        assert!(dir.join("sources/mini.csv").exists());
+
+        let meta = files
+            .source_file_metadata(staged.file_id.clone())
+            .expect("metadata");
+        assert_eq!(meta, staged);
+
+        let download = files
+            .download_source_file(staged.file_id.clone())
+            .expect("download");
+        assert_eq!(download.content, b"anid,Site,as\nA1,Baca,1.5\n".to_vec());
+
+        let deleted = files
+            .delete_source_file(staged.file_id.clone())
+            .expect("delete");
+        assert!(deleted.deleted);
+        assert!(!dir.join("sources/mini.csv").exists());
+        let err = files
+            .download_source_file(staged.file_id)
+            .expect_err("download after delete");
+        assert!(err.contains("deleted"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

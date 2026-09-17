@@ -31,6 +31,13 @@ pub enum ImportError {
     /// Filesystem or IO failure.
     #[error("io error: {0}")]
     Io(String),
+    /// A referenced file or record does not exist (HTTP 404).
+    #[error("not found: {0}")]
+    NotFound(String),
+    /// The request exceeds an explicit size or quota limit (HTTP 413);
+    /// Section 17.1.5: enforce limits with a clear error, never OOM.
+    #[error("limit exceeded: {0}")]
+    Limit(String),
 }
 
 #[cfg(test)]

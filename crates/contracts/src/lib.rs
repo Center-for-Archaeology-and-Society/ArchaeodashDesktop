@@ -207,6 +207,48 @@ pub struct DeleteGroupRequest {
     pub confirm_path: String,
 }
 
+/// Metadata for one uploaded source file (Section 10.2 `GET /files/{id}`,
+/// local Phase-2 form: the quarantine record under `.archaeodash/quarantine`
+/// is the file catalog until the hosted control plane lands in Phase 7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StagedFile {
+    /// Opaque file ID (UUIDv7); the only handle metadata/download/delete take.
+    pub file_id: String,
+    /// Project-relative logical path the file was uploaded to.
+    pub path: String,
+    /// Byte size of the stored content.
+    pub size_bytes: u64,
+    /// SHA-256 hex digest of the stored content.
+    pub sha256: String,
+    /// Format from the extension allowlist: `csv`, `tsv`, or `xlsx`.
+    pub format: String,
+    /// `parsed` (CSV parse check passed), `parse_failed`, or `deferred`
+    /// (no tested parser yet for the format in the Rust port).
+    pub parse_state: String,
+    /// Parse failure message when `parse_state` is `parse_failed`.
+    pub parse_error: Option<String>,
+    /// Soft-delete tombstone: bytes moved to quarantine trash, record kept.
+    pub deleted: bool,
+}
+
+/// Desktop upload payload: target logical path plus raw bytes (Section 10.2
+/// `POST /projects/{id}/files`; the HTTP adapter takes the bytes as the raw
+/// request body instead).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileUploadRequest {
+    /// Project-relative logical path for the uploaded source.
+    pub path: String,
+    /// Raw file bytes.
+    pub content: Vec<u8>,
+}
+
+/// Desktop download payload: metadata plus raw bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileDownload {
+    pub metadata: StagedFile,
+    pub content: Vec<u8>,
+}
+
 /// Result of one journaled group transaction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransactionResponse {
@@ -312,6 +354,39 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<DeleteGroupRequest>(&json).unwrap(),
             delete
+        );
+
+        let staged = StagedFile {
+            file_id: "01900000-0000-7000-8000-00000000000f".into(),
+            path: "sources/INAA_test.csv".into(),
+            size_bytes: 128,
+            sha256: "abc123".into(),
+            format: "csv".into(),
+            parse_state: "parsed".into(),
+            parse_error: None,
+            deleted: false,
+        };
+        let json = serde_json::to_string(&staged).unwrap();
+        assert_eq!(serde_json::from_str::<StagedFile>(&json).unwrap(), staged);
+
+        let upload = FileUploadRequest {
+            path: "sources/INAA_test.csv".into(),
+            content: b"anid,Site\nA1,Baca\n".to_vec(),
+        };
+        let json = serde_json::to_string(&upload).unwrap();
+        assert_eq!(
+            serde_json::from_str::<FileUploadRequest>(&json).unwrap(),
+            upload
+        );
+
+        let download = FileDownload {
+            metadata: staged.clone(),
+            content: upload.content,
+        };
+        let json = serde_json::to_string(&download).unwrap();
+        assert_eq!(
+            serde_json::from_str::<FileDownload>(&json).unwrap(),
+            download
         );
     }
 }

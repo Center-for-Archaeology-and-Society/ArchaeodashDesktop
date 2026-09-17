@@ -46,6 +46,10 @@ impl From<archaeodash_data_io::ImportError> for StoreError {
         match e {
             archaeodash_data_io::ImportError::Io(m) => StoreError::Io(m),
             archaeodash_data_io::ImportError::Parse(m) => StoreError::Validation(m),
+            // Not-found/limit never arise from storage-internal imports today;
+            // surface both as IO failures preserving the message.
+            archaeodash_data_io::ImportError::NotFound(m) => StoreError::Io(m),
+            archaeodash_data_io::ImportError::Limit(m) => StoreError::Io(m),
         }
     }
 }

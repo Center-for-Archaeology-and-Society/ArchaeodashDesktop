@@ -34,6 +34,7 @@ Up: [[../../Vault/Index]]
 - [[Phase_2_Import_HTTP_Tauri_Exposure_2026-09-16]]
 - [[Phase_2_Group_Operations_Adapters_2026-09-16]]
 - [[Phase_2_Group_Delete_Route_2026-09-17]]
+- [[Phase_2_Source_File_Catalog_2026-09-17]]
 
 ## Notes
 - This vault uses atomic notes (one concept per file) linked with `[[Wikilinks]]`.

@@ -1,33 +1,39 @@
 //! Axum HTTP API composition (Section 10).
 //!
 //! Phase 1 smoke surface (`/healthz`), the Phase 2 local import surface
-//! (`POST /api/v1/imports/preview|commit`), and the group-operation surface
+//! (`POST /api/v1/imports/preview|commit`), the group-operation surface
 //! (`GET /api/v1/groups`, `POST /api/v1/groups/validate`,
 //! `POST /api/v1/groups/transfer-units`, `POST /api/v1/groups/merge`,
-//! `DELETE /api/v1/groups/{*path}`), all delegating to the shared application
-//! use cases. Errors use the transport-neutral problem-details-style
-//! `ErrorEnvelope`.
+//! `DELETE /api/v1/groups/{*path}`), and the local source-file surface
+//! (`POST /api/v1/files`, `GET/DELETE /api/v1/files/{id}`,
+//! `GET /api/v1/files/{id}/download`), all delegating to the shared
+//! application use cases. Errors use the transport-neutral
+//! problem-details-style `ErrorEnvelope`.
 
 use std::sync::Arc;
 
-use archaeodash_application::{app_info, GroupService, ImportService};
+use archaeodash_application::{app_info, GroupService, ImportService, SourceFileService};
 use archaeodash_contracts::{
     AppInfo, DeleteGroupRequest, ErrorEnvelope, GroupCandidate, GroupSummary, ImportCommitRequest,
     ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse, MergeGroupsRequest,
-    TransactionResponse, TransferUnitsRequest,
+    StagedFile, TransactionResponse, TransferUnitsRequest,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_storage::StoreError;
+use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 
-/// Shared adapter state: one project-scoped import and group service.
+/// Shared adapter state: one project-scoped import, group, and source-file
+/// service.
 #[derive(Clone)]
 pub struct AppState {
     pub import: Arc<ImportService>,
     pub groups: Arc<GroupService>,
+    pub files: Arc<SourceFileService>,
 }
 
 async fn healthz() -> Json<AppInfo> {
@@ -40,6 +46,8 @@ fn error_response(err: ImportError) -> (StatusCode, Json<ErrorEnvelope>) {
     let (status, code) = match &err {
         ImportError::Parse(_) => (StatusCode::UNPROCESSABLE_ENTITY, "parse_error"),
         ImportError::Io(_) => (StatusCode::BAD_REQUEST, "io_error"),
+        ImportError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
+        ImportError::Limit(_) => (StatusCode::PAYLOAD_TOO_LARGE, "limit_exceeded"),
     };
     (
         status,
@@ -154,6 +162,93 @@ async fn groups_delete(
         .map_err(store_error_response)
 }
 
+/// Query parameters for the local upload route: the user-selected
+/// in-project logical path (Section 10.2 `POST /projects/{id}/files`; the
+/// hosted form scopes the path by project ID instead).
+#[derive(Debug, serde::Deserialize)]
+struct UploadFileQuery {
+    path: String,
+}
+
+/// Local Phase-2 upload: bytes arrive as the raw request body, stage through
+/// the bounded quarantine, and promote to the logical path.
+async fn files_upload(
+    State(state): State<AppState>,
+    Query(query): Query<UploadFileQuery>,
+    bytes: Bytes,
+) -> Result<Json<StagedFile>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .files
+        .upload(&query.path, &bytes)
+        .map(Json)
+        .map_err(error_response)
+}
+
+/// `GET /api/v1/files/{id}`: quarantine-record metadata including checksum,
+/// format, parse state, and soft-delete tombstone.
+async fn files_metadata(
+    State(state): State<AppState>,
+    Path(file_id): Path<String>,
+) -> Result<Json<StagedFile>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .files
+        .metadata(&file_id)
+        .map(Json)
+        .map_err(error_response)
+}
+
+/// `GET /api/v1/files/{id}/download`: raw bytes with a safe display
+/// filename derived from the recorded logical path.
+async fn files_download(
+    State(state): State<AppState>,
+    Path(file_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorEnvelope>)> {
+    let download = state.files.download(&file_id).map_err(error_response)?;
+    let filename: String = download
+        .metadata
+        .path
+        .rsplit('/')
+        .next()
+        .unwrap_or("download.bin")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || "-_. ".contains(*c))
+        .collect();
+    let filename = if filename.is_empty() {
+        "download.bin".to_string()
+    } else {
+        filename
+    };
+    let mut response = (StatusCode::OK, download.content).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        header::HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")).map_err(
+            |_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorEnvelope {
+                        code: "header_error".to_string(),
+                        message: "could not build download header".to_string(),
+                    }),
+                )
+            },
+        )?,
+    );
+    Ok(response)
+}
+
+/// `DELETE /api/v1/files/{id}`: soft delete — bytes move to quarantine
+/// trash, the tombstoned record remains readable.
+async fn files_delete(
+    State(state): State<AppState>,
+    Path(file_id): Path<String>,
+) -> Result<Json<StagedFile>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .files
+        .delete(&file_id)
+        .map(Json)
+        .map_err(error_response)
+}
+
 /// Builds the root router. Route groups for transformations, analysis, jobs,
 /// and auth land in their owning phases (Sections 10.1+).
 pub fn root_router(state: AppState) -> Router {
@@ -161,6 +256,12 @@ pub fn root_router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/api/v1/imports/preview", post(imports_preview))
         .route("/api/v1/imports/commit", post(imports_commit))
+        .route("/api/v1/files", post(files_upload))
+        .route(
+            "/api/v1/files/{id}",
+            get(files_metadata).delete(files_delete),
+        )
+        .route("/api/v1/files/{id}/download", get(files_download))
         .route("/api/v1/groups", get(groups_scan))
         .route("/api/v1/groups/validate", post(groups_validate))
         .route("/api/v1/groups/transfer-units", post(groups_transfer_units))
@@ -184,6 +285,7 @@ mod tests {
         let state = AppState {
             import: Arc::new(ImportService::new(dir.path()).expect("service")),
             groups: Arc::new(GroupService::new(dir.path()).expect("group service")),
+            files: Arc::new(SourceFileService::new(dir.path()).expect("file service")),
         };
         (state, dir)
     }
@@ -495,6 +597,160 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn file_upload_metadata_download_delete_round_trip() {
+        let (state, dir) = test_state();
+        let app = root_router(state);
+
+        // Upload stages through quarantine and promotes to the logical path.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/files?path=sources%2Fmini.csv")
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from("anid,Site,as\nA1,Baca,1.5\nA2,Baca,2\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let staged: StagedFile = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(staged.path, "sources/mini.csv");
+        assert_eq!(staged.format, "csv");
+        assert_eq!(staged.parse_state, "parsed");
+        assert!(!staged.deleted);
+        assert!(dir.path().join("sources/mini.csv").exists());
+
+        // Metadata by ID.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get(format!("/api/v1/files/{}", staged.file_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let meta: StagedFile = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(meta, staged);
+
+        // Download returns the exact uploaded bytes and a safe filename.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get(format!("/api/v1/files/{}/download", staged.file_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-disposition")
+                .and_then(|v| v.to_str().ok()),
+            Some("attachment; filename=\"mini.csv\"")
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), b"anid,Site,as\nA1,Baca,1.5\nA2,Baca,2\n");
+
+        // Soft delete tombstones the record and removes the logical file.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::delete(format!("/api/v1/files/{}", staged.file_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let deleted: StagedFile = serde_json::from_slice(&bytes).unwrap();
+        assert!(deleted.deleted);
+        assert!(!dir.path().join("sources/mini.csv").exists());
+
+        // Download of a deleted file is 404; re-upload to the same path is
+        // rejected until the tombstone flow is replaced by the hosted catalog.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get(format!("/api/v1/files/{}/download", staged.file_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::post("/api/v1/files?path=sources%2Fmini.csv")
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from("anid,Site,as\nA1,Baca,1\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn file_upload_rejects_escape_bad_format_and_oversize() {
+        let (state, _dir) = test_state();
+        let app = root_router(state);
+
+        // Path escape: 422 parse_error.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/files?path=..%2Foutside.csv")
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from("x"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+
+        // Non-allowlisted extension: 422.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/files?path=sources%2Fthing.exe")
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from("x"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let envelope: ErrorEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(envelope.code, "parse_error");
+
+        // Unknown file ID: 404.
+        let response = app
+            .oneshot(
+                axum::http::Request::get("/api/v1/files/01900000-0000-7000-8000-00000000000f")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

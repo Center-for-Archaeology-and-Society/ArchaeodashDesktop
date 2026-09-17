@@ -5,13 +5,14 @@ use archaeodash_contracts::{
     DeleteGroupRequest, ImportCommitRequest, ImportPreviewRequest, MergeGroupsRequest,
     TransferUnitsRequest,
 };
-use archaeodash_desktop::{DesktopAppInfo, DesktopGroups, DesktopImport};
+use archaeodash_desktop::{DesktopAppInfo, DesktopFiles, DesktopGroups, DesktopImport};
 use std::sync::Mutex;
 
-/// Project-scoped state shared by the import and group commands.
+/// Project-scoped state shared by the import, group, and file commands.
 struct DesktopState {
     import: DesktopImport,
     groups: DesktopGroups,
+    files: DesktopFiles,
 }
 
 /// Smoke command exposed to the React client over Tauri IPC.
@@ -112,6 +113,61 @@ fn delete_group(
         .delete_group(request)
 }
 
+/// Stage-upload a source file through the bounded quarantine and promote it
+/// to the requested in-project logical path (`upload_source_file`).
+#[tauri::command]
+fn upload_source_file(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: archaeodash_contracts::FileUploadRequest,
+) -> Result<archaeodash_contracts::StagedFile, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .files
+        .upload_source_file(request)
+}
+
+/// Quarantine-record metadata for one uploaded source file
+/// (`source_file_metadata`).
+#[tauri::command]
+fn source_file_metadata(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    file_id: String,
+) -> Result<archaeodash_contracts::StagedFile, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .files
+        .source_file_metadata(file_id)
+}
+
+/// Raw bytes plus metadata for one uploaded source file
+/// (`download_source_file`).
+#[tauri::command]
+fn download_source_file(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    file_id: String,
+) -> Result<archaeodash_contracts::FileDownload, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .files
+        .download_source_file(file_id)
+}
+
+/// Soft-delete one uploaded source file (`delete_source_file`).
+#[tauri::command]
+fn delete_source_file(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    file_id: String,
+) -> Result<archaeodash_contracts::StagedFile, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .files
+        .delete_source_file(file_id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[allow(clippy::expect_used)] // app entry point: a failed runtime start must abort startup
 pub fn run() {
@@ -119,6 +175,7 @@ pub fn run() {
         .manage(Mutex::new(DesktopState {
             import: DesktopImport::new(),
             groups: DesktopGroups::new(),
+            files: DesktopFiles::new(),
         }))
         .invoke_handler(tauri::generate_handler![
             app_info,
@@ -128,7 +185,11 @@ pub fn run() {
             validate_group_file,
             transfer_units,
             merge_groups,
-            delete_group
+            delete_group,
+            upload_source_file,
+            source_file_metadata,
+            download_source_file,
+            delete_source_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
