@@ -79,6 +79,7 @@ dependencies = [
  "archaeodash-application",
  "archaeodash-contracts",
  "archaeodash-data-io",
+ "archaeodash-storage",
  "axum",
  "http-body-util",
  "serde",
@@ -87,6 +88,7 @@ dependencies = [
  "tokio",
  "tower",
  "tower-http 0.7.1",
+ "uuid",
 ]
 
 [[package]]
@@ -96,9 +98,13 @@ dependencies = [
  "archaeodash-contracts",
  "archaeodash-data-io",
  "archaeodash-domain",
+ "archaeodash-file-store-fs",
+ "archaeodash-storage",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]
@@ -151,6 +157,7 @@ dependencies = [
  "archaeodash-application",
  "archaeodash-contracts",
  "archaeodash-data-io",
+ "archaeodash-storage",
  "serde",
  "serde_json",
 ]

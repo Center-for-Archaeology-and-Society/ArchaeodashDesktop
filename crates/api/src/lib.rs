@@ -1,27 +1,32 @@
 //! Axum HTTP API composition (Section 10).
 //!
-//! Phase 1 smoke surface (`/healthz`) plus the Phase 2 local import surface:
-//! `POST /api/v1/imports/preview` and `POST /api/v1/imports/commit`, both
-//! delegating to the shared `ImportService` use cases. Errors use the
+//! Phase 1 smoke surface (`/healthz`), the Phase 2 local import surface
+//! (`POST /api/v1/imports/preview|commit`), and the group-operation surface
+//! (`GET /api/v1/groups`, `POST /api/v1/groups/validate`,
+//! `POST /api/v1/groups/transfer-units`, `POST /api/v1/groups/merge`), all
+//! delegating to the shared application use cases. Errors use the
 //! transport-neutral problem-details-style `ErrorEnvelope`.
 
 use std::sync::Arc;
 
-use archaeodash_application::{app_info, ImportService};
+use archaeodash_application::{app_info, GroupService, ImportService};
 use archaeodash_contracts::{
-    AppInfo, ErrorEnvelope, ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest,
-    ImportPreviewResponse,
+    AppInfo, ErrorEnvelope, GroupCandidate, GroupSummary, ImportCommitRequest,
+    ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse, MergeGroupsRequest,
+    TransactionResponse, TransferUnitsRequest,
 };
 use archaeodash_data_io::ImportError;
+use archaeodash_storage::StoreError;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-/// Shared adapter state: one project-scoped import service.
+/// Shared adapter state: one project-scoped import and group service.
 #[derive(Clone)]
 pub struct AppState {
     pub import: Arc<ImportService>,
+    pub groups: Arc<GroupService>,
 }
 
 async fn healthz() -> Json<AppInfo> {
@@ -34,6 +39,25 @@ fn error_response(err: ImportError) -> (StatusCode, Json<ErrorEnvelope>) {
     let (status, code) = match &err {
         ImportError::Parse(_) => (StatusCode::UNPROCESSABLE_ENTITY, "parse_error"),
         ImportError::Io(_) => (StatusCode::BAD_REQUEST, "io_error"),
+    };
+    (
+        status,
+        Json(ErrorEnvelope {
+            code: code.to_string(),
+            message: err.to_string(),
+        }),
+    )
+}
+
+/// Maps store errors: stale revisions conflict (409), invariant/schema/
+/// validation problems are unprocessable (422), IO failures bad request.
+fn store_error_response(err: StoreError) -> (StatusCode, Json<ErrorEnvelope>) {
+    let (status, code) = match &err {
+        StoreError::RevisionConflict { .. } => (StatusCode::CONFLICT, "revision_conflict"),
+        StoreError::SchemaMismatch { .. }
+        | StoreError::Invariant(_)
+        | StoreError::Validation(_) => (StatusCode::UNPROCESSABLE_ENTITY, "validation_error"),
+        StoreError::Io(_) => (StatusCode::BAD_REQUEST, "io_error"),
     };
     (
         status,
@@ -60,13 +84,60 @@ async fn imports_commit(
     state.import.commit(&req).map(Json).map_err(error_response)
 }
 
-/// Builds the root router. Route groups for groups, transformations,
-/// analysis, jobs, and auth land in their owning phases (Sections 10.1+).
+async fn groups_scan(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<GroupCandidate>>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .groups
+        .scan_candidates()
+        .map(Json)
+        .map_err(store_error_response)
+}
+
+async fn groups_validate(
+    State(state): State<AppState>,
+    Json(path): Json<String>,
+) -> Result<Json<GroupSummary>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .groups
+        .validate(&path)
+        .map(Json)
+        .map_err(store_error_response)
+}
+
+async fn groups_transfer_units(
+    State(state): State<AppState>,
+    Json(req): Json<TransferUnitsRequest>,
+) -> Result<Json<TransactionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .groups
+        .transfer_units(&req)
+        .map(Json)
+        .map_err(store_error_response)
+}
+
+async fn groups_merge(
+    State(state): State<AppState>,
+    Json(req): Json<MergeGroupsRequest>,
+) -> Result<Json<TransactionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .groups
+        .merge_groups(&req)
+        .map(Json)
+        .map_err(store_error_response)
+}
+
+/// Builds the root router. Route groups for transformations, analysis, jobs,
+/// and auth land in their owning phases (Sections 10.1+).
 pub fn root_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/api/v1/imports/preview", post(imports_preview))
         .route("/api/v1/imports/commit", post(imports_commit))
+        .route("/api/v1/groups", get(groups_scan))
+        .route("/api/v1/groups/validate", post(groups_validate))
+        .route("/api/v1/groups/transfer-units", post(groups_transfer_units))
+        .route("/api/v1/groups/merge", post(groups_merge))
         .with_state(state)
 }
 
@@ -75,6 +146,7 @@ mod tests {
     #![allow(clippy::expect_used)] // test code; panics are the failure mode
 
     use super::*;
+    use archaeodash_contracts::TransferAction;
     use axum::body::Body;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -83,8 +155,40 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = AppState {
             import: Arc::new(ImportService::new(dir.path()).expect("service")),
+            groups: Arc::new(GroupService::new(dir.path()).expect("group service")),
         };
         (state, dir)
+    }
+
+    /// Commits the two-group fixture over HTTP and returns the response.
+    async fn commit_fixture(app: axum::Router, dir: &tempfile::TempDir) -> ImportCommitResponse {
+        std::fs::write(
+            dir.path().join("mini.csv"),
+            "anid,Site,as,fe\nA1,Baca,1.5,3\nA2,Baca,2,4\nA3,Hooper,5,6\n",
+        )
+        .expect("write source");
+        let response = app
+            .oneshot(
+                axum::http::Request::post("/api/v1/imports/commit")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ImportCommitRequest {
+                            source: "mini.csv".into(),
+                            group_column: "Site".into(),
+                            visible_id_column: None,
+                            elemental_columns: None,
+                            recipe: None,
+                            destination_dir: None,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
     }
 
     #[tokio::test]
@@ -170,6 +274,127 @@ mod tests {
         assert_eq!(commit.groups[0].path, "groups/Baca.parquet");
         assert!(dir.path().join("groups/Baca.parquet").exists());
         assert!(dir.path().join("groups/Hooper.parquet").exists());
+    }
+
+    #[tokio::test]
+    async fn group_scan_validate_and_transfer_over_http() {
+        let (state, dir) = test_state();
+        let app = root_router(state);
+        let commit = commit_fixture(app.clone(), &dir).await;
+
+        // Scan lists both ready candidates.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get("/api/v1/groups")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let candidates: Vec<GroupCandidate> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.iter().all(|c| c.ready));
+
+        // Validate returns the summary for one path.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/groups/validate")
+                    .header("content-type", "application/json")
+                    .body(Body::from("\"groups/Baca.parquet\""))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let summary: GroupSummary = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(summary.group_name, "Baca");
+        assert_eq!(summary.row_count, 2);
+
+        // Transfer with the revision just validated. Summaries intentionally
+        // omit hidden identities (Section 10.2), so the HTTP tests exercise
+        // rejection paths; real transfers run at the application layer.
+        let source_path = commit.groups[0].path.clone();
+        let baca_revision = summary.revision_id;
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/groups/transfer-units")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&TransferUnitsRequest {
+                            action: TransferAction::Move,
+                            source_path: source_path.clone(),
+                            destination_path: commit.groups[1].path.clone(),
+                            destination_group_name: None,
+                            selected_uuids: vec!["not-a-uuid".into()],
+                            expected_source_revision: baca_revision.clone(),
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let envelope: ErrorEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(envelope.code, "validation_error");
+
+        // Stale revision conflicts (409) before any file is touched.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/groups/transfer-units")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&TransferUnitsRequest {
+                            action: TransferAction::Move,
+                            source_path: source_path.clone(),
+                            destination_path: commit.groups[1].path.clone(),
+                            destination_group_name: None,
+                            selected_uuids: vec![uuid::Uuid::now_v7().to_string()],
+                            expected_source_revision: "rev-999".into(),
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+
+        // Merge both groups into one through the journaled transaction.
+        let response = app
+            .oneshot(
+                axum::http::Request::post("/api/v1/groups/merge")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&MergeGroupsRequest {
+                            sources: commit.groups.iter().map(|g| g.path.clone()).collect(),
+                            new_group_name: "Merged".into(),
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let tx: TransactionResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(tx.action, "merge_groups");
+        assert_eq!(tx.outputs.len(), 1);
+        assert_eq!(tx.outputs[0].row_count, 3);
+        assert_eq!(tx.deleted_paths, vec![commit.groups[1].path.clone()]);
+        assert!(!dir.path().join(&commit.groups[1].path).exists());
     }
 
     #[tokio::test]

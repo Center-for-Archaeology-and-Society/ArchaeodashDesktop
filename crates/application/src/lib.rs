@@ -5,8 +5,10 @@
 
 use archaeodash_contracts::AppInfo;
 
+pub mod groups;
 pub mod import;
 
+pub use groups::GroupService;
 pub use import::ImportService;
 
 /// Returns application identity and readiness for the smoke use case.
