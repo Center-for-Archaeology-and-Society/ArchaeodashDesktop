@@ -36,6 +36,7 @@ Up: [[../../Vault/Index]]
 - [[Phase_2_Group_Delete_Route_2026-09-17]]
 - [[Phase_2_Source_File_Catalog_2026-09-17]]
 - [[Phase_3_Transform_Definitions_2026-09-17]]
+- [[Phase_4_Ordination_PCA_LDA_Research_2026-09-17]]
 
 ## Notes
 - This vault uses atomic notes (one concept per file) linked with `[[Wikilinks]]`.
