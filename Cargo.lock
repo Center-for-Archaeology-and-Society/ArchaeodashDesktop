@@ -79,6 +79,7 @@ dependencies = [
  "archaeodash-application",
  "archaeodash-contracts",
  "archaeodash-data-io",
+ "archaeodash-domain",
  "archaeodash-storage",
  "axum",
  "http-body-util",
@@ -95,6 +96,7 @@ dependencies = [
 name = "archaeodash-application"
 version = "0.1.0"
 dependencies = [
+ "archaeodash-analysis",
  "archaeodash-contracts",
  "archaeodash-data-io",
  "archaeodash-domain",
@@ -157,6 +159,7 @@ dependencies = [
  "archaeodash-application",
  "archaeodash-contracts",
  "archaeodash-data-io",
+ "archaeodash-domain",
  "archaeodash-storage",
  "serde",
  "serde_json",

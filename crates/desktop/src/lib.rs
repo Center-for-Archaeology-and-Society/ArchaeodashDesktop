@@ -3,13 +3,16 @@
 //! `apps/desktop/src-tauri` shell; this crate keeps the command payloads and
 //! invocation logic testable without a webview runtime.
 
-use archaeodash_application::{GroupService, ImportService, SourceFileService};
+use archaeodash_application::{GroupService, ImportService, SourceFileService, TransformService};
 use archaeodash_contracts::{
-    AppInfo, DeleteGroupRequest, FileDownload, FileUploadRequest, GroupCandidate, GroupSummary,
+    AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
+    DeleteGroupRequest, FileDownload, FileUploadRequest, GroupCandidate, GroupSummary,
     ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse,
-    MergeGroupsRequest, StagedFile, TransactionResponse, TransferUnitsRequest,
+    MergeGroupsRequest, RatioSpecDto, SaveTransformationResponse, StagedFile, TransactionResponse,
+    TransferUnitsRequest, TransformationDefinition, TransformationListResponse,
 };
 use archaeodash_data_io::ImportError;
+use archaeodash_domain::DomainError;
 use archaeodash_storage::StoreError;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -195,6 +198,83 @@ impl DesktopFiles {
 }
 
 impl Default for DesktopFiles {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Desktop transformation-definition state: one project-scoped transform
+/// service sharing the project root (definitions persist under
+/// `.archaeodash/transformations` as structured JSON, Section 8.2).
+pub struct DesktopTransforms {
+    service: Mutex<Option<TransformService>>,
+}
+
+impl DesktopTransforms {
+    /// No project open yet; `open_project` sets the root.
+    pub fn new() -> Self {
+        Self {
+            service: Mutex::new(None),
+        }
+    }
+
+    /// Opens (or re-opens) the project root for transformation use cases.
+    pub fn open_project(&self, root: impl Into<PathBuf>) -> Result<(), String> {
+        let service = TransformService::new(root).map_err(|e| e.to_string())?;
+        *self.service.lock().map_err(|e| e.to_string())? = Some(service);
+        Ok(())
+    }
+
+    fn with_service<T>(
+        &self,
+        op: impl FnOnce(&TransformService) -> Result<T, DomainError>,
+    ) -> Result<T, String> {
+        let guard = self.service.lock().map_err(|e| e.to_string())?;
+        let service = guard.as_ref().ok_or_else(|| {
+            "no project open: call open_project with a directory first".to_string()
+        })?;
+        op(service).map_err(|e| e.to_string())
+    }
+
+    /// Desktop `save_transformation` command body (upsert by name).
+    pub fn save_transformation(
+        &self,
+        definition: TransformationDefinition,
+    ) -> Result<SaveTransformationResponse, String> {
+        self.with_service(|svc| svc.save(&definition))
+    }
+
+    /// Desktop `list_transformations` command body: summaries sorted by name.
+    pub fn list_transformations(&self) -> Result<TransformationListResponse, String> {
+        self.with_service(|svc| svc.list())
+    }
+
+    /// Desktop `load_transformation` command body.
+    pub fn load_transformation(&self, name: String) -> Result<TransformationDefinition, String> {
+        self.with_service(|svc| svc.load(&name))
+    }
+
+    /// Desktop `delete_transformation` command body.
+    pub fn delete_transformation(&self, name: String) -> Result<TransformationDefinition, String> {
+        self.with_service(|svc| svc.delete(&name))
+    }
+
+    /// Desktop `batch_ratio_specs` command body (Section 8.2 batch generation).
+    pub fn batch_ratio_specs(&self, req: BatchRatioRequest) -> Result<Vec<RatioSpecDto>, String> {
+        self.with_service(|svc| svc.batch_ratio_specs(&req))
+    }
+
+    /// Desktop `apply_transformation` command body: ephemeral on-demand
+    /// application; calculated values are never persisted (Section 5).
+    pub fn apply_transformation(
+        &self,
+        req: ApplyTransformationRequest,
+    ) -> Result<AppliedTransformation, String> {
+        self.with_service(|svc| svc.apply(&req))
+    }
+}
+
+impl Default for DesktopTransforms {
     fn default() -> Self {
         Self::new()
     }
@@ -429,6 +509,102 @@ mod tests {
             .download_source_file(staged.file_id)
             .expect_err("download after delete");
         assert!(err.contains("deleted"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn transformation_commands_save_apply_list_delete() {
+        use archaeodash_contracts::{
+            ApplyTransformationRequest, ImputationMethod, RatioMode, RatioSpecDto, TransformMethod,
+            TransformationDefinition,
+        };
+
+        let dir =
+            std::env::temp_dir().join(format!("archaeodash-desktop-tx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("project dir");
+
+        let transforms = DesktopTransforms::new();
+        let err = transforms
+            .list_transformations()
+            .expect_err("no project open");
+        assert!(err.contains("no project open"));
+        transforms.open_project(&dir).expect("open project");
+
+        // Import a group file so apply has a target.
+        std::fs::write(
+            dir.join("mini.csv"),
+            "anid,Site,as,fe\nA1,Baca,1.5,3\nA2,Baca,2,4\nA3,Hooper,5,6\n",
+        )
+        .expect("write source");
+        let import = ImportService::new(&dir).expect("import service");
+        let commit = import
+            .commit(&ImportCommitRequest {
+                source: "mini.csv".into(),
+                group_column: "Site".into(),
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+            })
+            .expect("commit");
+
+        let definition = TransformationDefinition {
+            name: "desktop log".into(),
+            transform_method: TransformMethod::Log10,
+            imputation_method: ImputationMethod::None,
+            imputation_seed: None,
+            elemental_columns: vec!["as".into(), "fe".into()],
+            descriptive_columns: vec![],
+            group_column: None,
+            ratios: vec![RatioSpecDto {
+                output_name: None,
+                numerator: "as".into(),
+                denominator: "fe".into(),
+            }],
+            ratio_mode: RatioMode::Append,
+        };
+        let saved = transforms
+            .save_transformation(definition.clone())
+            .expect("save");
+        assert!(!saved.replaced);
+
+        let listed = transforms.list_transformations().expect("list");
+        assert_eq!(listed.transformations.len(), 1);
+        assert_eq!(listed.transformations[0].name, "desktop log");
+
+        let loaded = transforms
+            .load_transformation("desktop log".into())
+            .expect("load");
+        assert_eq!(loaded, definition);
+
+        // Apply is ephemeral: result returned, group file untouched.
+        let path = commit.groups[0].path.clone();
+        let before = std::fs::read(dir.join(&path)).expect("read group");
+        let applied = transforms
+            .apply_transformation(ApplyTransformationRequest {
+                path: path.clone(),
+                definition,
+            })
+            .expect("apply");
+        assert_eq!(applied.columns, vec!["as", "fe", "as_fe"]);
+        assert_eq!(applied.rows.len(), commit.groups[0].row_count as usize);
+        assert_eq!(
+            std::fs::read(dir.join(&path)).expect("read group"),
+            before,
+            "group file byte-identical after apply"
+        );
+
+        let deleted = transforms
+            .delete_transformation("desktop log".into())
+            .expect("delete");
+        assert_eq!(deleted.transform_method, TransformMethod::Log10);
+        assert!(transforms
+            .list_transformations()
+            .expect("empty")
+            .transformations
+            .is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

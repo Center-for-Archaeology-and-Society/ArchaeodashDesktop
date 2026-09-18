@@ -4,21 +4,30 @@
 //! (`POST /api/v1/imports/preview|commit`), the group-operation surface
 //! (`GET /api/v1/groups`, `POST /api/v1/groups/validate`,
 //! `POST /api/v1/groups/transfer-units`, `POST /api/v1/groups/merge`,
-//! `DELETE /api/v1/groups/{*path}`), and the local source-file surface
+//! `DELETE /api/v1/groups/{*path}`), the local source-file surface
 //! (`POST /api/v1/files`, `GET/DELETE /api/v1/files/{id}`,
-//! `GET /api/v1/files/{id}/download`), all delegating to the shared
+//! `GET /api/v1/files/{id}/download`), and the Phase 3 transformation
+//! surface (`POST/GET /api/v1/transformations`,
+//! `GET/DELETE /api/v1/transformations/{name}`,
+//! `POST /api/v1/transformations/ratios/batch`,
+//! `POST /api/v1/transformations/apply`), all delegating to the shared
 //! application use cases. Errors use the transport-neutral
 //! problem-details-style `ErrorEnvelope`.
 
 use std::sync::Arc;
 
-use archaeodash_application::{app_info, GroupService, ImportService, SourceFileService};
+use archaeodash_application::{
+    app_info, GroupService, ImportService, SourceFileService, TransformService,
+};
 use archaeodash_contracts::{
-    AppInfo, DeleteGroupRequest, ErrorEnvelope, GroupCandidate, GroupSummary, ImportCommitRequest,
+    AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
+    DeleteGroupRequest, ErrorEnvelope, GroupCandidate, GroupSummary, ImportCommitRequest,
     ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse, MergeGroupsRequest,
-    StagedFile, TransactionResponse, TransferUnitsRequest,
+    SaveTransformationRequest, SaveTransformationResponse, StagedFile, TransactionResponse,
+    TransferUnitsRequest, TransformationDefinition, TransformationListResponse,
 };
 use archaeodash_data_io::ImportError;
+use archaeodash_domain::DomainError;
 use archaeodash_storage::StoreError;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -27,13 +36,14 @@ use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 
-/// Shared adapter state: one project-scoped import, group, and source-file
-/// service.
+/// Shared adapter state: one project-scoped import, group, source-file, and
+/// transformation service.
 #[derive(Clone)]
 pub struct AppState {
     pub import: Arc<ImportService>,
     pub groups: Arc<GroupService>,
     pub files: Arc<SourceFileService>,
+    pub transforms: Arc<TransformService>,
 }
 
 async fn healthz() -> Json<AppInfo> {
@@ -249,8 +259,101 @@ async fn files_delete(
         .map_err(error_response)
 }
 
-/// Builds the root router. Route groups for transformations, analysis, jobs,
-/// and auth land in their owning phases (Sections 10.1+).
+/// Maps domain errors: validation/identity problems are unprocessable (422),
+/// not-found is 404, and internal failures stay opaque (500).
+fn domain_error_response(err: DomainError) -> (StatusCode, Json<ErrorEnvelope>) {
+    let (status, code) = match &err {
+        DomainError::InvalidIdentity { .. } => {
+            (StatusCode::UNPROCESSABLE_ENTITY, "invalid_identity")
+        }
+        DomainError::Validation { .. } => (StatusCode::UNPROCESSABLE_ENTITY, "validation_error"),
+        DomainError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
+        DomainError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
+    };
+    (
+        status,
+        Json(ErrorEnvelope {
+            code: code.to_string(),
+            message: err.to_string(),
+        }),
+    )
+}
+
+/// `POST /api/v1/transformations`: save (upsert by name) one definition.
+async fn transformations_save(
+    State(state): State<AppState>,
+    Json(req): Json<SaveTransformationRequest>,
+) -> Result<Json<SaveTransformationResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .transforms
+        .save(&req.definition)
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
+/// `GET /api/v1/transformations`: summaries sorted by name.
+async fn transformations_list(
+    State(state): State<AppState>,
+) -> Result<Json<TransformationListResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .transforms
+        .list()
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
+/// `GET /api/v1/transformations/{name}`: one full definition.
+async fn transformations_load(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<TransformationDefinition>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .transforms
+        .load(&name)
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
+/// `DELETE /api/v1/transformations/{name}`: removes the saved definition.
+async fn transformations_delete(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<TransformationDefinition>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .transforms
+        .delete(&name)
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
+/// `POST /api/v1/transformations/ratios/batch`: one-to-one or Cartesian
+/// ratio-spec generation (Section 8.2).
+async fn transformations_batch_ratios(
+    State(state): State<AppState>,
+    Json(req): Json<BatchRatioRequest>,
+) -> Result<Json<Vec<archaeodash_contracts::RatioSpecDto>>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .transforms
+        .batch_ratio_specs(&req)
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
+/// `POST /api/v1/transformations/apply`: ephemeral on-demand application;
+/// never persists calculated values (Section 5 storage invariant).
+async fn transformations_apply(
+    State(state): State<AppState>,
+    Json(req): Json<ApplyTransformationRequest>,
+) -> Result<Json<AppliedTransformation>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .transforms
+        .apply(&req)
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
+/// Builds the root router. Route groups for analysis, jobs, and auth land in
+/// their owning phases (Sections 10.1+).
 pub fn root_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
@@ -267,6 +370,19 @@ pub fn root_router(state: AppState) -> Router {
         .route("/api/v1/groups/transfer-units", post(groups_transfer_units))
         .route("/api/v1/groups/merge", post(groups_merge))
         .route("/api/v1/groups/{*path}", delete(groups_delete))
+        .route(
+            "/api/v1/transformations",
+            post(transformations_save).get(transformations_list),
+        )
+        .route(
+            "/api/v1/transformations/{name}",
+            get(transformations_load).delete(transformations_delete),
+        )
+        .route(
+            "/api/v1/transformations/ratios/batch",
+            post(transformations_batch_ratios),
+        )
+        .route("/api/v1/transformations/apply", post(transformations_apply))
         .with_state(state)
 }
 
@@ -275,10 +391,17 @@ mod tests {
     #![allow(clippy::expect_used)] // test code; panics are the failure mode
 
     use super::*;
-    use archaeodash_contracts::TransferAction;
+    use archaeodash_contracts::{
+        BatchRatioMode, ImputationMethod, RatioMode, RatioSpecDto, TransferAction, TransformMethod,
+    };
     use axum::body::Body;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
+
+    /// JSON body helper for POST requests.
+    fn json_body<T: serde::Serialize>(value: &T) -> Body {
+        Body::from(serde_json::to_vec(value).expect("serialize"))
+    }
 
     fn test_state() -> (AppState, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -286,6 +409,7 @@ mod tests {
             import: Arc::new(ImportService::new(dir.path()).expect("service")),
             groups: Arc::new(GroupService::new(dir.path()).expect("group service")),
             files: Arc::new(SourceFileService::new(dir.path()).expect("file service")),
+            transforms: Arc::new(TransformService::new(dir.path()).expect("transform service")),
         };
         (state, dir)
     }
@@ -745,6 +869,190 @@ mod tests {
         let response = app
             .oneshot(
                 axum::http::Request::get("/api/v1/files/01900000-0000-7000-8000-00000000000f")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn transformation_routes_save_apply_list_delete() {
+        let (state, dir) = test_state();
+        let app = root_router(state);
+
+        // Commit the fixture so apply has a group file to transform.
+        let commit = commit_fixture(app.clone(), &dir).await;
+        let group_path = commit.groups[0].path.clone();
+
+        // Save a definition (upsert semantics).
+        let definition = TransformationDefinition {
+            name: "log ratios".into(),
+            transform_method: TransformMethod::Log10,
+            imputation_method: ImputationMethod::None,
+            imputation_seed: None,
+            elemental_columns: vec!["as".into(), "fe".into()],
+            descriptive_columns: vec![],
+            group_column: None,
+            ratios: vec![RatioSpecDto {
+                output_name: None,
+                numerator: "as".into(),
+                denominator: "fe".into(),
+            }],
+            ratio_mode: RatioMode::Append,
+        };
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/transformations")
+                    .header("content-type", "application/json")
+                    .body(json_body(&SaveTransformationRequest {
+                        definition: definition.clone(),
+                    }))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let saved: SaveTransformationResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(!saved.replaced);
+
+        // List shows one summary.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get("/api/v1/transformations")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let listed: TransformationListResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(listed.transformations.len(), 1);
+        assert_eq!(listed.transformations[0].name, "log ratios");
+        assert_eq!(
+            listed.transformations[0].transform_method,
+            TransformMethod::Log10
+        );
+
+        // Load by name round-trips the definition.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get("/api/v1/transformations/log%20ratios")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let loaded: TransformationDefinition = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(loaded, definition);
+
+        // Apply the saved definition to the committed group file: ephemeral
+        // result with log10 + ratio columns, group file untouched on disk.
+        let before = std::fs::read(dir.path().join(&group_path)).expect("read group");
+        let apply = ApplyTransformationRequest {
+            path: group_path.clone(),
+            definition: definition.clone(),
+        };
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/transformations/apply")
+                    .header("content-type", "application/json")
+                    .body(json_body(&apply))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let applied: AppliedTransformation = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(applied.path, group_path);
+        assert_eq!(applied.columns, vec!["as", "fe", "as_fe"]);
+        assert_eq!(applied.rows.len(), commit.groups[0].row_count as usize);
+        assert!(applied.rows.iter().flatten().all(|v| v.is_some()));
+        assert_eq!(
+            std::fs::read(dir.path().join(&group_path)).expect("read group"),
+            before,
+            "group file byte-identical after apply"
+        );
+
+        // Batch ratio generation.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/transformations/ratios/batch")
+                    .header("content-type", "application/json")
+                    .body(json_body(&BatchRatioRequest {
+                        numerators: vec!["as".into()],
+                        denominators: vec!["fe".into()],
+                        mode: BatchRatioMode::OneToOne,
+                    }))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let specs: Vec<archaeodash_contracts::RatioSpecDto> =
+            serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].output_name.as_deref(), Some("as_fe"));
+
+        // Validation failures are 422 with a stable code.
+        let mut bad = definition.clone();
+        bad.ratios = vec![RatioSpecDto {
+            output_name: None,
+            numerator: "as".into(),
+            denominator: "as".into(),
+        }];
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/transformations")
+                    .header("content-type", "application/json")
+                    .body(json_body(&SaveTransformationRequest { definition: bad }))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+
+        // Unknown name load is 404; delete then load again is 404.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get("/api/v1/transformations/nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::delete("/api/v1/transformations/log%20ratios")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let response = app
+            .oneshot(
+                axum::http::Request::get("/api/v1/transformations/log%20ratios")
                     .body(Body::empty())
                     .unwrap(),
             )

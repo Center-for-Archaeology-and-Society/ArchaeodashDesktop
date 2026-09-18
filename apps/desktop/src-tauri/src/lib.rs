@@ -2,17 +2,21 @@
 //! crate (crates/desktop), which calls the shared application use cases.
 
 use archaeodash_contracts::{
-    DeleteGroupRequest, ImportCommitRequest, ImportPreviewRequest, MergeGroupsRequest,
-    TransferUnitsRequest,
+    ApplyTransformationRequest, BatchRatioRequest, DeleteGroupRequest, ImportCommitRequest,
+    ImportPreviewRequest, MergeGroupsRequest, TransferUnitsRequest,
 };
-use archaeodash_desktop::{DesktopAppInfo, DesktopFiles, DesktopGroups, DesktopImport};
+use archaeodash_desktop::{
+    DesktopAppInfo, DesktopFiles, DesktopGroups, DesktopImport, DesktopTransforms,
+};
 use std::sync::Mutex;
 
-/// Project-scoped state shared by the import, group, and file commands.
+/// Project-scoped state shared by the import, group, file, and transformation
+/// commands.
 struct DesktopState {
     import: DesktopImport,
     groups: DesktopGroups,
     files: DesktopFiles,
+    transforms: DesktopTransforms,
 }
 
 /// Smoke command exposed to the React client over Tauri IPC.
@@ -168,6 +172,84 @@ fn delete_source_file(
         .delete_source_file(file_id)
 }
 
+/// Save (upsert by name) one transformation definition (`save_transformation`).
+#[tauri::command]
+fn save_transformation(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    definition: archaeodash_contracts::TransformationDefinition,
+) -> Result<archaeodash_contracts::SaveTransformationResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .transforms
+        .save_transformation(definition)
+}
+
+/// List saved transformation summaries (`list_transformations`).
+#[tauri::command]
+fn list_transformations(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+) -> Result<archaeodash_contracts::TransformationListResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .transforms
+        .list_transformations()
+}
+
+/// Load one saved transformation definition (`load_transformation`).
+#[tauri::command]
+fn load_transformation(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    name: String,
+) -> Result<archaeodash_contracts::TransformationDefinition, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .transforms
+        .load_transformation(name)
+}
+
+/// Delete one saved transformation definition (`delete_transformation`).
+#[tauri::command]
+fn delete_transformation(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    name: String,
+) -> Result<archaeodash_contracts::TransformationDefinition, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .transforms
+        .delete_transformation(name)
+}
+
+/// One-to-one or Cartesian batch ratio-spec generation (`batch_ratio_specs`).
+#[tauri::command]
+fn batch_ratio_specs(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: BatchRatioRequest,
+) -> Result<Vec<archaeodash_contracts::RatioSpecDto>, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .transforms
+        .batch_ratio_specs(request)
+}
+
+/// Ephemeral on-demand transformation application (`apply_transformation`);
+/// calculated values are never persisted (Section 5 storage invariant).
+#[tauri::command]
+fn apply_transformation(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: ApplyTransformationRequest,
+) -> Result<archaeodash_contracts::AppliedTransformation, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .transforms
+        .apply_transformation(request)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[allow(clippy::expect_used)] // app entry point: a failed runtime start must abort startup
 pub fn run() {
@@ -176,6 +258,7 @@ pub fn run() {
             import: DesktopImport::new(),
             groups: DesktopGroups::new(),
             files: DesktopFiles::new(),
+            transforms: DesktopTransforms::new(),
         }))
         .invoke_handler(tauri::generate_handler![
             app_info,
@@ -189,7 +272,13 @@ pub fn run() {
             upload_source_file,
             source_file_metadata,
             download_source_file,
-            delete_source_file
+            delete_source_file,
+            save_transformation,
+            list_transformations,
+            load_transformation,
+            delete_transformation,
+            batch_ratio_specs,
+            apply_transformation
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

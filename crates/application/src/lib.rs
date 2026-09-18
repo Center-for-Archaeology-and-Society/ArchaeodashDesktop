@@ -8,10 +8,12 @@ use archaeodash_contracts::AppInfo;
 pub mod files;
 pub mod groups;
 pub mod import;
+pub mod transforms;
 
 pub use files::SourceFileService;
 pub use groups::GroupService;
 pub use import::ImportService;
+pub use transforms::TransformService;
 
 /// Returns application identity and readiness for the smoke use case.
 ///

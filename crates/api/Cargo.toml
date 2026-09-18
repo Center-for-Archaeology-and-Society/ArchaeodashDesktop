@@ -11,6 +11,7 @@ description = "Axum routes, middleware, and problem responses."
 archaeodash-application = { workspace = true }
 archaeodash-contracts = { workspace = true }
 archaeodash-data-io = { workspace = true }
+archaeodash-domain = { workspace = true }
 archaeodash-storage = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }

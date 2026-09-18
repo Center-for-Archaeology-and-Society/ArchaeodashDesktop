@@ -262,6 +262,151 @@ pub struct TransactionResponse {
     pub deleted_paths: Vec<String>,
 }
 
+/// Base transform applied to the measured elemental matrix before ratios
+/// (Section 8.4). Wire names match the legacy R values exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransformMethod {
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "log")]
+    Log,
+    #[serde(rename = "log10")]
+    Log10,
+    #[serde(rename = "zScore")]
+    ZScore,
+}
+
+/// Imputation method (Section 8.3). `pmm`, `midastouch`, and `rf` stay
+/// behind the experimental-parity gate until their oracle fixtures pass;
+/// the application layer rejects applying them for now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImputationMethod {
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "pmm")]
+    Pmm,
+    #[serde(rename = "midastouch")]
+    MidasTouch,
+    #[serde(rename = "rf")]
+    Rf,
+}
+
+/// One ratio definition (Section 8.2). `output_name` defaults to the
+/// deterministic `numerator_denominator` form when omitted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RatioSpecDto {
+    pub output_name: Option<String>,
+    pub numerator: String,
+    pub denominator: String,
+}
+
+/// Whether generated ratio columns are appended to the elemental matrix or
+/// replace it (legacy `ratioMode` `append`/`only`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RatioMode {
+    Append,
+    Only,
+}
+
+/// A named, persisted transformation definition (Section 8.2): column
+/// selections plus method configuration only — never calculated values
+/// (Section 5: derived values are recomputed on demand).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransformationDefinition {
+    /// User-facing name; unique per project, sanitized for storage.
+    pub name: String,
+    pub transform_method: TransformMethod,
+    /// Requires a visible/replayable seed when not `none` (Section 8.3).
+    pub imputation_method: ImputationMethod,
+    pub imputation_seed: Option<u64>,
+    /// Measured elemental columns the transform reads.
+    pub elemental_columns: Vec<String>,
+    /// Descriptive columns carried through as metadata.
+    pub descriptive_columns: Vec<String>,
+    /// Group column for selection controls.
+    pub group_column: Option<String>,
+    /// Ratio specs applied in order after the base transform.
+    pub ratios: Vec<RatioSpecDto>,
+    pub ratio_mode: RatioMode,
+}
+
+/// Listing entry for one saved transformation definition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransformationSummary {
+    pub name: String,
+    /// Unix seconds of the last save.
+    pub created_at_unix_secs: u64,
+    pub transform_method: TransformMethod,
+    pub imputation_method: ImputationMethod,
+    pub ratio_count: usize,
+}
+
+/// `POST /transformations` request: save (upsert by name) one definition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaveTransformationRequest {
+    pub definition: TransformationDefinition,
+}
+
+/// Save result: the stored definition plus whether it replaced an existing one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaveTransformationResponse {
+    pub definition: TransformationDefinition,
+    pub replaced: bool,
+}
+
+/// `GET /transformations` response: summaries sorted by name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransformationListResponse {
+    pub transformations: Vec<TransformationSummary>,
+}
+
+/// Request for one-to-one or Cartesian batch ratio generation (Section 8.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchRatioRequest {
+    pub numerators: Vec<String>,
+    pub denominators: Vec<String>,
+    /// `one_to_one` pairs by index (lengths must match); `cartesian` pairs
+    /// every combination.
+    pub mode: BatchRatioMode,
+}
+
+/// Batch generation pairing mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BatchRatioMode {
+    OneToOne,
+    Cartesian,
+}
+
+/// Ephemeral apply result: transformed values computed on demand from one
+/// group file, never persisted (Section 5 storage invariant).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppliedTransformation {
+    /// Project-relative group path the transform ran against.
+    pub path: String,
+    /// Revision the group file was at when applied.
+    pub revision_id: String,
+    /// Output column names: elemental selection (or ratios only), then
+    /// generated ratio columns in spec order.
+    pub columns: Vec<String>,
+    /// Row values in `columns` order; `null` marks NA.
+    pub rows: Vec<Vec<Option<f64>>>,
+    /// Cells made non-finite by a log transform, then zeroed (Section 8.4
+    /// warning count); always 0 for `none`/`zScore`.
+    pub non_finite_to_zero: u64,
+}
+
+/// `POST /transformations/apply` request: run one definition (inline or
+/// previously saved by name) against a group file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApplyTransformationRequest {
+    /// Project-relative group file path.
+    pub path: String,
+    /// Inline definition to apply.
+    pub definition: TransformationDefinition,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,6 +532,78 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<FileDownload>(&json).unwrap(),
             download
+        );
+    }
+
+    #[test]
+    fn transformation_dtos_round_trip() {
+        let definition = TransformationDefinition {
+            name: "log_ratio_set".into(),
+            transform_method: TransformMethod::Log10,
+            imputation_method: ImputationMethod::None,
+            imputation_seed: None,
+            elemental_columns: vec!["as".into(), "fe".into()],
+            descriptive_columns: vec!["Site".into()],
+            group_column: Some("Site".into()),
+            ratios: vec![RatioSpecDto {
+                output_name: None,
+                numerator: "as".into(),
+                denominator: "fe".into(),
+            }],
+            ratio_mode: RatioMode::Append,
+        };
+        let json = serde_json::to_string(&definition).unwrap();
+        assert_eq!(
+            serde_json::from_str::<TransformationDefinition>(&json).unwrap(),
+            definition
+        );
+        // Legacy-compatible wire names for the method enums.
+        assert!(json.contains("\"log10\""));
+        assert!(
+            serde_json::from_str::<TransformMethod>("\"zScore\"").unwrap()
+                == TransformMethod::ZScore
+        );
+        assert_eq!(
+            serde_json::to_string(&TransformMethod::ZScore).unwrap(),
+            "\"zScore\""
+        );
+        assert!(
+            serde_json::from_str::<ImputationMethod>("\"midastouch\"").unwrap()
+                == ImputationMethod::MidasTouch
+        );
+
+        let apply = ApplyTransformationRequest {
+            path: "groups/Baca.parquet".into(),
+            definition: definition.clone(),
+        };
+        let json = serde_json::to_string(&apply).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ApplyTransformationRequest>(&json).unwrap(),
+            apply
+        );
+
+        let applied = AppliedTransformation {
+            path: "groups/Baca.parquet".into(),
+            revision_id: "rev-1".into(),
+            columns: vec!["as".into(), "as_fe".into()],
+            rows: vec![vec![Some(1.5), Some(0.75)], vec![None, None]],
+            non_finite_to_zero: 0,
+        };
+        let json = serde_json::to_string(&applied).unwrap();
+        assert_eq!(
+            serde_json::from_str::<AppliedTransformation>(&json).unwrap(),
+            applied
+        );
+
+        let batch = BatchRatioRequest {
+            numerators: vec!["as".into()],
+            denominators: vec!["fe".into()],
+            mode: BatchRatioMode::Cartesian,
+        };
+        let json = serde_json::to_string(&batch).unwrap();
+        assert_eq!(
+            serde_json::from_str::<BatchRatioRequest>(&json).unwrap(),
+            batch
         );
     }
 }

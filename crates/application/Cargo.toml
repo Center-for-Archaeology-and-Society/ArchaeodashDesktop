@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 archaeodash-domain = { workspace = true }
+archaeodash-analysis = { workspace = true }
 archaeodash-contracts = { workspace = true }
 archaeodash-data-io = { workspace = true }
 archaeodash-storage = { workspace = true }
