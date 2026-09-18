@@ -299,7 +299,7 @@ impl TransformService {
 
     /// Builds the raw measured-value matrix for the required columns from one
     /// group file; `f64::NAN` marks NA (Section 8.4 numeric-frame convention).
-    fn matrix_from_group(
+    pub(crate) fn matrix_from_group(
         data: &GroupFileData,
         columns: &[String],
         context: &str,
@@ -330,26 +330,27 @@ impl TransformService {
         })
     }
 
-    /// Applies one definition to a group file: base transform, then ratios
-    /// (`append` keeps the transformed elemental columns, `only` returns just
-    /// the ratio outputs). The result is ephemeral — nothing is written.
-    pub fn apply(
-        &self,
-        req: &ApplyTransformationRequest,
-    ) -> Result<AppliedTransformation, DomainError> {
-        Self::validate(&req.definition)?;
-        let data = read_group_file(&self.root.join(&req.path))
-            .map_err(|e| DomainError::Internal(Box::new(e)))?;
-        let mut required = req.definition.elemental_columns.clone();
-        for spec in &req.definition.ratios {
+    /// Builds the transformed matrix for one definition against
+    /// already-loaded group data: validation, base transform, then ratios
+    /// (`only` mode selects just the ratio outputs). Shared by `apply` and
+    /// the ordination service; calculated values stay ephemeral (Section 5).
+    /// Returns the matrix and the non-finite-to-zero warning count.
+    pub(crate) fn apply_definition(
+        data: &GroupFileData,
+        definition: &TransformationDefinition,
+        context: &str,
+    ) -> Result<(ColumnMatrix, u64), DomainError> {
+        Self::validate(definition)?;
+        let mut required = definition.elemental_columns.clone();
+        for spec in &definition.ratios {
             for column in [&spec.numerator, &spec.denominator] {
                 if !required.contains(column) {
                     required.push(column.clone());
                 }
             }
         }
-        let matrix = Self::matrix_from_group(&data, &required, &req.path)?;
-        let (mut matrix, non_finite_to_zero) = match req.definition.transform_method {
+        let matrix = Self::matrix_from_group(data, &required, context)?;
+        let (mut matrix, non_finite_to_zero) = match definition.transform_method {
             TransformMethod::None => (matrix, 0u64),
             TransformMethod::Log => {
                 let r = log_transform(&matrix, LogBase::Natural)?;
@@ -361,8 +362,7 @@ impl TransformService {
             }
             TransformMethod::ZScore => (z_score(&matrix)?, 0),
         };
-        let specs: Vec<RatioSpec> = req
-            .definition
+        let specs: Vec<RatioSpec> = definition
             .ratios
             .iter()
             .map(|s| RatioSpec {
@@ -376,7 +376,7 @@ impl TransformService {
             .collect();
         if !specs.is_empty() {
             matrix = apply_ratios(&matrix, &specs)?;
-            if req.definition.ratio_mode == RatioMode::Only {
+            if definition.ratio_mode == RatioMode::Only {
                 let mut keep = Vec::with_capacity(specs.len());
                 for s in &specs {
                     let idx = matrix
@@ -396,6 +396,20 @@ impl TransformService {
                 matrix = ColumnMatrix { names, cols };
             }
         }
+        Ok((matrix, non_finite_to_zero))
+    }
+
+    /// Applies one definition to a group file: base transform, then ratios
+    /// (`append` keeps the transformed elemental columns, `only` returns just
+    /// the ratio outputs). The result is ephemeral — nothing is written.
+    pub fn apply(
+        &self,
+        req: &ApplyTransformationRequest,
+    ) -> Result<AppliedTransformation, DomainError> {
+        let data = read_group_file(&self.root.join(&req.path))
+            .map_err(|e| DomainError::Internal(Box::new(e)))?;
+        let (matrix, non_finite_to_zero) =
+            Self::apply_definition(&data, &req.definition, &req.path)?;
         let n_rows = matrix.n_rows();
         Ok(AppliedTransformation {
             path: req.path.clone(),

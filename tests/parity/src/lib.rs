@@ -1,6 +1,7 @@
 //! Golden parity harness helpers shared by the procedure tests.
 #![allow(clippy::expect_used)] // test-support code; a malformed golden is fatal
 
+use archaeodash_analysis::ColumnMatrix;
 use archaeodash_data_io::TextFrame;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -34,6 +35,28 @@ pub fn golden_column(rows: &[Value], name: &str) -> Vec<Option<f64>> {
             other => panic!("unexpected golden value {other:?}"),
         })
         .collect()
+}
+
+/// The oracle's `base_chem`: first 8 default chem columns of a frame.
+pub fn base_chem(frame: &TextFrame) -> Vec<String> {
+    let chem = archaeodash_data_io::default_chem_columns(&frame.columns);
+    chem.into_iter().take(8).collect()
+}
+
+/// Builds the numeric frame exactly like the oracle's `numeric_frame`:
+/// `as.numeric(as.character(x))` per column, NA for unparseable.
+pub fn numeric_frame(frame: &TextFrame, columns: &[String]) -> ColumnMatrix {
+    let cols = columns
+        .iter()
+        .map(|c| {
+            archaeodash_data_io::loader::numeric_column(frame, c)
+                .unwrap_or_else(|_| panic!("column {c} exists"))
+        })
+        .collect();
+    ColumnMatrix {
+        names: columns.to_vec(),
+        cols,
+    }
 }
 
 /// Class-E exact assertion with NaN <-> null equivalence. jsonlite wrote the

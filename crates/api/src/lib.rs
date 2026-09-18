@@ -17,14 +17,15 @@
 use std::sync::Arc;
 
 use archaeodash_application::{
-    app_info, GroupService, ImportService, SourceFileService, TransformService,
+    app_info, GroupService, ImportService, OrdinationService, SourceFileService, TransformService,
 };
 use archaeodash_contracts::{
     AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
     DeleteGroupRequest, ErrorEnvelope, GroupCandidate, GroupSummary, ImportCommitRequest,
-    ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse, MergeGroupsRequest,
-    SaveTransformationRequest, SaveTransformationResponse, StagedFile, TransactionResponse,
-    TransferUnitsRequest, TransformationDefinition, TransformationListResponse,
+    ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse, LdaRequest, LdaResponse,
+    MergeGroupsRequest, PcaRequest, PcaResponse, SaveTransformationRequest,
+    SaveTransformationResponse, StagedFile, TransactionResponse, TransferUnitsRequest,
+    TransformationDefinition, TransformationListResponse,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_domain::DomainError;
@@ -36,14 +37,15 @@ use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 
-/// Shared adapter state: one project-scoped import, group, source-file, and
-/// transformation service.
+/// Shared adapter state: one project-scoped import, group, source-file,
+/// transformation, and ordination service.
 #[derive(Clone)]
 pub struct AppState {
     pub import: Arc<ImportService>,
     pub groups: Arc<GroupService>,
     pub files: Arc<SourceFileService>,
     pub transforms: Arc<TransformService>,
+    pub ordination: Arc<OrdinationService>,
 }
 
 async fn healthz() -> Json<AppInfo> {
@@ -352,6 +354,32 @@ async fn transformations_apply(
         .map_err(domain_error_response)
 }
 
+/// `POST /api/v1/ordination/pca`: prcomp-parity PCA over one group file;
+/// results are ephemeral (Section 5 storage invariant).
+async fn ordination_pca(
+    State(state): State<AppState>,
+    Json(req): Json<PcaRequest>,
+) -> Result<Json<PcaResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .ordination
+        .pca(&req)
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
+/// `POST /api/v1/ordination/lda`: `MASS::lda` moment-method parity over one
+/// group file with the legacy three-group gate.
+async fn ordination_lda(
+    State(state): State<AppState>,
+    Json(req): Json<LdaRequest>,
+) -> Result<Json<LdaResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .ordination
+        .lda(&req)
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
 /// Builds the root router. Route groups for analysis, jobs, and auth land in
 /// their owning phases (Sections 10.1+).
 pub fn root_router(state: AppState) -> Router {
@@ -383,6 +411,8 @@ pub fn root_router(state: AppState) -> Router {
             post(transformations_batch_ratios),
         )
         .route("/api/v1/transformations/apply", post(transformations_apply))
+        .route("/api/v1/ordination/pca", post(ordination_pca))
+        .route("/api/v1/ordination/lda", post(ordination_lda))
         .with_state(state)
 }
 
@@ -410,6 +440,7 @@ mod tests {
             groups: Arc::new(GroupService::new(dir.path()).expect("group service")),
             files: Arc::new(SourceFileService::new(dir.path()).expect("file service")),
             transforms: Arc::new(TransformService::new(dir.path()).expect("transform service")),
+            ordination: Arc::new(OrdinationService::new(dir.path()).expect("ordination service")),
         };
         (state, dir)
     }
@@ -422,6 +453,7 @@ mod tests {
         )
         .expect("write source");
         let response = app
+            .clone()
             .oneshot(
                 axum::http::Request::post("/api/v1/imports/commit")
                     .header("content-type", "application/json")
@@ -503,6 +535,7 @@ mod tests {
 
         // Commit: one validated group file per partition.
         let response = app
+            .clone()
             .oneshot(
                 axum::http::Request::post("/api/v1/imports/commit")
                     .header("content-type", "application/json")
@@ -627,6 +660,7 @@ mod tests {
 
         // Merge both groups into one through the journaled transaction.
         let response = app
+            .clone()
             .oneshot(
                 axum::http::Request::post("/api/v1/groups/merge")
                     .header("content-type", "application/json")
@@ -711,6 +745,7 @@ mod tests {
 
         // Deleting again now fails: the file no longer validates as a group.
         let response = app
+            .clone()
             .oneshot(
                 axum::http::Request::delete(&format!(
                     "/api/v1/groups/{path}?expected_revision=rev-1&confirm_path={path}"
@@ -814,6 +849,7 @@ mod tests {
         assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
 
         let response = app
+            .clone()
             .oneshot(
                 axum::http::Request::post("/api/v1/files?path=sources%2Fmini.csv")
                     .header("content-type", "application/octet-stream")
@@ -867,6 +903,7 @@ mod tests {
 
         // Unknown file ID: 404.
         let response = app
+            .clone()
             .oneshot(
                 axum::http::Request::get("/api/v1/files/01900000-0000-7000-8000-00000000000f")
                     .body(Body::empty())
@@ -1051,6 +1088,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         let response = app
+            .clone()
             .oneshot(
                 axum::http::Request::get("/api/v1/transformations/log%20ratios")
                     .body(Body::empty())
@@ -1086,5 +1124,220 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let envelope: ErrorEnvelope = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(envelope.code, "parse_error");
+    }
+
+    /// Phase 4 ordination surface: PCA over one committed group file returns
+    /// ephemeral results; a bad column is a 422 validation error.
+    #[tokio::test]
+    async fn ordination_pca_round_trip_and_validation_error() {
+        let (state, dir) = test_state();
+        let app = root_router(state.clone());
+        let commit = commit_fixture(app.clone(), &dir).await;
+        let path = commit.groups[0].path.clone();
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/ordination/pca")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&PcaRequest {
+                            path: path.clone(),
+                            columns: vec!["as".into(), "fe".into()],
+                            scale: false,
+                            transformation: None,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let pca: PcaResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(pca.path, path);
+        assert_eq!(pca.score_names, vec!["PC1", "PC2"]);
+        assert_eq!(pca.scores.len(), commit.groups[0].row_count as usize);
+        assert_eq!(pca.rotation.len(), 2);
+        assert!(pca.scale.is_none());
+
+        // Missing elemental column -> 422 validation envelope.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/ordination/pca")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&PcaRequest {
+                            path,
+                            columns: vec!["cu".into()],
+                            scale: false,
+                            transformation: None,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let envelope: ErrorEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(envelope.code, "validation_error");
+    }
+
+    /// LDA over a merged three-group file through the HTTP adapter, plus the
+    /// legacy three-group minimum gate as a 422.
+    #[tokio::test]
+    async fn ordination_lda_round_trip_and_group_gate() {
+        let (state, dir) = test_state();
+        let app = root_router(state.clone());
+        // Three groups so the merged file passes the legacy minimum.
+        std::fs::write(
+            dir.path().join("three.csv"),
+            "anid,Site,as,fe\nA1,A,1.5,3\nA2,A,2,4\nB1,B,5,6\nB2,B,6,8\nC1,C,9,1\nC2,C,11,2\n",
+        )
+        .expect("write source");
+        let import_response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/imports/commit")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ImportCommitRequest {
+                            source: "three.csv".into(),
+                            group_column: "Site".into(),
+                            visible_id_column: None,
+                            elemental_columns: None,
+                            recipe: None,
+                            destination_dir: None,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(import_response.status(), axum::http::StatusCode::OK);
+        let bytes = import_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let import: ImportCommitResponse = serde_json::from_slice(&bytes).unwrap();
+        let sources: Vec<String> = import.groups.iter().map(|g| g.path.clone()).collect();
+        let merge_response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/groups/merge")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&MergeGroupsRequest {
+                            sources,
+                            new_group_name: "Merged".into(),
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(merge_response.status(), axum::http::StatusCode::OK);
+        let bytes = merge_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let merge: TransactionResponse = serde_json::from_slice(&bytes).unwrap();
+        let merged_path = merge.outputs[0].path.clone();
+        let merged_rows = merge.outputs[0].row_count;
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/ordination/lda")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&LdaRequest {
+                            path: merged_path,
+                            columns: vec!["as".into(), "fe".into()],
+                            group_column: "Site".into(),
+                            transformation: None,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let lda: LdaResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(lda.levels.len(), 3);
+        assert_eq!(lda.score_names, vec!["LD1", "LD2"]);
+        assert_eq!(lda.scores.len(), merged_rows as usize);
+
+        // Two visible groups cannot support LDA: 422 with the legacy gate.
+        // Merge the two-group fixture into one file spanning both levels.
+        let pair_commit = commit_fixture(app.clone(), &dir).await;
+        let pair_sources: Vec<String> = pair_commit.groups.iter().map(|g| g.path.clone()).collect();
+        let pair_merge_response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/groups/merge")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&MergeGroupsRequest {
+                            sources: pair_sources,
+                            new_group_name: "Pair".into(),
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(pair_merge_response.status(), axum::http::StatusCode::OK);
+        let bytes = pair_merge_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let pair_merge: TransactionResponse = serde_json::from_slice(&bytes).unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/ordination/lda")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&LdaRequest {
+                            path: pair_merge.outputs[0].path.clone(),
+                            columns: vec!["as".into(), "fe".into()],
+                            group_column: "Site".into(),
+                            transformation: None,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            status,
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "gate body: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let envelope: ErrorEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert!(envelope.message.contains("LDA requires at least 3 groups"));
     }
 }

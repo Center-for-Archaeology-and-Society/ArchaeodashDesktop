@@ -3,11 +3,17 @@
 //! rounding), `log10`/`log` (rounding + non-finite-to-zero with warning
 //! counts), and ratio application (null when the denominator is null or zero).
 
+pub mod lda;
+pub mod pca;
+
 use archaeodash_data_io::rnum::r_round;
 use archaeodash_domain::DomainError;
 
+pub use lda::{lda, Lda, LEGACY_LDA_TOL};
+pub use pca::{apply_sign_flips, component_sign_flips, pca, Pca};
+
 /// 3-decimal R-compatible rounding used by the z-score and log contracts.
-fn r_round3(v: f64) -> f64 {
+pub(crate) fn r_round3(v: f64) -> f64 {
     r_round(v, 3)
 }
 
@@ -34,7 +40,7 @@ impl ColumnMatrix {
 }
 
 /// Neumaier compensated sum, approximating R's long-double accumulation.
-fn sum(values: impl Iterator<Item = f64>) -> f64 {
+pub(crate) fn sum(values: impl Iterator<Item = f64>) -> f64 {
     let mut sum = 0.0f64;
     let mut c = 0.0f64;
     for v in values {

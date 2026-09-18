@@ -407,6 +407,96 @@ pub struct ApplyTransformationRequest {
     pub definition: TransformationDefinition,
 }
 
+/// `POST /ordination/pca` request: prcomp-parity PCA over one group file
+/// (Section 8.5). Ordination results are ephemeral and never persisted
+/// (Section 5 storage invariant).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PcaRequest {
+    /// Project-relative group file path.
+    pub path: String,
+    /// Columns to ordinate: measured elemental names, or post-transform
+    /// output names when `transformation` is present.
+    pub columns: Vec<String>,
+    /// `prcomp` `scale.` flag: divide centered columns by their sample sd.
+    #[serde(default)]
+    pub scale: bool,
+    /// Optional transformation applied to the group matrix first (Section 8.2
+    /// definition, applied on demand from measured values).
+    pub transformation: Option<TransformationDefinition>,
+}
+
+/// PCA result: `prcomp` parity outputs with deterministic component signs
+/// (each component's largest-|value| loading is positive).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PcaResponse {
+    pub path: String,
+    /// Revision the group file was at when computed.
+    pub revision_id: String,
+    /// Input column names, in request order.
+    pub column_names: Vec<String>,
+    /// Component names `PC1..PCk`.
+    pub score_names: Vec<String>,
+    /// Component standard deviations `d / sqrt(n - 1)`.
+    pub sdev: Vec<f64>,
+    /// `sdev^2` shares of total variance.
+    pub explained_variance: Vec<f64>,
+    /// Running sum of `explained_variance`.
+    pub cumulative_variance: Vec<f64>,
+    /// Column means subtracted before decomposition.
+    pub center: Vec<f64>,
+    /// Column sample sds when `scale` was requested, else `None`.
+    pub scale: Option<Vec<f64>>,
+    /// Loadings, variable-major rows (`rotation[v][k]` like R's matrix).
+    pub rotation: Vec<Vec<f64>>,
+    /// Scores, row-major (`scores[i][k]` like R's `pca$x`).
+    pub scores: Vec<Vec<f64>>,
+}
+
+/// `POST /ordination/lda` request: `MASS::lda` moment-method parity over one
+/// group file, with the legacy three-group minimum gate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LdaRequest {
+    /// Project-relative group file path.
+    pub path: String,
+    /// Columns to ordinate: measured elemental names, or post-transform
+    /// output names when `transformation` is present.
+    pub columns: Vec<String>,
+    /// Descriptive column holding the grouping factor.
+    pub group_column: String,
+    /// Optional transformation applied to the group matrix first.
+    pub transformation: Option<TransformationDefinition>,
+}
+
+/// LDA result: priors, group means, discriminant scaling, singular values,
+/// and scores with deterministic signs (largest-|value| scaling entry per
+/// discriminant is positive).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LdaResponse {
+    pub path: String,
+    pub revision_id: String,
+    /// Input column names, in request order.
+    pub column_names: Vec<String>,
+    /// Factor levels in sorted order; `prior`, `counts`, and `means` rows
+    /// follow this order.
+    pub levels: Vec<String>,
+    /// Level proportions `counts / n`.
+    pub prior: Vec<f64>,
+    /// Row counts per level.
+    pub counts: Vec<u64>,
+    /// Group means, level-major rows (`means[g][j]`).
+    pub means: Vec<Vec<f64>>,
+    /// Discriminant loadings, variable-major rows (`scaling[v][k]`).
+    pub scaling: Vec<Vec<f64>>,
+    /// Stage-2 singular values kept (`svd[1:rank]`).
+    pub svd: Vec<f64>,
+    /// Discriminant names `LD1..LDk`.
+    pub score_names: Vec<String>,
+    /// Scores, row-major, each column re-centered to mean zero (the legacy
+    /// capture convention).
+    pub scores: Vec<Vec<f64>>,
+    /// Non-fatal legacy warnings (collinearity downgrades the rank).
+    pub warnings: Vec<String>,
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,6 +694,81 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<BatchRatioRequest>(&json).unwrap(),
             batch
+        );
+    }
+
+    #[test]
+    fn ordination_dtos_round_trip() {
+        let pca_request = PcaRequest {
+            path: "groups/Baca.parquet".into(),
+            columns: vec!["as".into(), "fe".into()],
+            scale: false,
+            transformation: None,
+        };
+        let json = serde_json::to_string(&pca_request).unwrap();
+        assert_eq!(
+            serde_json::from_str::<PcaRequest>(&json).unwrap(),
+            pca_request
+        );
+        // `scale` defaults to false on the wire.
+        assert_eq!(
+            serde_json::from_str::<PcaRequest>(
+                "{\"path\":\"groups/Baca.parquet\",\"columns\":[\"as\"]}"
+            )
+            .unwrap()
+            .scale,
+            false
+        );
+
+        let pca_response = PcaResponse {
+            path: "groups/Baca.parquet".into(),
+            revision_id: "rev-1".into(),
+            column_names: vec!["as".into()],
+            score_names: vec!["PC1".into()],
+            sdev: vec![1.5],
+            explained_variance: vec![1.0],
+            cumulative_variance: vec![1.0],
+            center: vec![2.0],
+            scale: None,
+            rotation: vec![vec![1.0]],
+            scores: vec![vec![0.5], vec![-0.5]],
+        };
+        let json = serde_json::to_string(&pca_response).unwrap();
+        assert_eq!(
+            serde_json::from_str::<PcaResponse>(&json).unwrap(),
+            pca_response
+        );
+
+        let lda_request = LdaRequest {
+            path: "groups/Baca.parquet".into(),
+            columns: vec!["as".into(), "fe".into()],
+            group_column: "Site".into(),
+            transformation: None,
+        };
+        let json = serde_json::to_string(&lda_request).unwrap();
+        assert_eq!(
+            serde_json::from_str::<LdaRequest>(&json).unwrap(),
+            lda_request
+        );
+
+        let lda_response = LdaResponse {
+            path: "groups/Baca.parquet".into(),
+            revision_id: "rev-1".into(),
+            column_names: vec!["as".into()],
+            levels: vec!["Baca".into(), "Hooper".into()],
+            prior: vec![0.5, 0.5],
+            counts: vec![1, 2],
+            means: vec![vec![1.5], vec![4.0]],
+            scaling: vec![vec![-0.707]],
+            svd: vec![2.5],
+            score_names: vec!["LD1".into()],
+            scores: vec![vec![-0.6], vec![0.3], vec![0.3]],
+            warnings: vec![],
+        };
+        let json = serde_json::to_string(&lda_response).unwrap();
+        assert_eq!(
+            serde_json::from_str::<LdaResponse>(&json).unwrap(),
+            lda_response
         );
     }
 }
