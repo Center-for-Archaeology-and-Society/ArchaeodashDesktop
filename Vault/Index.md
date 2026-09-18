@@ -37,6 +37,10 @@ Up: [[../../Vault/Index]]
 - [[Phase_2_Source_File_Catalog_2026-09-17]]
 - [[Phase_3_Transform_Definitions_2026-09-17]]
 - [[Phase_4_Ordination_PCA_LDA_Research_2026-09-17]]
+- [[OpenCode_Context_Cache_Plugin_Installation_2026-09-18]]
+- [[Fast_Edit_RS_Skill_Installation_2026-09-18]]
+- [[OpenCode_Multiagent_Workflow_2026-09-18]]
+- [[Phase_4_LDA_HTTP_Adapter_And_Group_Gate_Test_2026-09-18]]
 
 ## Notes
 - This vault uses atomic notes (one concept per file) linked with `[[Wikilinks]]`.
