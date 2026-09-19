@@ -207,6 +207,57 @@ pub struct DeleteGroupRequest {
     pub confirm_path: String,
 }
 
+/// One hidden-UUID-addressed descriptive edit (Section 13 `R/updateCurrent.R`):
+/// set one descriptive cell of the row with the given analytical UUID; `None`
+/// clears the cell to empty/NA. Elemental and identity columns are rejected
+/// by the use case.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DescriptiveEdit {
+    /// Hidden analytical UUID of the edited row (never the visible id).
+    pub analytical_uuid: String,
+    /// Descriptive column name, in `roles.descriptive` order.
+    pub column: String,
+    /// New cell value; `None` clears it (legacy NA).
+    pub value: Option<String>,
+}
+
+/// `PATCH /groups/descriptive-values` request: batch descriptive edits on
+/// one group file guarded by the revision the caller last read. Elemental
+/// columns are locked (Section 4 Phase 4: "descriptive-edit table with
+/// elemental columns locked").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PatchDescriptiveValuesRequest {
+    /// Project-relative group file path.
+    pub path: String,
+    /// Revision the caller last read; a mismatch is a conflict.
+    pub expected_revision: String,
+    /// Edits applied in order; one transaction for the whole batch.
+    pub edits: Vec<DescriptiveEdit>,
+}
+
+/// `POST /groups/duplicate` request: duplicate one whole group to a new
+/// path. UUIDs and source lineage are preserved by default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DuplicateGroupRequest {
+    /// Project-relative path of the group file to duplicate.
+    pub source_path: String,
+    /// Revision the caller last read; a mismatch is a conflict.
+    pub expected_revision: String,
+    /// Name of the new group; the sanitized id derives the destination path
+    /// when `destination_path` is omitted.
+    pub new_group_name: String,
+    /// Optional explicit project-relative destination path; must not exist.
+    #[serde(default)]
+    pub destination_path: Option<String>,
+    /// Preserve analytical UUIDs and source lineage (Section 10.2 default).
+    #[serde(default = "default_true")]
+    pub preserve_uuids: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// Metadata for one uploaded source file (Section 10.2 `GET /files/{id}`,
 /// local Phase-2 form: the quarantine record under `.archaeodash/quarantine`
 /// is the file catalog until the hosted control plane lands in Phase 7).

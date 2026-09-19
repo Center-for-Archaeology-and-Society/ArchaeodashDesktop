@@ -89,6 +89,14 @@ pub enum TransactionAction {
     /// Delete one group file after revision/checksum preconditions pass;
     /// the original is archived by the Section 6.8 backup protocol.
     DeleteGroup,
+    /// Batch hidden-UUID-addressed descriptive edits on one group file;
+    /// measured elemental values are never touched (Section 13
+    /// `R/updateCurrent.R`).
+    PatchDescriptive,
+    /// Duplicate one whole group to a new path, preserving analytical UUIDs
+    /// and source lineage by default (Section 10.2
+    /// `POST /groups/{id}/duplicate`).
+    DuplicateGroup,
 }
 
 /// Journal record for one multi-file transaction (Section 6.8). Serialized to

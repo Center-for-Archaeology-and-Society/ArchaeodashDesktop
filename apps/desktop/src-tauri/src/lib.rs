@@ -2,10 +2,10 @@
 //! crate (crates/desktop), which calls the shared application use cases.
 
 use archaeodash_contracts::{
-    ApplyTransformationRequest, BatchRatioRequest, DeleteGroupRequest,
+    ApplyTransformationRequest, BatchRatioRequest, DeleteGroupRequest, DuplicateGroupRequest,
     ExploreCompositionalProfileRequest, ExploreCrosstabRequest, ExploreHistogramRequest,
     ExploreMissingProfileRequest, ImportCommitRequest, ImportPreviewRequest, MergeGroupsRequest,
-    TransferUnitsRequest,
+    PatchDescriptiveValuesRequest, TransferUnitsRequest,
 };
 use archaeodash_desktop::{
     DesktopAppInfo, DesktopExplore, DesktopFiles, DesktopGroups, DesktopImport, DesktopTransforms,
@@ -118,6 +118,33 @@ fn delete_group(
         .map_err(|e| e.to_string())?
         .groups
         .delete_group(request)
+}
+
+/// Batch hidden-UUID-addressed descriptive edits (`patch_descriptive_values`).
+#[tauri::command]
+fn patch_descriptive_values(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: PatchDescriptiveValuesRequest,
+) -> Result<archaeodash_contracts::TransactionResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .groups
+        .patch_descriptive_values(request)
+}
+
+/// Duplicate one whole group (`duplicate_group`), preserving UUIDs and
+/// lineage by default.
+#[tauri::command]
+fn duplicate_group(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: DuplicateGroupRequest,
+) -> Result<archaeodash_contracts::TransactionResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .groups
+        .duplicate_group(request)
 }
 
 /// Stage-upload a source file through the bounded quarantine and promote it
@@ -325,6 +352,8 @@ pub fn run() {
             transfer_units,
             merge_groups,
             delete_group,
+            patch_descriptive_values,
+            duplicate_group,
             upload_source_file,
             source_file_metadata,
             download_source_file,

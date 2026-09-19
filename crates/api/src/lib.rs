@@ -22,14 +22,14 @@ use archaeodash_application::{
 };
 use archaeodash_contracts::{
     AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
-    DeleteGroupRequest, ErrorEnvelope, ExploreCompositionalProfileRequest,
+    DeleteGroupRequest, DuplicateGroupRequest, ErrorEnvelope, ExploreCompositionalProfileRequest,
     ExploreCompositionalProfileResponse, ExploreCrosstabRequest, ExploreCrosstabResponse,
     ExploreHistogramRequest, ExploreHistogramResponse, ExploreMissingProfileRequest,
     ExploreMissingProfileResponse, GroupCandidate, GroupSummary, ImportCommitRequest,
     ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse, LdaRequest, LdaResponse,
-    MergeGroupsRequest, PcaRequest, PcaResponse, SaveTransformationRequest,
-    SaveTransformationResponse, StagedFile, TransactionResponse, TransferUnitsRequest,
-    TransformationDefinition, TransformationListResponse,
+    MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest, PcaResponse,
+    SaveTransformationRequest, SaveTransformationResponse, StagedFile, TransactionResponse,
+    TransferUnitsRequest, TransformationDefinition, TransformationListResponse,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_domain::DomainError;
@@ -38,7 +38,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 
 /// Shared adapter state: one project-scoped import, group, source-file,
@@ -149,6 +149,33 @@ async fn groups_merge(
     state
         .groups
         .merge_groups(&req)
+        .map(Json)
+        .map_err(store_error_response)
+}
+
+/// `PATCH /api/v1/groups/descriptive-values`: batch hidden-UUID-addressed
+/// descriptive edits in one journaled transaction; elemental columns are
+/// locked (Section 4 Phase 4).
+async fn groups_patch_descriptive_values(
+    State(state): State<AppState>,
+    Json(req): Json<PatchDescriptiveValuesRequest>,
+) -> Result<Json<TransactionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .groups
+        .patch_descriptive_values(&req)
+        .map(Json)
+        .map_err(store_error_response)
+}
+
+/// `POST /api/v1/groups/duplicate`: duplicate one whole group, preserving
+/// analytical UUIDs and lineage by default (Section 10.2).
+async fn groups_duplicate(
+    State(state): State<AppState>,
+    Json(req): Json<DuplicateGroupRequest>,
+) -> Result<Json<TransactionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .groups
+        .duplicate_group(&req)
         .map(Json)
         .map_err(store_error_response)
 }
@@ -452,6 +479,11 @@ pub fn root_router(state: AppState) -> Router {
         .route("/api/v1/groups/validate", post(groups_validate))
         .route("/api/v1/groups/transfer-units", post(groups_transfer_units))
         .route("/api/v1/groups/merge", post(groups_merge))
+        .route(
+            "/api/v1/groups/descriptive-values",
+            patch(groups_patch_descriptive_values),
+        )
+        .route("/api/v1/groups/duplicate", post(groups_duplicate))
         .route("/api/v1/groups/{*path}", delete(groups_delete))
         .route(
             "/api/v1/transformations",
@@ -487,8 +519,8 @@ mod tests {
 
     use super::*;
     use archaeodash_contracts::{
-        BatchRatioMode, CrosstabRows, ImputationMethod, RatioMode, RatioSpecDto, TransferAction,
-        TransformMethod,
+        BatchRatioMode, CrosstabRows, DescriptiveEdit, DuplicateGroupRequest, ImputationMethod,
+        PatchDescriptiveValuesRequest, RatioMode, RatioSpecDto, TransferAction, TransformMethod,
     };
     use axum::body::Body;
     use http_body_util::BodyExt;
@@ -1554,5 +1586,135 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let envelope: ErrorEnvelope = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(envelope.code, "validation_error");
+    }
+
+    #[tokio::test]
+    async fn descriptive_patch_and_duplicate_round_trip_over_http() {
+        let (state, dir) = test_state();
+        let app = root_router(state);
+        let commit = commit_fixture(app.clone(), &dir).await;
+        let path = commit.groups[0].path.clone();
+
+        // Hidden analytical UUID of the first row, read straight from the
+        // committed group file.
+        let before = archaeodash_data_io::read_group_file(dir.path().join(&path).as_path())
+            .expect("read group");
+        let uuid = before.rows[0].uuid.to_string();
+        let revision = before.profile.revision_id.clone();
+        drop(before);
+
+        // PATCH descriptive-values edits one cell by UUID.
+        let patch = PatchDescriptiveValuesRequest {
+            path: path.clone(),
+            expected_revision: revision,
+            edits: vec![DescriptiveEdit {
+                analytical_uuid: uuid,
+                column: "Site".into(),
+                value: Some("Zed".into()),
+            }],
+        };
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::patch("/api/v1/groups/descriptive-values")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&patch).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let tx: TransactionResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(tx.action, "patch_descriptive_values");
+        assert_eq!(tx.outputs[0].revision_id, "rev-2");
+
+        // The elemental values are untouched; the descriptive cell changed.
+        let after = archaeodash_data_io::read_group_file(dir.path().join(&path).as_path())
+            .expect("read patched");
+        assert_eq!(after.rows[0].descriptive[0].as_deref(), Some("Zed"));
+
+        // Stale revision conflicts (409).
+        let stale = PatchDescriptiveValuesRequest {
+            path: path.clone(),
+            expected_revision: "rev-1".into(),
+            edits: vec![DescriptiveEdit {
+                analytical_uuid: after.rows[1].uuid.to_string(),
+                column: "Site".into(),
+                value: None,
+            }],
+        };
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::patch("/api/v1/groups/descriptive-values")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&stale).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+
+        // POST duplicate preserves UUIDs and lineage into a new group file.
+        let duplicate = DuplicateGroupRequest {
+            source_path: path.clone(),
+            expected_revision: "rev-2".into(),
+            new_group_name: "Baca Copy".into(),
+            destination_path: None,
+            preserve_uuids: true,
+        };
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/groups/duplicate")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&duplicate).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let tx: TransactionResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(tx.action, "duplicate_group");
+        assert_eq!(tx.outputs[0].path, "groups/Baca_Copy.parquet");
+
+        let copy = archaeodash_data_io::read_group_file(
+            dir.path().join("groups/Baca_Copy.parquet").as_path(),
+        )
+        .expect("read duplicate");
+        assert_eq!(copy.rows.len(), after.rows.len());
+        let source_uuids: Vec<_> = after.rows.iter().map(|r| r.uuid).collect();
+        let copy_uuids: Vec<_> = copy.rows.iter().map(|r| r.uuid).collect();
+        assert_eq!(source_uuids, copy_uuids, "UUIDs preserved by default");
+        assert_eq!(copy.profile.source_path, after.profile.source_path);
+
+        // Elemental-column edits are rejected with the lock message (422).
+        let locked = PatchDescriptiveValuesRequest {
+            path,
+            expected_revision: "rev-2".into(),
+            edits: vec![DescriptiveEdit {
+                analytical_uuid: copy.rows[0].uuid.to_string(),
+                column: "as".into(),
+                value: Some("9".into()),
+            }],
+        };
+        let response = app
+            .oneshot(
+                axum::http::Request::patch("/api/v1/groups/descriptive-values")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&locked).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let envelope: ErrorEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert!(envelope.message.contains("not a descriptive column"));
     }
 }

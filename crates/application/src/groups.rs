@@ -5,10 +5,12 @@
 use std::path::PathBuf;
 
 use archaeodash_contracts::{
-    DeleteGroupRequest, GroupCandidate, GroupSummary, MergeGroupsRequest, TransactionResponse,
-    TransferAction, TransferUnitsRequest,
+    DeleteGroupRequest, DuplicateGroupRequest, GroupCandidate, GroupSummary, MergeGroupsRequest,
+    PatchDescriptiveValuesRequest, TransactionResponse, TransferAction, TransferUnitsRequest,
 };
-use archaeodash_data_io::{sanitize_group_name, scan_project, GroupFileData, GroupProfile};
+use archaeodash_data_io::{
+    sanitize_group_name, scan_project, GroupFileData, GroupProfile, GroupRow,
+};
 use archaeodash_file_store_fs::FsGroupFileStore;
 use archaeodash_storage::{
     plan_copy, plan_merge, plan_move, FileInput, GroupFileStore, PlannedOutput, StoreError,
@@ -218,6 +220,17 @@ impl GroupService {
                     "delete_group uses delete_group, not transfer_units".to_string(),
                 ));
             }
+            TransactionAction::PatchDescriptive => {
+                return Err(StoreError::Invariant(
+                    "patch_descriptive_values uses patch_descriptive_values, not transfer_units"
+                        .to_string(),
+                ));
+            }
+            TransactionAction::DuplicateGroup => {
+                return Err(StoreError::Invariant(
+                    "duplicate_group uses duplicate_group, not transfer_units".to_string(),
+                ));
+            }
         };
 
         if let Some(dest) = &dest_data {
@@ -329,6 +342,191 @@ impl GroupService {
             deleted_paths: vec![req.path.clone()],
         })
     }
+
+    /// Batch hidden-UUID-addressed descriptive edits through one journaled
+    /// transaction (Section 10.2 `PATCH /groups/{id}/descriptive-values`).
+    /// Elemental and identity columns are locked: only `roles.descriptive`
+    /// columns accept edits, and the measured-elemental checksum precondition
+    /// fails the transaction if the elemental values moved underneath.
+    pub fn patch_descriptive_values(
+        &self,
+        req: &PatchDescriptiveValuesRequest,
+    ) -> Result<TransactionResponse, StoreError> {
+        if req.edits.is_empty() {
+            return Err(StoreError::Invariant(
+                "descriptive edit batch is empty".to_string(),
+            ));
+        }
+        let data = self.store.read_group(&req.path)?;
+        if data.profile.revision_id != req.expected_revision {
+            return Err(StoreError::RevisionConflict {
+                path: req.path.clone(),
+                expected: req.expected_revision.clone(),
+                found: data.profile.revision_id.clone(),
+            });
+        }
+        let roles = &data.profile.roles;
+
+        // Column locks: elemental values are never edited, and the hidden
+        // identity/visible-id/legacy-rowid columns are not descriptive data.
+        let mut column_indices = Vec::with_capacity(req.edits.len());
+        for edit in &req.edits {
+            let idx = roles
+                .descriptive
+                .iter()
+                .position(|c| c == &edit.column)
+                .ok_or_else(|| {
+                    StoreError::Invariant(format!(
+                        "column {:?} is not a descriptive column and cannot be edited",
+                        edit.column
+                    ))
+                })?;
+            column_indices.push(idx);
+        }
+
+        // Resolve every edit target up front so a bad UUID or unknown column
+        // aborts before any write.
+        let mut row_by_uuid: std::collections::HashMap<Uuid, usize> =
+            std::collections::HashMap::new();
+        for (index, row) in data.rows.iter().enumerate() {
+            row_by_uuid.insert(row.uuid, index);
+        }
+        let mut applied: Vec<(usize, usize, Option<String>)> = Vec::with_capacity(req.edits.len());
+        let mut edited_uuids: Vec<Uuid> = Vec::with_capacity(req.edits.len());
+        for (edit, column_index) in req.edits.iter().zip(&column_indices) {
+            let uuid = Self::parse_uuids(std::slice::from_ref(&edit.analytical_uuid))?
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    StoreError::Invariant(
+                        "parse_uuids returned no uuid for the edit target".to_string(),
+                    )
+                })?;
+            let row_index = *row_by_uuid.get(&uuid).ok_or_else(|| {
+                StoreError::Invariant(format!(
+                    "analytical uuid {:?} is not present in {}",
+                    edit.analytical_uuid, req.path
+                ))
+            })?;
+            applied.push((row_index, *column_index, edit.value.clone()));
+            edited_uuids.push(uuid);
+        }
+
+        let mut rows = data.rows.clone();
+        for (row_index, column_index, value) in applied {
+            rows[row_index].descriptive[column_index] = value;
+        }
+
+        let out = PlannedOutput {
+            path: req.path.clone(),
+            group_id: data.profile.group_id.clone(),
+            group_name: data.profile.group_name.clone(),
+            // Stamped fresh by the executor when publishing the successor.
+            revision_id: Self::next_revision(&data.profile.revision_id),
+            rows,
+            roles: data.profile.roles.clone(),
+            recipe: data.profile.import_recipe.clone(),
+            source_path: data.profile.source_path.clone(),
+            source_sha256: data.profile.source_sha256.clone(),
+        };
+        let tx = Transaction {
+            action: TransactionAction::PatchDescriptive,
+            inputs: vec![Self::input_of(&req.path, &data)],
+            outputs: vec![out],
+            delete_paths: Vec::new(),
+            selected_uuids: edited_uuids,
+        };
+        let transaction_id = self.store.execute(&tx)?;
+        let updated = self.store.read_group(&req.path)?;
+        Ok(TransactionResponse {
+            transaction_id,
+            action: "patch_descriptive_values".to_string(),
+            outputs: vec![Self::summary(&req.path, &updated.profile)],
+            deleted_paths: Vec::new(),
+        })
+    }
+
+    /// Duplicates one whole group to a new path through a journaled
+    /// transaction (Section 10.2 `POST /groups/{id}/duplicate`). UUIDs and
+    /// source lineage are preserved by default; `preserve_uuids = false`
+    /// mints fresh UUIDv7 identities for every row.
+    pub fn duplicate_group(
+        &self,
+        req: &DuplicateGroupRequest,
+    ) -> Result<TransactionResponse, StoreError> {
+        let source = self.store.read_group(&req.source_path)?;
+        if source.profile.revision_id != req.expected_revision {
+            return Err(StoreError::RevisionConflict {
+                path: req.source_path.clone(),
+                expected: req.expected_revision.clone(),
+                found: source.profile.revision_id.clone(),
+            });
+        }
+        let group_id = sanitize_group_name(&req.new_group_name);
+        if group_id.is_empty() {
+            return Err(StoreError::Invariant(
+                "new_group_name sanitizes to an empty group id".to_string(),
+            ));
+        }
+        let destination_path = match &req.destination_path {
+            Some(path) => path.clone(),
+            None => format!("groups/{group_id}.parquet"),
+        };
+        if destination_path == req.source_path {
+            return Err(StoreError::Invariant(
+                "duplicate destination must differ from the source".to_string(),
+            ));
+        }
+        let dest_abs = self.store.resolve(&destination_path)?;
+        if dest_abs.exists() {
+            return Err(StoreError::Invariant(format!(
+                "duplicate destination {destination_path} already exists"
+            )));
+        }
+
+        let rows: Vec<GroupRow> = source
+            .rows
+            .iter()
+            .map(|row| GroupRow {
+                uuid: if req.preserve_uuids {
+                    row.uuid
+                } else {
+                    Uuid::now_v7()
+                },
+                visible: row.visible.clone(),
+                legacy_rowid: row.legacy_rowid.clone(),
+                descriptive: row.descriptive.clone(),
+                elemental: row.elemental.clone(),
+            })
+            .collect();
+        let out = PlannedOutput {
+            path: destination_path,
+            group_id: group_id.clone(),
+            group_name: req.new_group_name.clone(),
+            revision_id: "rev-1".to_string(),
+            rows,
+            roles: source.profile.roles.clone(),
+            recipe: source.profile.import_recipe.clone(),
+            // Lineage: the duplicate keeps pointing at the original import
+            // source, matching "preserve UUIDs and lineage by default".
+            source_path: source.profile.source_path.clone(),
+            source_sha256: source.profile.source_sha256.clone(),
+        };
+        let tx = Transaction {
+            action: TransactionAction::DuplicateGroup,
+            inputs: vec![Self::input_of(&req.source_path, &source)],
+            outputs: vec![out.clone()],
+            delete_paths: Vec::new(),
+            selected_uuids: source.rows.iter().map(|r| r.uuid).collect(),
+        };
+        let transaction_id = self.store.execute(&tx)?;
+        Ok(TransactionResponse {
+            transaction_id,
+            action: "duplicate_group".to_string(),
+            outputs: vec![Self::summary_of_output(&out.path, &out)],
+            deleted_paths: Vec::new(),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -337,7 +535,9 @@ mod tests {
 
     use super::*;
     use crate::import::ImportService;
-    use archaeodash_contracts::ImportCommitRequest;
+    use archaeodash_contracts::{
+        DescriptiveEdit, DuplicateGroupRequest, ImportCommitRequest, PatchDescriptiveValuesRequest,
+    };
     use archaeodash_data_io::read_group_file;
 
     fn commit_two_groups(root: &std::path::Path) -> (GroupService, Vec<String>) {
@@ -575,5 +775,130 @@ mod tests {
         // The scan no longer lists the deleted group.
         let candidates = service.scan_candidates().expect("scan");
         assert!(!candidates.iter().any(|c| c.path == paths[0]));
+    }
+
+    #[test]
+    fn patch_descriptive_values_edits_by_uuid_and_bumps_revision() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, paths) = commit_two_groups(dir.path());
+        let before = read_group_file(&dir.path().join(&paths[0])).expect("read before");
+        let uuid = before.rows[0].uuid.to_string();
+        let original_elemental = before.rows[0].elemental.clone();
+
+        let resp = service
+            .patch_descriptive_values(&PatchDescriptiveValuesRequest {
+                path: paths[0].clone(),
+                expected_revision: before.profile.revision_id.clone(),
+                edits: vec![DescriptiveEdit {
+                    analytical_uuid: uuid.clone(),
+                    column: "Site".into(),
+                    value: Some("Zed".into()),
+                }],
+            })
+            .expect("patch");
+        assert_eq!(resp.action, "patch_descriptive_values");
+        assert_eq!(resp.deleted_paths, Vec::<String>::new());
+        assert_eq!(resp.outputs.len(), 1);
+        assert_eq!(resp.outputs[0].revision_id, "rev-2");
+        assert_eq!(resp.outputs[0].group_name, "Baca");
+
+        let after = read_group_file(&dir.path().join(&paths[0])).expect("read after");
+        assert_eq!(after.rows[0].descriptive[0].as_deref(), Some("Zed"));
+        assert_eq!(
+            after.rows[0].elemental, original_elemental,
+            "elemental locked"
+        );
+        assert_eq!(after.profile.revision_id, "rev-2");
+        assert_eq!(after.rows[0].uuid, before.rows[0].uuid);
+
+        // Elemental columns are locked.
+        let elemental_edit = PatchDescriptiveValuesRequest {
+            path: paths[0].clone(),
+            expected_revision: "rev-2".into(),
+            edits: vec![DescriptiveEdit {
+                analytical_uuid: uuid.clone(),
+                column: "as".into(),
+                value: Some("9".into()),
+            }],
+        };
+        let err = service
+            .patch_descriptive_values(&elemental_edit)
+            .unwrap_err();
+        assert!(err.to_string().contains("not a descriptive column"));
+
+        // Unknown analytical uuid aborts.
+        let unknown = PatchDescriptiveValuesRequest {
+            path: paths[0].clone(),
+            expected_revision: "rev-2".into(),
+            edits: vec![DescriptiveEdit {
+                analytical_uuid: "01900000-0000-7000-8000-00000000000f".into(),
+                column: "Site".into(),
+                value: None,
+            }],
+        };
+        let err = service.patch_descriptive_values(&unknown).unwrap_err();
+        assert!(err.to_string().contains("not present"));
+
+        // Stale expected revision is a conflict.
+        let stale = PatchDescriptiveValuesRequest {
+            path: paths[0].clone(),
+            expected_revision: "rev-1".into(),
+            edits: vec![DescriptiveEdit {
+                analytical_uuid: uuid,
+                column: "Site".into(),
+                value: Some("Zed".into()),
+            }],
+        };
+        let err = service.patch_descriptive_values(&stale).unwrap_err();
+        assert!(err.to_string().contains("revision"), "{err}");
+    }
+
+    #[test]
+    fn duplicate_group_preserves_uuids_and_lineage() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, paths) = commit_two_groups(dir.path());
+        let source = read_group_file(&dir.path().join(&paths[0])).expect("read source");
+
+        let resp = service
+            .duplicate_group(&DuplicateGroupRequest {
+                source_path: paths[0].clone(),
+                expected_revision: source.profile.revision_id.clone(),
+                new_group_name: "Baca Copy".into(),
+                destination_path: None,
+                preserve_uuids: true,
+            })
+            .expect("duplicate");
+        assert_eq!(resp.action, "duplicate_group");
+        assert_eq!(resp.deleted_paths, Vec::<String>::new());
+        assert_eq!(resp.outputs.len(), 1);
+        assert_eq!(resp.outputs[0].path, "groups/Baca_Copy.parquet");
+        assert_eq!(resp.outputs[0].group_name, "Baca Copy");
+        assert_eq!(resp.outputs[0].revision_id, "rev-1");
+
+        let copy =
+            read_group_file(&dir.path().join("groups/Baca_Copy.parquet")).expect("read duplicate");
+        assert_eq!(copy.rows.len(), source.rows.len());
+        let source_uuids: Vec<_> = source.rows.iter().map(|r| r.uuid).collect();
+        let copy_uuids: Vec<_> = copy.rows.iter().map(|r| r.uuid).collect();
+        assert_eq!(source_uuids, copy_uuids, "UUIDs preserved by default");
+        assert_eq!(copy.profile.source_path, source.profile.source_path);
+        assert_eq!(copy.profile.source_sha256, source.profile.source_sha256);
+        assert_eq!(copy.profile.group_id, "Baca_Copy");
+
+        // The original file is untouched (new revision only on the copy).
+        let reread = read_group_file(&dir.path().join(&paths[0])).expect("reread source");
+        assert_eq!(reread.profile.revision_id, source.profile.revision_id);
+
+        // Duplicate onto an existing destination is refused.
+        let err = service
+            .duplicate_group(&DuplicateGroupRequest {
+                source_path: paths[0].clone(),
+                expected_revision: source.profile.revision_id.clone(),
+                new_group_name: "Hooper".into(),
+                destination_path: None,
+                preserve_uuids: true,
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("already exists"));
     }
 }

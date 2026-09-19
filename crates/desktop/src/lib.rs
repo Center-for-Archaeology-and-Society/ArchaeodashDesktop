@@ -8,13 +8,14 @@ use archaeodash_application::{
 };
 use archaeodash_contracts::{
     AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
-    DeleteGroupRequest, ExploreCompositionalProfileRequest, ExploreCompositionalProfileResponse,
-    ExploreCrosstabRequest, ExploreCrosstabResponse, ExploreHistogramRequest,
-    ExploreHistogramResponse, ExploreMissingProfileRequest, ExploreMissingProfileResponse,
-    FileDownload, FileUploadRequest, GroupCandidate, GroupSummary, ImportCommitRequest,
-    ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse, MergeGroupsRequest,
-    RatioSpecDto, SaveTransformationResponse, StagedFile, TransactionResponse,
-    TransferUnitsRequest, TransformationDefinition, TransformationListResponse,
+    DeleteGroupRequest, DuplicateGroupRequest, ExploreCompositionalProfileRequest,
+    ExploreCompositionalProfileResponse, ExploreCrosstabRequest, ExploreCrosstabResponse,
+    ExploreHistogramRequest, ExploreHistogramResponse, ExploreMissingProfileRequest,
+    ExploreMissingProfileResponse, FileDownload, FileUploadRequest, GroupCandidate, GroupSummary,
+    ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse,
+    MergeGroupsRequest, PatchDescriptiveValuesRequest, RatioSpecDto, SaveTransformationResponse,
+    StagedFile, TransactionResponse, TransferUnitsRequest, TransformationDefinition,
+    TransformationListResponse,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_domain::DomainError;
@@ -82,6 +83,25 @@ impl DesktopGroups {
     /// exact-path confirmation and the revision the caller last read.
     pub fn delete_group(&self, req: DeleteGroupRequest) -> Result<TransactionResponse, String> {
         self.with_service(|svc| svc.delete_group(&req))
+    }
+
+    /// Desktop `patch_descriptive_values` command body: batch
+    /// hidden-UUID-addressed descriptive edits in one journaled transaction;
+    /// elemental columns are locked (Section 4 Phase 4).
+    pub fn patch_descriptive_values(
+        &self,
+        req: PatchDescriptiveValuesRequest,
+    ) -> Result<TransactionResponse, String> {
+        self.with_service(|svc| svc.patch_descriptive_values(&req))
+    }
+
+    /// Desktop `duplicate_group` command body: duplicate one whole group,
+    /// preserving analytical UUIDs and lineage by default.
+    pub fn duplicate_group(
+        &self,
+        req: DuplicateGroupRequest,
+    ) -> Result<TransactionResponse, String> {
+        self.with_service(|svc| svc.duplicate_group(&req))
     }
 }
 
