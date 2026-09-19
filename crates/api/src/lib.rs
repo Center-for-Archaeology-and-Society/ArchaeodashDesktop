@@ -17,11 +17,15 @@
 use std::sync::Arc;
 
 use archaeodash_application::{
-    app_info, GroupService, ImportService, OrdinationService, SourceFileService, TransformService,
+    app_info, ExploreService, GroupService, ImportService, OrdinationService, SourceFileService,
+    TransformService,
 };
 use archaeodash_contracts::{
     AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
-    DeleteGroupRequest, ErrorEnvelope, GroupCandidate, GroupSummary, ImportCommitRequest,
+    DeleteGroupRequest, ErrorEnvelope, ExploreCompositionalProfileRequest,
+    ExploreCompositionalProfileResponse, ExploreCrosstabRequest, ExploreCrosstabResponse,
+    ExploreHistogramRequest, ExploreHistogramResponse, ExploreMissingProfileRequest,
+    ExploreMissingProfileResponse, GroupCandidate, GroupSummary, ImportCommitRequest,
     ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse, LdaRequest, LdaResponse,
     MergeGroupsRequest, PcaRequest, PcaResponse, SaveTransformationRequest,
     SaveTransformationResponse, StagedFile, TransactionResponse, TransferUnitsRequest,
@@ -46,6 +50,7 @@ pub struct AppState {
     pub files: Arc<SourceFileService>,
     pub transforms: Arc<TransformService>,
     pub ordination: Arc<OrdinationService>,
+    pub explore: Arc<ExploreService>,
 }
 
 async fn healthz() -> Json<AppInfo> {
@@ -380,6 +385,56 @@ async fn ordination_lda(
         .map_err(domain_error_response)
 }
 
+/// `POST /api/v1/explore/missing-profile`: `profile_missing` band summary;
+/// results are ephemeral (Section 5 storage invariant).
+async fn explore_missing_profile(
+    State(state): State<AppState>,
+    Json(req): Json<ExploreMissingProfileRequest>,
+) -> Result<Json<ExploreMissingProfileResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .explore
+        .missing_profile(&req)
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
+/// `POST /api/v1/explore/histogram`: `hist.default` breakpoints and counts.
+async fn explore_histogram(
+    State(state): State<AppState>,
+    Json(req): Json<ExploreHistogramRequest>,
+) -> Result<Json<ExploreHistogramResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .explore
+        .histogram(&req)
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
+/// `POST /api/v1/explore/crosstab`: legacy `compute_crosstab_summary`.
+async fn explore_crosstab(
+    State(state): State<AppState>,
+    Json(req): Json<ExploreCrosstabRequest>,
+) -> Result<Json<ExploreCrosstabResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .explore
+        .crosstab(&req)
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
+/// `POST /api/v1/explore/compositional-profile`: the `pivot_longer` long
+/// table, optionally grouped.
+async fn explore_compositional_profile(
+    State(state): State<AppState>,
+    Json(req): Json<ExploreCompositionalProfileRequest>,
+) -> Result<Json<ExploreCompositionalProfileResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .explore
+        .compositional_profile(&req)
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
 /// Builds the root router. Route groups for analysis, jobs, and auth land in
 /// their owning phases (Sections 10.1+).
 pub fn root_router(state: AppState) -> Router {
@@ -413,6 +468,16 @@ pub fn root_router(state: AppState) -> Router {
         .route("/api/v1/transformations/apply", post(transformations_apply))
         .route("/api/v1/ordination/pca", post(ordination_pca))
         .route("/api/v1/ordination/lda", post(ordination_lda))
+        .route(
+            "/api/v1/explore/missing-profile",
+            post(explore_missing_profile),
+        )
+        .route("/api/v1/explore/histogram", post(explore_histogram))
+        .route("/api/v1/explore/crosstab", post(explore_crosstab))
+        .route(
+            "/api/v1/explore/compositional-profile",
+            post(explore_compositional_profile),
+        )
         .with_state(state)
 }
 
@@ -422,7 +487,8 @@ mod tests {
 
     use super::*;
     use archaeodash_contracts::{
-        BatchRatioMode, ImputationMethod, RatioMode, RatioSpecDto, TransferAction, TransformMethod,
+        BatchRatioMode, CrosstabRows, ImputationMethod, RatioMode, RatioSpecDto, TransferAction,
+        TransformMethod,
     };
     use axum::body::Body;
     use http_body_util::BodyExt;
@@ -441,6 +507,7 @@ mod tests {
             files: Arc::new(SourceFileService::new(dir.path()).expect("file service")),
             transforms: Arc::new(TransformService::new(dir.path()).expect("transform service")),
             ordination: Arc::new(OrdinationService::new(dir.path()).expect("ordination service")),
+            explore: Arc::new(ExploreService::new(dir.path()).expect("explore service")),
         };
         (state, dir)
     }
@@ -1339,5 +1406,153 @@ mod tests {
         );
         let envelope: ErrorEnvelope = serde_json::from_slice(&bytes).unwrap();
         assert!(envelope.message.contains("LDA requires at least 3 groups"));
+    }
+    #[tokio::test]
+    async fn explore_views_round_trip_and_validation_error() {
+        let (state, dir) = test_state();
+        let app = root_router(state);
+        let group_path = commit_fixture(app.clone(), &dir).await.groups[0]
+            .path
+            .clone();
+
+        // Missing profile: both columns complete, column-order tie.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/explore/missing-profile")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ExploreMissingProfileRequest {
+                            path: group_path.clone(),
+                            columns: vec!["as".into(), "fe".into()],
+                            transformation: None,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let missing: ExploreMissingProfileResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(missing.rows.len(), 2);
+        assert_eq!(missing.rows[0].feature, "as");
+        assert_eq!(missing.rows[0].band, "Good");
+        assert_eq!(missing.rows[1].num_missing, 0);
+
+        // Histogram: bin counts over the finite values.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/explore/histogram")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ExploreHistogramRequest {
+                            path: group_path.clone(),
+                            column: "as".into(),
+                            bins: 2,
+                            transformation: None,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let histogram: ExploreHistogramResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(histogram.column, "as");
+        assert_eq!(histogram.breaks.len(), histogram.counts.len() + 1);
+        assert_eq!(histogram.counts.iter().sum::<u64>(), 2);
+
+        // Crosstab mean: one group level, legacy `result-<column>` name.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/explore/crosstab")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ExploreCrosstabRequest {
+                            path: group_path.clone(),
+                            group_column: "Site".into(),
+                            value_column: "as".into(),
+                            summary_method: "mean".into(),
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let crosstab: ExploreCrosstabResponse = serde_json::from_slice(&bytes).unwrap();
+        let CrosstabRows::Summary {
+            result_column,
+            rows,
+        } = crosstab.rows
+        else {
+            panic!("summary kind");
+        };
+        assert_eq!(result_column, "result-as");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].group.as_deref(), Some("Baca"));
+        assert!((rows[0].result.unwrap() - 1.75).abs() < 1e-12);
+
+        // Compositional profile: row-major long table with group labels.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/explore/compositional-profile")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ExploreCompositionalProfileRequest {
+                            path: group_path.clone(),
+                            columns: vec!["as".into(), "fe".into()],
+                            group_column: Some("Site".into()),
+                            transformation: None,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let profile: ExploreCompositionalProfileResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(profile.rows.len(), 4);
+        assert_eq!(profile.rows[0].rowid, 1);
+        assert_eq!(profile.rows[0].element, "as");
+        assert_eq!(profile.rows[0].value, Some(1.5));
+        assert_eq!(profile.rows[0].group_label.as_deref(), Some("Baca"));
+        assert_eq!(profile.rows[1].element, "fe");
+
+        // Unknown column: 422 validation error.
+        let response = app
+            .oneshot(
+                axum::http::Request::post("/api/v1/explore/missing-profile")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ExploreMissingProfileRequest {
+                            path: group_path,
+                            columns: vec!["zz".into()],
+                            transformation: None,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let envelope: ErrorEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(envelope.code, "validation_error");
     }
 }

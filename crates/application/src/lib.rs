@@ -5,12 +5,14 @@
 
 use archaeodash_contracts::AppInfo;
 
+pub mod explore;
 pub mod files;
 pub mod groups;
 pub mod import;
 pub mod ordination;
 pub mod transforms;
 
+pub use explore::ExploreService;
 pub use files::SourceFileService;
 pub use groups::GroupService;
 pub use import::ImportService;

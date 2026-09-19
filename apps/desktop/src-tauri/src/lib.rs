@@ -2,11 +2,13 @@
 //! crate (crates/desktop), which calls the shared application use cases.
 
 use archaeodash_contracts::{
-    ApplyTransformationRequest, BatchRatioRequest, DeleteGroupRequest, ImportCommitRequest,
-    ImportPreviewRequest, MergeGroupsRequest, TransferUnitsRequest,
+    ApplyTransformationRequest, BatchRatioRequest, DeleteGroupRequest,
+    ExploreCompositionalProfileRequest, ExploreCrosstabRequest, ExploreHistogramRequest,
+    ExploreMissingProfileRequest, ImportCommitRequest, ImportPreviewRequest, MergeGroupsRequest,
+    TransferUnitsRequest,
 };
 use archaeodash_desktop::{
-    DesktopAppInfo, DesktopFiles, DesktopGroups, DesktopImport, DesktopTransforms,
+    DesktopAppInfo, DesktopExplore, DesktopFiles, DesktopGroups, DesktopImport, DesktopTransforms,
 };
 use std::sync::Mutex;
 
@@ -17,6 +19,7 @@ struct DesktopState {
     groups: DesktopGroups,
     files: DesktopFiles,
     transforms: DesktopTransforms,
+    explore: DesktopExplore,
 }
 
 /// Smoke command exposed to the React client over Tauri IPC.
@@ -250,6 +253,58 @@ fn apply_transformation(
         .apply_transformation(request)
 }
 
+/// `explore_missing_profile`: `profile_missing` band summary (Section 8.12).
+#[tauri::command]
+fn explore_missing_profile(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: ExploreMissingProfileRequest,
+) -> Result<archaeodash_contracts::ExploreMissingProfileResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .explore
+        .explore_missing_profile(request)
+}
+
+/// `explore_histogram`: `hist.default` breakpoints and counts.
+#[tauri::command]
+fn explore_histogram(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: ExploreHistogramRequest,
+) -> Result<archaeodash_contracts::ExploreHistogramResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .explore
+        .explore_histogram(request)
+}
+
+/// `explore_crosstab`: legacy `compute_crosstab_summary`.
+#[tauri::command]
+fn explore_crosstab(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: ExploreCrosstabRequest,
+) -> Result<archaeodash_contracts::ExploreCrosstabResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .explore
+        .explore_crosstab(request)
+}
+
+/// `explore_compositional_profile`: the `pivot_longer` long table.
+#[tauri::command]
+fn explore_compositional_profile(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: ExploreCompositionalProfileRequest,
+) -> Result<archaeodash_contracts::ExploreCompositionalProfileResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .explore
+        .explore_compositional_profile(request)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[allow(clippy::expect_used)] // app entry point: a failed runtime start must abort startup
 pub fn run() {
@@ -259,6 +314,7 @@ pub fn run() {
             groups: DesktopGroups::new(),
             files: DesktopFiles::new(),
             transforms: DesktopTransforms::new(),
+            explore: DesktopExplore::new(),
         }))
         .invoke_handler(tauri::generate_handler![
             app_info,
@@ -278,7 +334,11 @@ pub fn run() {
             load_transformation,
             delete_transformation,
             batch_ratio_specs,
-            apply_transformation
+            apply_transformation,
+            explore_missing_profile,
+            explore_histogram,
+            explore_crosstab,
+            explore_compositional_profile
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -497,6 +497,164 @@ pub struct LdaResponse {
     /// Non-fatal legacy warnings (collinearity downgrades the rank).
     pub warnings: Vec<String>,
 }
+
+/// `POST /explore/missing-profile` request: `profile_missing` band summaries
+/// over one group file's columns (Section 8 procedure 12, class E). Results
+/// are ephemeral and never persisted (Section 5 storage invariant).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExploreMissingProfileRequest {
+    /// Project-relative group file path.
+    pub path: String,
+    /// Columns to profile: measured elemental names, or post-transform
+    /// output names when `transformation` is present.
+    pub columns: Vec<String>,
+    /// Optional transformation applied to the group matrix first.
+    pub transformation: Option<TransformationDefinition>,
+}
+
+/// One `profile_missing` row: legacy `cut` band label ("Good", "OK", "Bad",
+/// "Remove"); rows are ordered by descending missing count with ties in
+/// column order (`order(-rank(num_missing))`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MissingProfileRow {
+    pub feature: String,
+    pub num_missing: u64,
+    pub pct_missing: f64,
+    pub band: String,
+}
+
+/// `POST /explore/missing-profile` response.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExploreMissingProfileResponse {
+    pub path: String,
+    /// Revision the group file was at when computed.
+    pub revision_id: String,
+    pub rows: Vec<MissingProfileRow>,
+}
+
+/// `POST /explore/histogram` request: `hist.default` breakpoints and counts
+/// for one column (`breaks = bins`, the legacy default of 30).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExploreHistogramRequest {
+    /// Project-relative group file path.
+    pub path: String,
+    /// Single elemental (or post-transform) column to bin.
+    pub column: String,
+    /// `hist(..., breaks = bins)` suggestion; defaults to the legacy 30.
+    #[serde(default = "default_histogram_bins")]
+    pub bins: u32,
+    /// Optional transformation applied to the group matrix first.
+    pub transformation: Option<TransformationDefinition>,
+}
+
+fn default_histogram_bins() -> u32 {
+    30
+}
+
+/// `POST /explore/histogram` response: `pretty` breakpoints (length
+/// `counts.len() + 1`) and right-closed `include.lowest` bin counts over the
+/// finite values.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExploreHistogramResponse {
+    pub path: String,
+    pub revision_id: String,
+    pub column: String,
+    pub breaks: Vec<f64>,
+    pub counts: Vec<u64>,
+}
+
+/// `POST /explore/crosstab` request: legacy `compute_crosstab_summary`.
+/// `count` groups by both columns as text; `mean`/`median`/`sd` coerce the
+/// value column numerically (`as.numeric(as.character(...))`, `na.rm = TRUE`)
+/// and group by the group column only, rounding to two decimals.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExploreCrosstabRequest {
+    /// Project-relative group file path.
+    pub path: String,
+    /// Descriptive (text) grouping column.
+    pub group_column: String,
+    /// Second column: raw text for `count`, numeric for the summaries.
+    pub value_column: String,
+    /// One of `count`, `mean`, `median`, `sd` (legacy `summary_method`).
+    pub summary_method: String,
+}
+
+/// One `count` crosstab row: the distinct (group, value) text pair and its
+/// count, keys ascending with `NA` groups last (dplyr group order).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CrosstabCountRow {
+    pub group: Option<String>,
+    pub value: Option<String>,
+    pub count: u64,
+}
+
+/// One `mean`/`median`/`sd` row; `result` is `null` when the group has no
+/// numeric values (R rounds, then jsonlite writes NA as null).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CrosstabSummaryRow {
+    pub group: Option<String>,
+    pub result: Option<f64>,
+}
+
+/// Crosstab rows, tagged by summary method: `count` rows group by both
+/// columns; summary rows carry the legacy `result-<value_column>` name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CrosstabRows {
+    Count {
+        rows: Vec<CrosstabCountRow>,
+    },
+    Summary {
+        result_column: String,
+        rows: Vec<CrosstabSummaryRow>,
+    },
+}
+
+/// `POST /explore/crosstab` response.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExploreCrosstabResponse {
+    pub path: String,
+    pub revision_id: String,
+    /// Echo of the requested `summary_method`.
+    pub summary_method: String,
+    #[serde(flatten)]
+    pub rows: CrosstabRows,
+}
+
+/// `POST /explore/compositional-profile` request: the `comp.profile`
+/// `pivot_longer` long table over one group file, optionally colored by a
+/// descriptive group column.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExploreCompositionalProfileRequest {
+    /// Project-relative group file path.
+    pub path: String,
+    /// Elemental (or post-transform) columns, in plot order.
+    pub columns: Vec<String>,
+    /// Optional descriptive column for line coloring; `rep(groups, each =
+    /// ncol)` aligns one label per long row.
+    pub group_column: Option<String>,
+    /// Optional transformation applied to the group matrix first.
+    pub transformation: Option<TransformationDefinition>,
+}
+
+/// One long-table row: 1-based positional `rowid`, element name, value
+/// (`null` for NA), and the optional group label.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompositionalProfileRow {
+    pub rowid: u64,
+    pub element: String,
+    pub value: Option<f64>,
+    pub group_label: Option<String>,
+}
+
+/// `POST /explore/compositional-profile` response.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExploreCompositionalProfileResponse {
+    pub path: String,
+    pub revision_id: String,
+    pub rows: Vec<CompositionalProfileRow>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -769,6 +927,84 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<LdaResponse>(&json).unwrap(),
             lda_response
+        );
+    }
+}
+
+#[cfg(test)]
+mod explore_dto_tests {
+    use super::*;
+
+    #[test]
+    fn explore_dtos_round_trip() {
+        let missing = ExploreMissingProfileRequest {
+            path: "groups/Baca.parquet".into(),
+            columns: vec!["as".into(), "fe".into()],
+            transformation: None,
+        };
+        let json = serde_json::to_string(&missing).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ExploreMissingProfileRequest>(&json).unwrap(),
+            missing
+        );
+
+        // Histogram bins default to the legacy 30.
+        let hist: ExploreHistogramRequest = serde_json::from_str(
+            r#"{"path":"groups/Baca.parquet","column":"as","transformation":null}"#,
+        )
+        .unwrap();
+        assert_eq!(hist.bins, 30);
+
+        let count = ExploreCrosstabResponse {
+            path: "groups/Baca.parquet".into(),
+            revision_id: "rev".into(),
+            summary_method: "count".into(),
+            rows: CrosstabRows::Count {
+                rows: vec![CrosstabCountRow {
+                    group: Some("A".into()),
+                    value: Some("1.5".into()),
+                    count: 2,
+                }],
+            },
+        };
+        let json = serde_json::to_string(&count).unwrap();
+        assert!(json.contains(r#""kind":"count""#), "tagged rows: {json}");
+        assert_eq!(
+            serde_json::from_str::<ExploreCrosstabResponse>(&json).unwrap(),
+            count
+        );
+
+        let summary = ExploreCrosstabResponse {
+            path: "groups/Baca.parquet".into(),
+            revision_id: "rev".into(),
+            summary_method: "sd".into(),
+            rows: CrosstabRows::Summary {
+                result_column: "result-as".into(),
+                rows: vec![CrosstabSummaryRow {
+                    group: None,
+                    result: None,
+                }],
+            },
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(json.contains(r#""kind":"summary""#), "tagged rows: {json}");
+        assert!(json.contains("null"), "NA serializes as null");
+        assert_eq!(
+            serde_json::from_str::<ExploreCrosstabResponse>(&json).unwrap(),
+            summary
+        );
+
+        let row = CompositionalProfileRow {
+            rowid: 1,
+            element: "as".into(),
+            value: None,
+            group_label: Some("A".into()),
+        };
+        let json = serde_json::to_string(&row).unwrap();
+        assert!(json.contains("null"), "NA value serializes as null: {json}");
+        assert_eq!(
+            serde_json::from_str::<CompositionalProfileRow>(&json).unwrap(),
+            row
         );
     }
 }

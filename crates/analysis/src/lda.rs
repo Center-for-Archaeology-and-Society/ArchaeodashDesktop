@@ -112,7 +112,11 @@ pub fn lda(m: &ColumnMatrix, groups: &[String], min_groups: usize) -> Result<Lda
     let mut counts = vec![0usize; ng];
     let group_index: Vec<usize> = groups
         .iter()
-        .map(|g| levels.binary_search(g).expect("sorted unique levels"))
+        .map(|g| match levels.binary_search(g) {
+            Ok(i) => i,
+            // Levels come from sorted unique group labels.
+            Err(_) => unreachable!("levels are sorted and unique"),
+        })
         .collect();
     for &gi in &group_index {
         counts[gi] += 1;

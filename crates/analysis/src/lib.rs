@@ -3,12 +3,18 @@
 //! rounding), `log10`/`log` (rounding + non-finite-to-zero with warning
 //! counts), and ratio application (null when the denominator is null or zero).
 
+pub mod explore;
 pub mod lda;
 pub mod pca;
 
 use archaeodash_data_io::rnum::r_round;
 use archaeodash_domain::DomainError;
 
+pub use explore::{
+    compositional_profile, crosstab_count, crosstab_value_summary, histogram, missing_profile,
+    r_pretty, CrosstabCountRow, CrosstabMethod, CrosstabValueRow, MissingBand, MissingRow,
+    ProfileRow,
+};
 pub use lda::{lda, Lda, LEGACY_LDA_TOL};
 pub use pca::{apply_sign_flips, component_sign_flips, pca, Pca};
 

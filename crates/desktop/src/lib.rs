@@ -3,12 +3,17 @@
 //! `apps/desktop/src-tauri` shell; this crate keeps the command payloads and
 //! invocation logic testable without a webview runtime.
 
-use archaeodash_application::{GroupService, ImportService, SourceFileService, TransformService};
+use archaeodash_application::{
+    ExploreService, GroupService, ImportService, SourceFileService, TransformService,
+};
 use archaeodash_contracts::{
     AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
-    DeleteGroupRequest, FileDownload, FileUploadRequest, GroupCandidate, GroupSummary,
-    ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse,
-    MergeGroupsRequest, RatioSpecDto, SaveTransformationResponse, StagedFile, TransactionResponse,
+    DeleteGroupRequest, ExploreCompositionalProfileRequest, ExploreCompositionalProfileResponse,
+    ExploreCrosstabRequest, ExploreCrosstabResponse, ExploreHistogramRequest,
+    ExploreHistogramResponse, ExploreMissingProfileRequest, ExploreMissingProfileResponse,
+    FileDownload, FileUploadRequest, GroupCandidate, GroupSummary, ImportCommitRequest,
+    ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse, MergeGroupsRequest,
+    RatioSpecDto, SaveTransformationResponse, StagedFile, TransactionResponse,
     TransferUnitsRequest, TransformationDefinition, TransformationListResponse,
 };
 use archaeodash_data_io::ImportError;
@@ -275,6 +280,77 @@ impl DesktopTransforms {
 }
 
 impl Default for DesktopTransforms {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Desktop explore state: one project-scoped explore service sharing the
+/// project root (Section 8 procedure 12 views are ephemeral, Section 5).
+pub struct DesktopExplore {
+    service: Mutex<Option<ExploreService>>,
+}
+
+impl DesktopExplore {
+    /// No project open yet; `open_project` sets the root.
+    pub fn new() -> Self {
+        Self {
+            service: Mutex::new(None),
+        }
+    }
+
+    /// Opens (or re-opens) the project root for explore use cases.
+    pub fn open_project(&self, root: impl Into<PathBuf>) -> Result<(), String> {
+        let service = ExploreService::new(root).map_err(|e| e.to_string())?;
+        *self.service.lock().map_err(|e| e.to_string())? = Some(service);
+        Ok(())
+    }
+
+    fn with_service<T>(
+        &self,
+        op: impl FnOnce(&ExploreService) -> Result<T, DomainError>,
+    ) -> Result<T, String> {
+        let guard = self.service.lock().map_err(|e| e.to_string())?;
+        let service = guard.as_ref().ok_or_else(|| {
+            "no project open: call open_project with a directory first".to_string()
+        })?;
+        op(service).map_err(|e| e.to_string())
+    }
+
+    /// Desktop `explore_missing_profile` command body.
+    pub fn explore_missing_profile(
+        &self,
+        req: ExploreMissingProfileRequest,
+    ) -> Result<ExploreMissingProfileResponse, String> {
+        self.with_service(|svc| svc.missing_profile(&req))
+    }
+
+    /// Desktop `explore_histogram` command body.
+    pub fn explore_histogram(
+        &self,
+        req: ExploreHistogramRequest,
+    ) -> Result<ExploreHistogramResponse, String> {
+        self.with_service(|svc| svc.histogram(&req))
+    }
+
+    /// Desktop `explore_crosstab` command body.
+    pub fn explore_crosstab(
+        &self,
+        req: ExploreCrosstabRequest,
+    ) -> Result<ExploreCrosstabResponse, String> {
+        self.with_service(|svc| svc.crosstab(&req))
+    }
+
+    /// Desktop `explore_compositional_profile` command body.
+    pub fn explore_compositional_profile(
+        &self,
+        req: ExploreCompositionalProfileRequest,
+    ) -> Result<ExploreCompositionalProfileResponse, String> {
+        self.with_service(|svc| svc.compositional_profile(&req))
+    }
+}
+
+impl Default for DesktopExplore {
     fn default() -> Self {
         Self::new()
     }
@@ -607,5 +683,56 @@ mod tests {
             .is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explore_commands_run_against_committed_groups() {
+        use archaeodash_contracts::ExploreMissingProfileRequest;
+
+        let dir = std::env::temp_dir().join(format!(
+            "archaeodash-desktop-explore-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("project dir");
+
+        let explore = DesktopExplore::new();
+        let err = explore
+            .explore_missing_profile(ExploreMissingProfileRequest {
+                path: "groups/whatever.parquet".into(),
+                columns: vec!["as".into()],
+                transformation: None,
+            })
+            .expect_err("no project open");
+        assert!(err.contains("no project open"));
+
+        explore.open_project(&dir).expect("open project");
+        std::fs::write(
+            dir.join("mini.csv"),
+            "anid,Site,as,fe\nA1,Baca,1.5,3\nA2,Baca,2,4\nA3,Hooper,5,6\n",
+        )
+        .expect("write source");
+        let import = ImportService::new(&dir).expect("import service");
+        let commit = import
+            .commit(&ImportCommitRequest {
+                source: "mini.csv".into(),
+                group_column: "Site".into(),
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+            })
+            .expect("commit");
+
+        let response = explore
+            .explore_missing_profile(ExploreMissingProfileRequest {
+                path: commit.groups[0].path.clone(),
+                columns: vec!["as".into(), "fe".into()],
+                transformation: None,
+            })
+            .expect("missing profile");
+        assert_eq!(response.rows.len(), 2);
+        assert!(response.rows.iter().all(|r| r.band == "Good"));
+        assert!(!response.revision_id.is_empty());
     }
 }
