@@ -41,6 +41,8 @@ Up: [[../../Vault/Index]]
 - [[Fast_Edit_RS_Skill_Installation_2026-09-18]]
 - [[OpenCode_Multiagent_Workflow_2026-09-18]]
 - [[Phase_4_LDA_HTTP_Adapter_And_Group_Gate_Test_2026-09-18]]
+- [[OpenCode_LiteLLM_Authentication_Fix_2026-09-18]]
+- [[Phase_4_Explore_Views_Golden_12_2026-09-19]]
 
 ## Notes
 - This vault uses atomic notes (one concept per file) linked with `[[Wikilinks]]`.
