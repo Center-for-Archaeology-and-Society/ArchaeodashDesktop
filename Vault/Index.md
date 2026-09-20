@@ -43,7 +43,8 @@ Up: [[../../Vault/Index]]
 - [[Phase_4_LDA_HTTP_Adapter_And_Group_Gate_Test_2026-09-18]]
 - [[OpenCode_LiteLLM_Authentication_Fix_2026-09-18]]
 - [[Phase_4_Explore_Views_Golden_12_2026-09-19]]
-- [[Phase_4_UMAP_Naive_Port_Golden_07_2026-09-20]]
+ - [[Phase_4_UMAP_Naive_Port_Golden_07_2026-09-20]]
+ - [[Phase_4_Desktop_Ordination_Tauri_Adapter_2026-09-20]]
 - [[Phase_2_Descriptive_Edit_And_Duplicate_Group_2026-09-19]]
 
 ## Notes
