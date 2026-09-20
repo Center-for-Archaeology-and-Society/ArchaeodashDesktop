@@ -4,22 +4,25 @@
 use archaeodash_contracts::{
     ApplyTransformationRequest, BatchRatioRequest, DeleteGroupRequest, DuplicateGroupRequest,
     ExploreCompositionalProfileRequest, ExploreCrosstabRequest, ExploreHistogramRequest,
-    ExploreMissingProfileRequest, ImportCommitRequest, ImportPreviewRequest, MergeGroupsRequest,
-    PatchDescriptiveValuesRequest, TransferUnitsRequest,
+    ExploreMissingProfileRequest, ImportCommitRequest, ImportPreviewRequest, LdaRequest,
+    MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest, TransferUnitsRequest,
+    UmapRequest,
 };
 use archaeodash_desktop::{
-    DesktopAppInfo, DesktopExplore, DesktopFiles, DesktopGroups, DesktopImport, DesktopTransforms,
+    DesktopAppInfo, DesktopExplore, DesktopFiles, DesktopGroups, DesktopImport, DesktopOrdination,
+    DesktopTransforms,
 };
 use std::sync::Mutex;
 
-/// Project-scoped state shared by the import, group, file, and transformation
-/// commands.
+/// Project-scoped state shared by the import, group, file, transformation,
+/// explore, and ordination commands.
 struct DesktopState {
     import: DesktopImport,
     groups: DesktopGroups,
     files: DesktopFiles,
     transforms: DesktopTransforms,
     explore: DesktopExplore,
+    ordination: DesktopOrdination,
 }
 
 /// Smoke command exposed to the React client over Tauri IPC.
@@ -332,6 +335,48 @@ fn explore_compositional_profile(
         .explore_compositional_profile(request)
 }
 
+/// `ordination_pca`: prcomp-parity PCA; results are ephemeral and never
+/// persisted (Section 5 storage invariant).
+#[tauri::command]
+fn ordination_pca(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: PcaRequest,
+) -> Result<archaeodash_contracts::PcaResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .ordination
+        .ordination_pca(request)
+}
+
+/// `ordination_lda`: `MASS::lda` moment-method parity with the legacy
+/// three-group minimum; results are ephemeral and never persisted (Section 5).
+#[tauri::command]
+fn ordination_lda(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: LdaRequest,
+) -> Result<archaeodash_contracts::LdaResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .ordination
+        .ordination_lda(request)
+}
+
+/// `ordination_umap`: legacy naive UMAP parity with the deterministic seed;
+/// results are ephemeral and never persisted (Section 5 storage invariant).
+#[tauri::command]
+fn ordination_umap(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: UmapRequest,
+) -> Result<archaeodash_contracts::UmapResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .ordination
+        .ordination_umap(request)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[allow(clippy::expect_used)] // app entry point: a failed runtime start must abort startup
 pub fn run() {
@@ -342,6 +387,7 @@ pub fn run() {
             files: DesktopFiles::new(),
             transforms: DesktopTransforms::new(),
             explore: DesktopExplore::new(),
+            ordination: DesktopOrdination::new(),
         }))
         .invoke_handler(tauri::generate_handler![
             app_info,
@@ -367,7 +413,10 @@ pub fn run() {
             explore_missing_profile,
             explore_histogram,
             explore_crosstab,
-            explore_compositional_profile
+            explore_compositional_profile,
+            ordination_pca,
+            ordination_lda,
+            ordination_umap
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -619,7 +619,7 @@ fn optimize_embedding(
     let m2ab = -2.0 * a * b;
     let p2gb = 2.0 * config.gamma * b;
     // R: fix.observations = min(from, 1-based) > 1; move_other = !(that > 0).
-    let move_other = !pairs.iter().map(|&(f, _)| f).min().is_some_and(|f| f > 0);
+    let move_other = pairs.iter().map(|&(f, _)| f).min().is_none_or(|f| f == 0);
     let mut eons: Vec<f64> = eps.to_vec();
     let epns: Vec<f64> = eps
         .iter()

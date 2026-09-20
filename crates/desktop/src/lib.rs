@@ -4,7 +4,8 @@
 //! invocation logic testable without a webview runtime.
 
 use archaeodash_application::{
-    ExploreService, GroupService, ImportService, SourceFileService, TransformService,
+    ExploreService, GroupService, ImportService, OrdinationService, SourceFileService,
+    TransformService,
 };
 use archaeodash_contracts::{
     AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
@@ -13,9 +14,10 @@ use archaeodash_contracts::{
     ExploreHistogramRequest, ExploreHistogramResponse, ExploreMissingProfileRequest,
     ExploreMissingProfileResponse, FileDownload, FileUploadRequest, GroupCandidate, GroupSummary,
     ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse,
-    MergeGroupsRequest, PatchDescriptiveValuesRequest, RatioSpecDto, SaveTransformationResponse,
-    StagedFile, TransactionResponse, TransferUnitsRequest, TransformationDefinition,
-    TransformationListResponse,
+    LdaRequest, LdaResponse, MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest,
+    PcaResponse, RatioSpecDto, SaveTransformationResponse, StagedFile, TransactionResponse,
+    TransferUnitsRequest, TransformationDefinition, TransformationListResponse, UmapRequest,
+    UmapResponse,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_domain::DomainError;
@@ -371,6 +373,65 @@ impl DesktopExplore {
 }
 
 impl Default for DesktopExplore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Desktop ordination state: one project-scoped ordination service sharing
+/// the project root (Section 8.5 views are ephemeral, Section 5).
+pub struct DesktopOrdination {
+    service: Mutex<Option<OrdinationService>>,
+}
+
+impl DesktopOrdination {
+    /// No project open yet; `open_project` sets the root.
+    pub fn new() -> Self {
+        Self {
+            service: Mutex::new(None),
+        }
+    }
+
+    /// Opens (or re-opens) the project root for ordination use cases.
+    pub fn open_project(&self, root: impl Into<PathBuf>) -> Result<(), String> {
+        let service = OrdinationService::new(root).map_err(|e| e.to_string())?;
+        *self.service.lock().map_err(|e| e.to_string())? = Some(service);
+        Ok(())
+    }
+
+    fn with_service<T>(
+        &self,
+        op: impl FnOnce(&OrdinationService) -> Result<T, DomainError>,
+    ) -> Result<T, String> {
+        let guard = self.service.lock().map_err(|e| e.to_string())?;
+        let service = guard.as_ref().ok_or_else(|| {
+            "no project open: call open_project with a directory first".to_string()
+        })?;
+        op(service).map_err(|e| e.to_string())
+    }
+
+    /// Desktop `ordination_pca` command body: prcomp-parity PCA (Section 15.4
+    /// procedure 6); results are ephemeral and never persisted (Section 5).
+    pub fn ordination_pca(&self, req: PcaRequest) -> Result<PcaResponse, String> {
+        self.with_service(|svc| svc.pca(&req))
+    }
+
+    /// Desktop `ordination_lda` command body: `MASS::lda` moment-method
+    /// parity with the legacy three-group minimum (Section 15.4 procedure 8);
+    /// results are ephemeral and never persisted (Section 5).
+    pub fn ordination_lda(&self, req: LdaRequest) -> Result<LdaResponse, String> {
+        self.with_service(|svc| svc.lda(&req))
+    }
+
+    /// Desktop `ordination_umap` command body: legacy naive UMAP parity
+    /// (Section 15.4 procedure 7); results are ephemeral and never persisted
+    /// (Section 5).
+    pub fn ordination_umap(&self, req: UmapRequest) -> Result<UmapResponse, String> {
+        self.with_service(|svc| svc.umap(&req))
+    }
+}
+
+impl Default for DesktopOrdination {
     fn default() -> Self {
         Self::new()
     }
@@ -754,5 +815,137 @@ mod tests {
         assert_eq!(response.rows.len(), 2);
         assert!(response.rows.iter().all(|r| r.band == "Good"));
         assert!(!response.revision_id.is_empty());
+    }
+
+    #[test]
+    fn ordination_commands_run_against_committed_groups() {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "archaeodash-desktop-ordination-{}-{n}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("project dir");
+
+        let ordination = DesktopOrdination::new();
+        let err = ordination
+            .ordination_pca(PcaRequest {
+                path: "groups/whatever.parquet".into(),
+                columns: vec!["as".into()],
+                scale: false,
+                transformation: None,
+            })
+            .expect_err("no project open");
+        assert!(err.contains("no project open"));
+
+        ordination.open_project(&dir).expect("open project");
+
+        // Three-group source; LDA needs >= 3 levels in ONE group file, so the
+        // three group files are merged into one before ordination.
+        std::fs::write(
+            dir.join("mini.csv"),
+            "anid,Site,as,fe\nA1,Baca,1.5,3\nA2,Baca,2,4\nA3,Hooper,5,6\nA4,Hooper,7,8\nA5,Iowa,1,2\nA6,Iowa,3,4\n",
+        )
+        .expect("write source");
+        let import = ImportService::new(&dir).expect("import service");
+        let commit = import
+            .commit(&ImportCommitRequest {
+                source: "mini.csv".into(),
+                group_column: "Site".into(),
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+            })
+            .expect("commit");
+        assert_eq!(commit.groups.len(), 3);
+        let groups = GroupService::new(&dir).expect("group service");
+        let merge = groups
+            .merge_groups(&MergeGroupsRequest {
+                sources: commit.groups.iter().map(|g| g.path.clone()).collect(),
+                new_group_name: "Merged".into(),
+            })
+            .expect("merge");
+        let merged_path = merge.outputs[0].path.clone();
+
+        // PCA is ephemeral: result returned, merged group file untouched.
+        let before = std::fs::read(dir.join(&merged_path)).expect("read group");
+        let pca = ordination
+            .ordination_pca(PcaRequest {
+                path: merged_path.clone(),
+                columns: vec!["as".into(), "fe".into()],
+                scale: false,
+                transformation: None,
+            })
+            .expect("pca");
+        assert_eq!(pca.score_names, vec!["PC1", "PC2"]);
+        assert_eq!(pca.scores.len(), 6);
+        assert!(!pca.revision_id.is_empty());
+        assert_eq!(
+            std::fs::read(dir.join(&merged_path)).expect("read group"),
+            before,
+            "group file byte-identical after PCA"
+        );
+
+        let lda = ordination
+            .ordination_lda(LdaRequest {
+                path: merged_path.clone(),
+                columns: vec!["as".into(), "fe".into()],
+                group_column: "Site".into(),
+                transformation: None,
+            })
+            .expect("lda");
+        assert_eq!(lda.levels.len(), 3);
+        assert!(!lda.score_names.is_empty());
+
+        // UMAP's legacy n_neighbors = 15 needs more than 15 rows, so a
+        // 20-row single-group file feeds the default-seed embedding.
+        let rows: Vec<String> = (0..20)
+            .map(|i| {
+                let v = i as f64;
+                format!("A{i},A,{},{}", 1.5 + v, 3.0 + 2.0 * (v % 4.0))
+            })
+            .collect();
+        std::fs::write(
+            dir.join("many.csv"),
+            format!("anid,Site,as,fe\n{}\n", rows.join("\n")),
+        )
+        .expect("write source");
+        let commit = import
+            .commit(&ImportCommitRequest {
+                source: "many.csv".into(),
+                group_column: "Site".into(),
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+            })
+            .expect("commit many");
+        let umap = ordination
+            .ordination_umap(UmapRequest {
+                path: commit.groups[0].path.clone(),
+                columns: vec!["as".into(), "fe".into()],
+                transformation: None,
+                seed: None,
+            })
+            .expect("umap");
+        assert_eq!(umap.score_names, vec!["V1", "V2"]);
+        assert_eq!(umap.embedding.len(), 20);
+        assert!(umap.embedding.iter().all(|row| row.len() == 2));
+
+        // Validation errors surface as error payloads on the open service.
+        let err = ordination
+            .ordination_pca(PcaRequest {
+                path: "groups/Missing.parquet".into(),
+                columns: vec!["as".into(), "fe".into()],
+                scale: false,
+                transformation: None,
+            })
+            .expect_err("missing group file");
+        assert!(!err.contains("no project open"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
