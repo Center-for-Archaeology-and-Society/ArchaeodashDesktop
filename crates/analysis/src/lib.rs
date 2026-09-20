@@ -6,6 +6,7 @@
 pub mod explore;
 pub mod lda;
 pub mod pca;
+pub mod umap;
 
 use archaeodash_data_io::rnum::r_round;
 use archaeodash_domain::DomainError;
@@ -17,6 +18,10 @@ pub use explore::{
 };
 pub use lda::{lda, Lda, LEGACY_LDA_TOL};
 pub use pca::{apply_sign_flips, component_sign_flips, pca, Pca};
+pub use umap::{
+    find_ab_params, fuzzy_simplicial_set, knn_brute_force, laplacian_smallest_eigenvalues,
+    smooth_knn_dist, umap, Umap, UmapConfig, DEFAULT_SEED,
+};
 
 /// 3-decimal R-compatible rounding used by the z-score and log contracts.
 pub(crate) fn r_round3(v: f64) -> f64 {

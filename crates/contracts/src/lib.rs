@@ -549,6 +549,51 @@ pub struct LdaResponse {
     pub warnings: Vec<String>,
 }
 
+/// `POST /ordination/umap` request: legacy `umap::umap(method = "naive")`
+/// parity over one group file (Section 8.6, class D). Results are ephemeral
+/// and never persisted (Section 5 storage invariant).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UmapRequest {
+    /// Project-relative group file path.
+    pub path: String,
+    /// Columns to ordinate: measured elemental names, or post-transform
+    /// output names when `transformation` is present.
+    pub columns: Vec<String>,
+    /// Optional transformation applied to the group matrix first.
+    pub transformation: Option<TransformationDefinition>,
+    /// Deterministic RNG seed replacing the legacy unseeded global stream
+    /// (class-D fixed-seed golden). Defaults to the golden-fixture seed.
+    #[serde(default)]
+    pub seed: Option<u64>,
+}
+
+/// UMAP result: seeded, deterministic `V1`/`V2` embedding with the resolved
+/// legacy configuration echoed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UmapResponse {
+    pub path: String,
+    /// Revision the group file was at when computed.
+    pub revision_id: String,
+    /// Input column names, in request order.
+    pub column_names: Vec<String>,
+    /// Embedding dimension names `V1..Vd` (legacy `umap$layout` names).
+    pub score_names: Vec<String>,
+    /// Embedding, row-major (`embedding[i][k]` like R's `umap$layout`).
+    pub embedding: Vec<Vec<f64>>,
+    /// Seed used for the deterministic stream.
+    pub seed: u64,
+    /// Legacy `n_neighbors` (brute-force neighbor count per row).
+    pub n_neighbors: usize,
+    /// Legacy `n_epochs` (SGD epochs).
+    pub n_epochs: usize,
+    /// Fitted `a` curve parameter (`find.ab.params(spread, min_dist)`).
+    pub a: f64,
+    /// Fitted `b` curve parameter.
+    pub b: f64,
+    /// Non-fatal legacy warnings (spectral-init fallback).
+    pub warnings: Vec<String>,
+}
+
 /// `POST /explore/missing-profile` request: `profile_missing` band summaries
 /// over one group file's columns (Section 8 procedure 12, class E). Results
 /// are ephemeral and never persisted (Section 5 storage invariant).
@@ -978,6 +1023,45 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<LdaResponse>(&json).unwrap(),
             lda_response
+        );
+
+        let umap_request = UmapRequest {
+            path: "groups/Baca.parquet".into(),
+            columns: vec!["as".into(), "fe".into()],
+            transformation: None,
+            seed: None,
+        };
+        let json = serde_json::to_string(&umap_request).unwrap();
+        assert_eq!(
+            serde_json::from_str::<UmapRequest>(&json).unwrap(),
+            umap_request
+        );
+        // `seed` defaults on deserialization when omitted.
+        let omitted = serde_json::json!({
+            "path": "groups/Baca.parquet",
+            "columns": ["as", "fe"],
+            "transformation": null,
+        });
+        let request: UmapRequest = serde_json::from_value(omitted).unwrap();
+        assert_eq!(request.seed, None);
+
+        let umap_response = UmapResponse {
+            path: "groups/Baca.parquet".into(),
+            revision_id: "rev-1".into(),
+            column_names: vec!["as".into(), "fe".into()],
+            score_names: vec!["V1".into(), "V2".into()],
+            embedding: vec![vec![-4.46, 2.06], vec![1.61, -6.25]],
+            seed: 20260914,
+            n_neighbors: 15,
+            n_epochs: 200,
+            a: 1.5769436126945664,
+            b: 0.8950607181519281,
+            warnings: vec![],
+        };
+        let json = serde_json::to_string(&umap_response).unwrap();
+        assert_eq!(
+            serde_json::from_str::<UmapResponse>(&json).unwrap(),
+            umap_response
         );
     }
 }

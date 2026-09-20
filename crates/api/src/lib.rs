@@ -29,7 +29,8 @@ use archaeodash_contracts::{
     ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse, LdaRequest, LdaResponse,
     MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest, PcaResponse,
     SaveTransformationRequest, SaveTransformationResponse, StagedFile, TransactionResponse,
-    TransferUnitsRequest, TransformationDefinition, TransformationListResponse,
+    TransferUnitsRequest, TransformationDefinition, TransformationListResponse, UmapRequest,
+    UmapResponse,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_domain::DomainError;
@@ -412,6 +413,20 @@ async fn ordination_lda(
         .map_err(domain_error_response)
 }
 
+/// `POST /api/v1/ordination/umap`: legacy `umap::umap(method = "naive")`
+/// parity over one group file with a deterministic seed; results are
+/// ephemeral (Section 5 storage invariant).
+async fn ordination_umap(
+    State(state): State<AppState>,
+    Json(req): Json<UmapRequest>,
+) -> Result<Json<UmapResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .ordination
+        .umap(&req)
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
 /// `POST /api/v1/explore/missing-profile`: `profile_missing` band summary;
 /// results are ephemeral (Section 5 storage invariant).
 async fn explore_missing_profile(
@@ -500,6 +515,7 @@ pub fn root_router(state: AppState) -> Router {
         .route("/api/v1/transformations/apply", post(transformations_apply))
         .route("/api/v1/ordination/pca", post(ordination_pca))
         .route("/api/v1/ordination/lda", post(ordination_lda))
+        .route("/api/v1/ordination/umap", post(ordination_umap))
         .route(
             "/api/v1/explore/missing-profile",
             post(explore_missing_profile),
@@ -1439,6 +1455,110 @@ mod tests {
         let envelope: ErrorEnvelope = serde_json::from_slice(&bytes).unwrap();
         assert!(envelope.message.contains("LDA requires at least 3 groups"));
     }
+
+    /// UMAP over one committed group file through the HTTP adapter: seeded
+    /// deterministic embedding, legacy config echo, and the empty-column and
+    /// too-few-rows validation gates as 422s.
+    #[tokio::test]
+    async fn ordination_umap_round_trip_and_validation_error() {
+        let (state, dir) = test_state();
+        let app = root_router(state.clone());
+        // UMAP's legacy n_neighbors = 15 needs more than 15 rows.
+        let rows: Vec<String> = (0..20)
+            .map(|i| {
+                let v = i as f64;
+                format!("A{i},A,{},{}", 1.5 + v, 3.0 + 2.0 * (v % 4.0))
+            })
+            .collect();
+        std::fs::write(
+            dir.path().join("many.csv"),
+            format!("anid,Site,as,fe\n{}\n", rows.join("\n")),
+        )
+        .expect("write source");
+        let commit = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/imports/commit")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ImportCommitRequest {
+                            source: "many.csv".into(),
+                            group_column: "Site".into(),
+                            visible_id_column: None,
+                            elemental_columns: None,
+                            recipe: None,
+                            destination_dir: None,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(commit.status(), axum::http::StatusCode::OK);
+        let bytes = commit.into_body().collect().await.unwrap().to_bytes();
+        let import: ImportCommitResponse = serde_json::from_slice(&bytes).unwrap();
+        let path = import.groups[0].path.clone();
+
+        let make_request = |path: String, columns: Vec<String>| {
+            axum::http::Request::post("/api/v1/ordination/umap")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&UmapRequest {
+                        path,
+                        columns,
+                        transformation: None,
+                        seed: None,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap()
+        };
+
+        let response = app
+            .clone()
+            .oneshot(make_request(path.clone(), vec!["as".into(), "fe".into()]))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let umap: UmapResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(umap.path, path);
+        assert_eq!(umap.score_names, vec!["V1", "V2"]);
+        assert_eq!(umap.embedding.len(), 20);
+        assert!(umap.embedding.iter().all(|row| row.len() == 2));
+        assert_eq!(umap.seed, 20260914);
+        assert_eq!(umap.n_neighbors, 15);
+        assert_eq!(umap.n_epochs, 200);
+        assert!(umap.warnings.is_empty());
+
+        // Same seed -> bit-identical embedding (class-D determinism).
+        let response = app
+            .clone()
+            .oneshot(make_request(path.clone(), vec!["as".into(), "fe".into()]))
+            .await
+            .unwrap();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let again: UmapResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(again.embedding, umap.embedding);
+
+        // Fewer rows than n_neighbors -> 422 legacy gate.
+        let small_path = commit_fixture(app.clone(), &dir).await.groups[0]
+            .path
+            .clone();
+        let response = app
+            .oneshot(make_request(small_path, vec!["as".into(), "fe".into()]))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let envelope: ErrorEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(envelope.code, "validation_error");
+    }
+
     #[tokio::test]
     async fn explore_views_round_trip_and_validation_error() {
         let (state, dir) = test_state();

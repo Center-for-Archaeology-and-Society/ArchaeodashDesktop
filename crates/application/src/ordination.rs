@@ -1,13 +1,14 @@
-//! Ordination use cases (Phase 4, Section 8.5): PCA and LDA over one group
-//! file's measured elemental values, optionally after an ephemeral
+//! Ordination use cases (Phase 4, Section 8.5): PCA, LDA, and UMAP over one
+//! group file's measured elemental values, optionally after an ephemeral
 //! transformation. Results are returned to the caller and never persisted
 //! (Section 5 storage invariant: no ordination values reach group files).
 
 use std::path::PathBuf;
 
-use archaeodash_analysis::{lda, pca, ColumnMatrix};
+use archaeodash_analysis::{lda, pca, umap, ColumnMatrix, DEFAULT_SEED};
 use archaeodash_contracts::{
-    LdaRequest, LdaResponse, PcaRequest, PcaResponse, TransformationDefinition,
+    LdaRequest, LdaResponse, PcaRequest, PcaResponse, TransformationDefinition, UmapRequest,
+    UmapResponse,
 };
 use archaeodash_data_io::{read_group_file, GroupFileData};
 use archaeodash_domain::DomainError;
@@ -179,6 +180,38 @@ impl OrdinationService {
             svd: result.svd,
             score_names,
             scores: result.scores,
+            warnings: result.warnings,
+        })
+    }
+
+    /// Legacy `umap::umap(method = "naive")` parity (Section 15.4 procedure
+    /// 7, class D) over one group file, with a deterministic seed replacing
+    /// the legacy unseeded global stream.
+    pub fn umap(&self, req: &UmapRequest) -> Result<UmapResponse, DomainError> {
+        if req.columns.is_empty() {
+            return Err(validation(
+                "ordination_empty",
+                "UMAP requires at least one column",
+            ));
+        }
+        let data = read_group_file(&self.root.join(&req.path)).map_err(import_err)?;
+        let matrix =
+            Self::input_matrix(&data, &req.columns, req.transformation.as_ref(), &req.path)?;
+        let seed = req.seed.unwrap_or(DEFAULT_SEED);
+        let result = umap(&matrix, seed)?;
+        let k = result.config.n_components;
+
+        Ok(UmapResponse {
+            path: req.path.clone(),
+            revision_id: data.profile.revision_id.clone(),
+            column_names: req.columns.clone(),
+            score_names: (1..=k).map(|i| format!("V{i}")).collect(),
+            embedding: result.layout,
+            seed,
+            n_neighbors: result.config.n_neighbors,
+            n_epochs: result.config.n_epochs,
+            a: result.config.a,
+            b: result.config.b,
             warnings: result.warnings,
         })
     }
