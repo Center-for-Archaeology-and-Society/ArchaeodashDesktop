@@ -5,18 +5,18 @@ use archaeodash_contracts::{
     ApplyTransformationRequest, BatchRatioRequest, DeleteGroupRequest, DuplicateGroupRequest,
     ExploreCompositionalProfileRequest, ExploreCrosstabRequest, ExploreHistogramRequest,
     ExploreMissingProfileRequest, ExportMeasuredDataRequest, ExportPcaScoresRequest,
-    ExportTransformedRequest, ImportCommitRequest, ImportPreviewRequest, LdaRequest,
-    MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest, TransferUnitsRequest,
-    UmapRequest,
+    ExportTransformedRequest, GetPreferencesResponse, ImportCommitRequest, ImportPreviewRequest,
+    LdaRequest, MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest,
+    PutPreferenceRequest, TransferUnitsRequest, UmapRequest,
 };
 use archaeodash_desktop::{
     DesktopAppInfo, DesktopExplore, DesktopExports, DesktopFiles, DesktopGroups, DesktopImport,
-    DesktopOrdination, DesktopTransforms,
+    DesktopOrdination, DesktopPreferences, DesktopTransforms,
 };
 use std::sync::Mutex;
 
 /// Project-scoped state shared by the import, group, file, transformation,
-/// explore, ordination, and export commands.
+/// explore, ordination, export, and preference commands.
 struct DesktopState {
     import: DesktopImport,
     groups: DesktopGroups,
@@ -25,6 +25,7 @@ struct DesktopState {
     explore: DesktopExplore,
     ordination: DesktopOrdination,
     exports: DesktopExports,
+    preferences: DesktopPreferences,
 }
 
 /// Smoke command exposed to the React client over Tauri IPC.
@@ -421,6 +422,31 @@ fn export_pca_scores(
         .export_pca_scores(request)
 }
 
+/// `preferences_get`: every stored allowlisted preference (Section 10.1).
+#[tauri::command]
+fn preferences_get(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+) -> Result<GetPreferencesResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .preferences
+        .preferences_get()
+}
+
+/// `preferences_set`: upsert one allowlisted, shape-validated preference.
+#[tauri::command]
+fn preferences_set(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: PutPreferenceRequest,
+) -> Result<(), String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .preferences
+        .preferences_set(request)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[allow(clippy::expect_used)] // app entry point: a failed runtime start must abort startup
 pub fn run() {
@@ -433,6 +459,7 @@ pub fn run() {
             explore: DesktopExplore::new(),
             ordination: DesktopOrdination::new(),
             exports: DesktopExports::new(),
+            preferences: DesktopPreferences::new(),
         }))
         .invoke_handler(tauri::generate_handler![
             app_info,
@@ -464,7 +491,9 @@ pub fn run() {
             ordination_umap,
             export_measured_data,
             export_transformed,
-            export_pca_scores
+            export_pca_scores,
+            preferences_get,
+            preferences_set
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

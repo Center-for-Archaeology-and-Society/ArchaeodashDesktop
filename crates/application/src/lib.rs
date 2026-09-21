@@ -11,6 +11,7 @@ pub mod files;
 pub mod groups;
 pub mod import;
 pub mod ordination;
+pub mod preferences;
 pub mod transforms;
 
 pub use explore::ExploreService;
@@ -19,6 +20,7 @@ pub use files::SourceFileService;
 pub use groups::GroupService;
 pub use import::ImportService;
 pub use ordination::OrdinationService;
+pub use preferences::PreferenceService;
 pub use transforms::TransformService;
 
 /// Returns application identity and readiness for the smoke use case.

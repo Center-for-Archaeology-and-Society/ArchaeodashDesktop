@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use archaeodash_application::{
     app_info, ExploreService, ExportService, GroupService, ImportService, OrdinationService,
-    SourceFileService, TransformService,
+    PreferenceService, SourceFileService, TransformService,
 };
 use archaeodash_contracts::{
     AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
@@ -26,12 +26,12 @@ use archaeodash_contracts::{
     ExploreCompositionalProfileResponse, ExploreCrosstabRequest, ExploreCrosstabResponse,
     ExploreHistogramRequest, ExploreHistogramResponse, ExploreMissingProfileRequest,
     ExploreMissingProfileResponse, ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult,
-    ExportTransformedRequest, GroupCandidate, GroupSummary, ImportCommitRequest,
-    ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse, LdaRequest, LdaResponse,
-    MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest, PcaResponse,
-    SaveTransformationRequest, SaveTransformationResponse, StagedFile, TransactionResponse,
-    TransferUnitsRequest, TransformationDefinition, TransformationListResponse, UmapRequest,
-    UmapResponse,
+    ExportTransformedRequest, GetPreferencesResponse, GroupCandidate, GroupSummary,
+    ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse,
+    LdaRequest, LdaResponse, MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest,
+    PcaResponse, PutPreferenceRequest, SaveTransformationRequest, SaveTransformationResponse,
+    StagedFile, TransactionResponse, TransferUnitsRequest, TransformationDefinition,
+    TransformationListResponse, UmapRequest, UmapResponse,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_domain::DomainError;
@@ -54,6 +54,7 @@ pub struct AppState {
     pub ordination: Arc<OrdinationService>,
     pub explore: Arc<ExploreService>,
     pub exports: Arc<ExportService>,
+    pub preferences: Arc<PreferenceService>,
 }
 
 async fn healthz() -> Json<AppInfo> {
@@ -521,6 +522,33 @@ async fn exports_pca_scores(
         .map_err(domain_error_response)
 }
 
+/// `GET /api/v1/preferences`: every stored preference (absent keys read as
+/// defaults client-side). Desktop file store now; hosted per-user
+/// control-plane rows in Phase 7 (Section 6.5).
+async fn preferences_get(
+    State(state): State<AppState>,
+) -> Result<Json<GetPreferencesResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .preferences
+        .get_all()
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
+/// `PUT /api/v1/preferences`: upsert one allowlisted, shape-validated
+/// preference (Section 10.1; legacy `write_user_preference_safe` upsert
+/// semantics, typed).
+async fn preferences_set(
+    State(state): State<AppState>,
+    Json(req): Json<PutPreferenceRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .preferences
+        .set(&req)
+        .map(|()| StatusCode::NO_CONTENT)
+        .map_err(domain_error_response)
+}
+
 /// Builds the root router. Route groups for analysis, jobs, and auth land in
 /// their owning phases (Sections 10.1+).
 pub fn root_router(state: AppState) -> Router {
@@ -564,6 +592,10 @@ pub fn root_router(state: AppState) -> Router {
         .route("/api/v1/exports/transformed", post(exports_transformed))
         .route("/api/v1/exports/pca-scores", post(exports_pca_scores))
         .route(
+            "/api/v1/preferences",
+            get(preferences_get).put(preferences_set),
+        )
+        .route(
             "/api/v1/explore/missing-profile",
             post(explore_missing_profile),
         )
@@ -604,6 +636,7 @@ mod tests {
             ordination: Arc::new(OrdinationService::new(dir.path()).expect("ordination service")),
             explore: Arc::new(ExploreService::new(dir.path()).expect("explore service")),
             exports: Arc::new(ExportService::new(dir.path()).expect("export service")),
+            preferences: Arc::new(PreferenceService::new(dir.path()).expect("preference service")),
         };
         (state, dir)
     }
@@ -2014,5 +2047,88 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let envelope: ErrorEnvelope = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(envelope.code, "validation_error");
+    }
+
+    /// `GET/PUT /api/v1/preferences`: typed allowlisted upsert, round trip,
+    /// and a 422 on a shape-invalid value (Section 10.1).
+    #[tokio::test]
+    async fn preference_routes_upsert_validate_and_round_trip() {
+        use archaeodash_contracts::{
+            GetPreferencesResponse, PreferenceEntry, PreferenceKey, PutPreferenceRequest,
+        };
+        let (state, _dir) = test_state();
+        let app = root_router(state);
+
+        // Empty store reads as empty defaults.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get("/api/v1/preferences")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            serde_json::from_slice::<GetPreferencesResponse>(&bytes)
+                .unwrap()
+                .preferences,
+            Vec::<PreferenceEntry>::new()
+        );
+
+        // Upsert theme, then lastOpenedDataset; get returns both.
+        for (key, value) in [
+            (PreferenceKey::Theme, serde_json::json!("dark")),
+            (PreferenceKey::LastOpenedDataset, serde_json::json!("Baca")),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::put("/api/v1/preferences")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::to_vec(&PutPreferenceRequest { key, value }).unwrap(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get("/api/v1/preferences")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let all = serde_json::from_slice::<GetPreferencesResponse>(&bytes).unwrap();
+        assert_eq!(all.preferences.len(), 2);
+
+        // Shape-invalid theme is a 422 validation_error.
+        let response = app
+            .oneshot(
+                axum::http::Request::put("/api/v1/preferences")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&PutPreferenceRequest {
+                            key: PreferenceKey::Theme,
+                            value: serde_json::json!("solarized"),
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
     }
 }

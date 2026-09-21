@@ -809,6 +809,84 @@ pub struct ExportResult {
     pub content: String,
 }
 
+/// Allowlisted preference keys (Section 10.1: typed allowlisted preference
+/// keys only; Section 6.5: typed JSON values, never free-form rows). The
+/// legacy app persisted exactly two fields — `themePreference`
+/// (`R/userPreferences.R`, values `simple`/`light`/`dark`) and
+/// `lastOpenedDataset` (`DataLoader.R`) — and Section 9.4 adds the Explore
+/// table UI prefs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PreferenceKey {
+    /// UI theme; legacy `simple`/`light`/`dark` values (Section 9.3).
+    Theme,
+    /// Last-opened dataset name, re-validated against live groups on read
+    /// (legacy `lastOpenedDataset` selector-default semantics).
+    LastOpenedDataset,
+    /// Explore table column-visibility map, column name to visible flag
+    /// (Section 9.4).
+    ColumnVisibility,
+    /// Explore table compact-mode flag (Section 9.4).
+    CompactMode,
+}
+
+impl PreferenceKey {
+    /// Stable storage/wire name for the key.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PreferenceKey::Theme => "theme",
+            PreferenceKey::LastOpenedDataset => "lastOpenedDataset",
+            PreferenceKey::ColumnVisibility => "columnVisibility",
+            PreferenceKey::CompactMode => "compactMode",
+        }
+    }
+}
+
+impl TryFrom<&str> for PreferenceKey {
+    type Error = ();
+
+    /// Parses a storage/wire key name; unknown names are rejected (the
+    /// typed allowlist, Section 10.1).
+    fn try_from(name: &str) -> Result<Self, Self::Error> {
+        match name {
+            "theme" => Ok(PreferenceKey::Theme),
+            "lastOpenedDataset" => Ok(PreferenceKey::LastOpenedDataset),
+            "columnVisibility" => Ok(PreferenceKey::ColumnVisibility),
+            "compactMode" => Ok(PreferenceKey::CompactMode),
+            _ => Err(()),
+        }
+    }
+}
+
+/// One persisted preference: an allowlisted key plus its typed JSON value.
+/// Value-shape validation per key happens in the application service.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PreferenceEntry {
+    /// Allowlisted preference key.
+    pub key: PreferenceKey,
+    /// JSON value whose shape depends on the key.
+    pub value: serde_json::Value,
+}
+
+/// `GET /preferences` / desktop `preferences_get` response: every stored
+/// preference (absent keys simply do not appear; readers apply defaults).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct GetPreferencesResponse {
+    /// All stored preference entries.
+    pub preferences: Vec<PreferenceEntry>,
+}
+
+/// `PUT /preferences` / desktop `preferences_set` request: upsert one
+/// allowlisted preference (legacy `write_user_preference_safe` upsert
+/// semantics, typed).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PutPreferenceRequest {
+    /// Allowlisted preference key.
+    pub key: PreferenceKey,
+    /// JSON value; must match the key's documented shape.
+    pub value: serde_json::Value,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1277,5 +1355,69 @@ mod export_dto_tests {
         };
         let json = serde_json::to_string(&result).unwrap();
         assert_eq!(serde_json::from_str::<ExportResult>(&json).unwrap(), result);
+    }
+}
+
+#[cfg(test)]
+mod preference_dto_tests {
+    use super::*;
+
+    #[test]
+    fn preference_dtos_round_trip() {
+        // Keys serialize under their stable camelCase wire names.
+        assert_eq!(
+            serde_json::to_string(&PreferenceKey::LastOpenedDataset).unwrap(),
+            "\"lastOpenedDataset\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PreferenceKey::ColumnVisibility).unwrap(),
+            "\"columnVisibility\""
+        );
+
+        let entry = PreferenceEntry {
+            key: PreferenceKey::Theme,
+            value: serde_json::json!("dark"),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert_eq!(
+            serde_json::from_str::<PreferenceEntry>(&json).unwrap(),
+            entry
+        );
+
+        let put = PutPreferenceRequest {
+            key: PreferenceKey::CompactMode,
+            value: serde_json::json!(true),
+        };
+        let json = serde_json::to_string(&put).unwrap();
+        assert_eq!(
+            serde_json::from_str::<PutPreferenceRequest>(&json).unwrap(),
+            put
+        );
+
+        let response = GetPreferencesResponse {
+            preferences: vec![entry],
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert_eq!(
+            serde_json::from_str::<GetPreferencesResponse>(&json).unwrap(),
+            response
+        );
+        assert_eq!(
+            serde_json::from_str::<GetPreferencesResponse>("{\"preferences\":[]}")
+                .unwrap()
+                .preferences,
+            Vec::<PreferenceEntry>::new()
+        );
+    }
+
+    #[test]
+    fn preference_key_str_matches_wire_names() {
+        assert_eq!(PreferenceKey::Theme.as_str(), "theme");
+        assert_eq!(
+            PreferenceKey::LastOpenedDataset.as_str(),
+            "lastOpenedDataset"
+        );
+        assert_eq!(PreferenceKey::ColumnVisibility.as_str(), "columnVisibility");
+        assert_eq!(PreferenceKey::CompactMode.as_str(), "compactMode");
     }
 }

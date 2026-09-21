@@ -5,7 +5,7 @@
 
 use archaeodash_application::{
     ExploreService, ExportService, GroupService, ImportService, OrdinationService,
-    SourceFileService, TransformService,
+    PreferenceService, SourceFileService, TransformService,
 };
 use archaeodash_contracts::{
     AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
@@ -13,12 +13,12 @@ use archaeodash_contracts::{
     ExploreCompositionalProfileResponse, ExploreCrosstabRequest, ExploreCrosstabResponse,
     ExploreHistogramRequest, ExploreHistogramResponse, ExploreMissingProfileRequest,
     ExploreMissingProfileResponse, ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult,
-    ExportTransformedRequest, FileDownload, FileUploadRequest, GroupCandidate, GroupSummary,
-    ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse,
-    LdaRequest, LdaResponse, MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest,
-    PcaResponse, RatioSpecDto, SaveTransformationResponse, StagedFile, TransactionResponse,
-    TransferUnitsRequest, TransformationDefinition, TransformationListResponse, UmapRequest,
-    UmapResponse,
+    ExportTransformedRequest, FileDownload, FileUploadRequest, GetPreferencesResponse,
+    GroupCandidate, GroupSummary, ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest,
+    ImportPreviewResponse, LdaRequest, LdaResponse, MergeGroupsRequest,
+    PatchDescriptiveValuesRequest, PcaRequest, PcaResponse, PutPreferenceRequest, RatioSpecDto,
+    SaveTransformationResponse, StagedFile, TransactionResponse, TransferUnitsRequest,
+    TransformationDefinition, TransformationListResponse, UmapRequest, UmapResponse,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_domain::DomainError;
@@ -498,6 +498,59 @@ impl DesktopExports {
 }
 
 impl Default for DesktopExports {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Desktop preference state: one project-scoped preference service sharing
+/// the project root (Section 10.1 typed allowlist; `.archaeodash/
+/// preferences.json` store, replaced by the hosted control-plane table in
+/// Phase 7).
+pub struct DesktopPreferences {
+    service: Mutex<Option<PreferenceService>>,
+}
+
+impl DesktopPreferences {
+    /// No project open yet; `open_project` sets the root.
+    pub fn new() -> Self {
+        Self {
+            service: Mutex::new(None),
+        }
+    }
+
+    /// Opens (or re-opens) the project root for preference use cases.
+    pub fn open_project(&self, root: impl Into<PathBuf>) -> Result<(), String> {
+        let service = PreferenceService::new(root).map_err(|e| e.to_string())?;
+        *self.service.lock().map_err(|e| e.to_string())? = Some(service);
+        Ok(())
+    }
+
+    fn with_service<T>(
+        &self,
+        op: impl FnOnce(&PreferenceService) -> Result<T, DomainError>,
+    ) -> Result<T, String> {
+        let guard = self.service.lock().map_err(|e| e.to_string())?;
+        let service = guard.as_ref().ok_or_else(|| {
+            "no project open: call open_project with a directory first".to_string()
+        })?;
+        op(service).map_err(|e| e.to_string())
+    }
+
+    /// Desktop `preferences_get` command body: every stored preference
+    /// (absent keys read as defaults client-side).
+    pub fn preferences_get(&self) -> Result<GetPreferencesResponse, String> {
+        self.with_service(|svc| svc.get_all())
+    }
+
+    /// Desktop `preferences_set` command body: upsert one allowlisted
+    /// preference.
+    pub fn preferences_set(&self, req: PutPreferenceRequest) -> Result<(), String> {
+        self.with_service(|svc| svc.set(&req))
+    }
+}
+
+impl Default for DesktopPreferences {
     fn default() -> Self {
         Self::new()
     }
@@ -1075,6 +1128,67 @@ mod tests {
             before,
             "group file byte-identical after export"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod preference_tests {
+    use super::*;
+    use archaeodash_contracts::{PreferenceKey, PutPreferenceRequest};
+
+    #[test]
+    fn preference_commands_upsert_read_and_gate_on_open_project() {
+        let dir =
+            std::env::temp_dir().join(format!("archaeodash-desktop-prefs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("project dir");
+
+        let prefs = DesktopPreferences::new();
+        let err = prefs.preferences_get().expect_err("no project open");
+        assert!(err.contains("no project open"));
+
+        prefs.open_project(&dir).expect("open project");
+        prefs
+            .preferences_set(PutPreferenceRequest {
+                key: PreferenceKey::Theme,
+                value: serde_json::json!("dark"),
+            })
+            .expect("set theme");
+        prefs
+            .preferences_set(PutPreferenceRequest {
+                key: PreferenceKey::LastOpenedDataset,
+                value: serde_json::json!("Baca"),
+            })
+            .expect("set last opened");
+        // Upsert replaces without duplicating.
+        prefs
+            .preferences_set(PutPreferenceRequest {
+                key: PreferenceKey::Theme,
+                value: serde_json::json!("light"),
+            })
+            .expect("update theme");
+
+        let response = prefs.preferences_get().expect("get");
+        assert_eq!(response.preferences.len(), 2);
+        assert!(response
+            .preferences
+            .contains(&archaeodash_contracts::PreferenceEntry {
+                key: PreferenceKey::Theme,
+                value: serde_json::json!("light"),
+            }));
+
+        // Allowlist/shape validation rejects before touching the store.
+        assert!(prefs
+            .preferences_set(PutPreferenceRequest {
+                key: PreferenceKey::Theme,
+                value: serde_json::json!("solarized"),
+            })
+            .is_err());
+        assert_eq!(prefs.preferences_get().expect("get").preferences.len(), 2);
+
+        // Persisted as one JSON document in the project metadata area.
+        assert!(dir.join(".archaeodash/preferences.json").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

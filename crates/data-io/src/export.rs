@@ -59,7 +59,7 @@ pub fn write_text_csv(path: &Path, frame: &TextFrame) -> Result<(), ImportError>
 
 /// Write-to-temp, flush, atomic rename (Section 6.3 project metadata rule;
 /// reused by every file writer so readers never observe partial output).
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), ImportError> {
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), ImportError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| ImportError::Io(e.to_string()))?;
         let tmp = parent.join(format!(".tmp-{}", uuid::Uuid::now_v7().simple()));
