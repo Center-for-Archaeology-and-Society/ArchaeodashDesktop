@@ -46,6 +46,8 @@ Up: [[../../Vault/Index]]
  - [[Phase_4_UMAP_Naive_Port_Golden_07_2026-09-20]]
  - [[Phase_4_Desktop_Ordination_Tauri_Adapter_2026-09-20]]
 - [[Phase_2_Descriptive_Edit_And_Duplicate_Group_2026-09-19]]
+ - [[Phase_4_Result_Exports_Golden_14_2026-09-21]]
+- [[Interaction_Log_2026-09-21]]
 
 ## Notes
 - This vault uses atomic notes (one concept per file) linked with `[[Wikilinks]]`.
