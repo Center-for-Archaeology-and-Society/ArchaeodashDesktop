@@ -6,6 +6,7 @@
 use archaeodash_contracts::AppInfo;
 
 pub mod explore;
+pub mod exports;
 pub mod files;
 pub mod groups;
 pub mod import;
@@ -13,6 +14,7 @@ pub mod ordination;
 pub mod transforms;
 
 pub use explore::ExploreService;
+pub use exports::{ensure_csv_extension, ExportService};
 pub use files::SourceFileService;
 pub use groups::GroupService;
 pub use import::ImportService;

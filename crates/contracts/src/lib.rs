@@ -751,6 +751,64 @@ pub struct ExploreCompositionalProfileResponse {
     pub rows: Vec<CompositionalProfileRow>,
 }
 
+/// `POST /exports/measured-data` request: the measured chemical frame of one
+/// group file as CSV (Section 7.3; legacy `rvals$selectedData`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportMeasuredDataRequest {
+    /// Project-relative group file path.
+    pub path: String,
+    /// `true` disables the Section 7.3 formula-injection guard and reproduces
+    /// the byte-exact legacy `fwrite` output for the measured-data case.
+    #[serde(default)]
+    pub raw_text: bool,
+}
+
+/// `POST /exports/transformed` request: the explicitly computed transformed
+/// result of one definition over one group file as CSV (Section 7.3).
+/// Calculated values are ephemeral and never persisted (Section 5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportTransformedRequest {
+    /// Project-relative group file path.
+    pub path: String,
+    /// Inline definition applied on demand before export.
+    pub definition: TransformationDefinition,
+    /// `true` disables the Section 7.3 formula-injection guard.
+    #[serde(default)]
+    pub raw_text: bool,
+}
+
+/// `POST /exports/pca-scores` request: the computed PCA score frame as CSV.
+/// The legacy export read the nonexistent `rvals$pcaData`; Section 3.2
+/// corrects it to export the computed `pcadf` equivalent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportPcaScoresRequest {
+    /// Project-relative group file path.
+    pub path: String,
+    /// Columns to ordinate: measured elemental names, or post-transform
+    /// output names when `transformation` is present.
+    pub columns: Vec<String>,
+    /// `prcomp` `scale.` flag, mirroring `PcaRequest`.
+    #[serde(default)]
+    pub scale: bool,
+    /// Optional transformation applied to the group matrix first.
+    pub transformation: Option<TransformationDefinition>,
+}
+
+/// One ephemeral CSV export result returned to the caller (Section 7.3).
+/// The desktop client saves `content` through a native save dialog using
+/// `file_name` as the default; the hosted streaming-download route arrives
+/// with the Phase 7 job surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportResult {
+    /// Suggested download filename (legacy `saveexportTab.R` name rule).
+    pub file_name: String,
+    /// MIME type, always `text/csv` for this slice (XLSX/TSV are deferred
+    /// per the Section 7.1 capability matrix).
+    pub media_type: String,
+    /// Full CSV text, header row first, `\n` line endings.
+    pub content: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1141,5 +1199,83 @@ mod explore_dto_tests {
             serde_json::from_str::<CompositionalProfileRow>(&json).unwrap(),
             row
         );
+    }
+}
+
+#[cfg(test)]
+mod export_dto_tests {
+    use super::*;
+
+    #[test]
+    fn export_dtos_round_trip() {
+        let measured = ExportMeasuredDataRequest {
+            path: "groups/Baca.parquet".into(),
+            raw_text: false,
+        };
+        let json = serde_json::to_string(&measured).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ExportMeasuredDataRequest>(&json).unwrap(),
+            measured
+        );
+        // `raw_text` defaults to false on the wire.
+        assert_eq!(
+            serde_json::from_str::<ExportMeasuredDataRequest>("{\"path\":\"groups/Baca.parquet\"}")
+                .unwrap()
+                .raw_text,
+            false
+        );
+
+        let definition = TransformationDefinition {
+            name: "log_ratio_set".into(),
+            transform_method: TransformMethod::Log10,
+            imputation_method: ImputationMethod::None,
+            imputation_seed: None,
+            elemental_columns: vec!["as".into(), "fe".into()],
+            descriptive_columns: vec![],
+            group_column: None,
+            ratios: vec![RatioSpecDto {
+                output_name: None,
+                numerator: "as".into(),
+                denominator: "fe".into(),
+            }],
+            ratio_mode: RatioMode::Append,
+        };
+        let transformed = ExportTransformedRequest {
+            path: "groups/Baca.parquet".into(),
+            definition: definition.clone(),
+            raw_text: true,
+        };
+        let json = serde_json::to_string(&transformed).unwrap();
+        assert!(json.contains("\"raw_text\":true"), "raw_text: {json}");
+        assert_eq!(
+            serde_json::from_str::<ExportTransformedRequest>(&json).unwrap(),
+            transformed
+        );
+
+        let pca = ExportPcaScoresRequest {
+            path: "groups/Baca.parquet".into(),
+            columns: vec!["as".into(), "fe".into()],
+            scale: false,
+            transformation: Some(definition),
+        };
+        let json = serde_json::to_string(&pca).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ExportPcaScoresRequest>(&json).unwrap(),
+            pca
+        );
+        // `scale` defaults to false on the wire, mirroring `PcaRequest`.
+        let omitted: ExportPcaScoresRequest = serde_json::from_str(
+            r#"{"path":"groups/Baca.parquet","columns":["as"],"transformation":null}"#,
+        )
+        .unwrap();
+        assert_eq!(omitted.scale, false);
+
+        let result = ExportResult {
+            file_name: "Baca.csv".into(),
+            media_type: "text/csv".into(),
+            content: "anid,Site,as\nA1,Baca,'=x\n".into(),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert_eq!(serde_json::from_str::<ExportResult>(&json).unwrap(), result);
     }
 }

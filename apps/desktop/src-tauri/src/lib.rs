@@ -4,18 +4,19 @@
 use archaeodash_contracts::{
     ApplyTransformationRequest, BatchRatioRequest, DeleteGroupRequest, DuplicateGroupRequest,
     ExploreCompositionalProfileRequest, ExploreCrosstabRequest, ExploreHistogramRequest,
-    ExploreMissingProfileRequest, ImportCommitRequest, ImportPreviewRequest, LdaRequest,
+    ExploreMissingProfileRequest, ExportMeasuredDataRequest, ExportPcaScoresRequest,
+    ExportTransformedRequest, ImportCommitRequest, ImportPreviewRequest, LdaRequest,
     MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest, TransferUnitsRequest,
     UmapRequest,
 };
 use archaeodash_desktop::{
-    DesktopAppInfo, DesktopExplore, DesktopFiles, DesktopGroups, DesktopImport, DesktopOrdination,
-    DesktopTransforms,
+    DesktopAppInfo, DesktopExplore, DesktopExports, DesktopFiles, DesktopGroups, DesktopImport,
+    DesktopOrdination, DesktopTransforms,
 };
 use std::sync::Mutex;
 
 /// Project-scoped state shared by the import, group, file, transformation,
-/// explore, and ordination commands.
+/// explore, ordination, and export commands.
 struct DesktopState {
     import: DesktopImport,
     groups: DesktopGroups,
@@ -23,6 +24,7 @@ struct DesktopState {
     transforms: DesktopTransforms,
     explore: DesktopExplore,
     ordination: DesktopOrdination,
+    exports: DesktopExports,
 }
 
 /// Smoke command exposed to the React client over Tauri IPC.
@@ -377,6 +379,48 @@ fn ordination_umap(
         .ordination_umap(request)
 }
 
+/// `export_measured_data`: measured chemical frame as ephemeral CSV
+/// (Section 7.3; legacy `rvals$selectedData`).
+#[tauri::command]
+fn export_measured_data(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: ExportMeasuredDataRequest,
+) -> Result<archaeodash_contracts::ExportResult, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .exports
+        .export_measured_data(request)
+}
+
+/// `export_transformed`: explicitly computed transformed result as ephemeral
+/// CSV (Section 7.3; never persisted, Section 5 storage invariant).
+#[tauri::command]
+fn export_transformed(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: ExportTransformedRequest,
+) -> Result<archaeodash_contracts::ExportResult, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .exports
+        .export_transformed(request)
+}
+
+/// `export_pca_scores`: computed PCA score frame as ephemeral CSV (Section 3.2
+/// correction of the legacy `rvals$pcaData` bug).
+#[tauri::command]
+fn export_pca_scores(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: ExportPcaScoresRequest,
+) -> Result<archaeodash_contracts::ExportResult, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .exports
+        .export_pca_scores(request)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[allow(clippy::expect_used)] // app entry point: a failed runtime start must abort startup
 pub fn run() {
@@ -388,6 +432,7 @@ pub fn run() {
             transforms: DesktopTransforms::new(),
             explore: DesktopExplore::new(),
             ordination: DesktopOrdination::new(),
+            exports: DesktopExports::new(),
         }))
         .invoke_handler(tauri::generate_handler![
             app_info,
@@ -416,7 +461,10 @@ pub fn run() {
             explore_compositional_profile,
             ordination_pca,
             ordination_lda,
-            ordination_umap
+            ordination_umap,
+            export_measured_data,
+            export_transformed,
+            export_pca_scores
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

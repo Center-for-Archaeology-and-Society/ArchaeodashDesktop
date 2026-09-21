@@ -17,15 +17,16 @@
 use std::sync::Arc;
 
 use archaeodash_application::{
-    app_info, ExploreService, GroupService, ImportService, OrdinationService, SourceFileService,
-    TransformService,
+    app_info, ExploreService, ExportService, GroupService, ImportService, OrdinationService,
+    SourceFileService, TransformService,
 };
 use archaeodash_contracts::{
     AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
     DeleteGroupRequest, DuplicateGroupRequest, ErrorEnvelope, ExploreCompositionalProfileRequest,
     ExploreCompositionalProfileResponse, ExploreCrosstabRequest, ExploreCrosstabResponse,
     ExploreHistogramRequest, ExploreHistogramResponse, ExploreMissingProfileRequest,
-    ExploreMissingProfileResponse, GroupCandidate, GroupSummary, ImportCommitRequest,
+    ExploreMissingProfileResponse, ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult,
+    ExportTransformedRequest, GroupCandidate, GroupSummary, ImportCommitRequest,
     ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse, LdaRequest, LdaResponse,
     MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest, PcaResponse,
     SaveTransformationRequest, SaveTransformationResponse, StagedFile, TransactionResponse,
@@ -43,7 +44,7 @@ use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 
 /// Shared adapter state: one project-scoped import, group, source-file,
-/// transformation, and ordination service.
+/// transformation, ordination, and export service.
 #[derive(Clone)]
 pub struct AppState {
     pub import: Arc<ImportService>,
@@ -52,6 +53,7 @@ pub struct AppState {
     pub transforms: Arc<TransformService>,
     pub ordination: Arc<OrdinationService>,
     pub explore: Arc<ExploreService>,
+    pub exports: Arc<ExportService>,
 }
 
 async fn healthz() -> Json<AppInfo> {
@@ -477,6 +479,48 @@ async fn explore_compositional_profile(
         .map_err(domain_error_response)
 }
 
+/// `POST /api/v1/exports/measured-data`: the measured chemical frame of one
+/// group file as ephemeral CSV (Section 7.3; legacy `rvals$selectedData`).
+/// Nothing is persisted; the client saves the returned content.
+async fn exports_measured_data(
+    State(state): State<AppState>,
+    Json(req): Json<ExportMeasuredDataRequest>,
+) -> Result<Json<ExportResult>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .exports
+        .export_measured_data(&req)
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
+/// `POST /api/v1/exports/transformed`: the explicitly computed transformed
+/// result as ephemeral CSV (Section 7.3); calculated values are never
+/// persisted into group files (Section 5 storage invariant).
+async fn exports_transformed(
+    State(state): State<AppState>,
+    Json(req): Json<ExportTransformedRequest>,
+) -> Result<Json<ExportResult>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .exports
+        .export_transformed(&req)
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
+/// `POST /api/v1/exports/pca-scores`: the computed PCA score frame (`pcadf`
+/// equivalent, Section 3.2 correction of the legacy `rvals$pcaData` bug) as
+/// ephemeral CSV.
+async fn exports_pca_scores(
+    State(state): State<AppState>,
+    Json(req): Json<ExportPcaScoresRequest>,
+) -> Result<Json<ExportResult>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .exports
+        .export_pca_scores(&req)
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
 /// Builds the root router. Route groups for analysis, jobs, and auth land in
 /// their owning phases (Sections 10.1+).
 pub fn root_router(state: AppState) -> Router {
@@ -516,6 +560,9 @@ pub fn root_router(state: AppState) -> Router {
         .route("/api/v1/ordination/pca", post(ordination_pca))
         .route("/api/v1/ordination/lda", post(ordination_lda))
         .route("/api/v1/ordination/umap", post(ordination_umap))
+        .route("/api/v1/exports/measured-data", post(exports_measured_data))
+        .route("/api/v1/exports/transformed", post(exports_transformed))
+        .route("/api/v1/exports/pca-scores", post(exports_pca_scores))
         .route(
             "/api/v1/explore/missing-profile",
             post(explore_missing_profile),
@@ -556,6 +603,7 @@ mod tests {
             transforms: Arc::new(TransformService::new(dir.path()).expect("transform service")),
             ordination: Arc::new(OrdinationService::new(dir.path()).expect("ordination service")),
             explore: Arc::new(ExploreService::new(dir.path()).expect("explore service")),
+            exports: Arc::new(ExportService::new(dir.path()).expect("export service")),
         };
         (state, dir)
     }
@@ -1836,5 +1884,135 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let envelope: ErrorEnvelope = serde_json::from_slice(&bytes).unwrap();
         assert!(envelope.message.contains("not a descriptive column"));
+    }
+
+    /// Section 7.3 export surface: measured-data, transformed, and PCA-score
+    /// CSV exports are ephemeral JSON responses; a bad column is a 422.
+    #[tokio::test]
+    async fn export_routes_return_ephemeral_csv_and_validate() {
+        use archaeodash_contracts::ExportMeasuredDataRequest;
+        let (state, dir) = test_state();
+        let app = root_router(state);
+        let commit = commit_fixture(app.clone(), &dir).await;
+        let path = commit.groups[0].path.clone();
+
+        // Measured-data export: visible ID, descriptive, elemental columns;
+        // the hidden analytical_uuid never appears in the CSV content.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/exports/measured-data")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ExportMeasuredDataRequest {
+                            path: path.clone(),
+                            raw_text: false,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let export: ExportResult = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(export.media_type, "text/csv");
+        assert_eq!(export.file_name, "Baca.csv");
+        let lines: Vec<&str> = export.content.trim_end_matches('\n').split('\n').collect();
+        assert_eq!(lines[0], "anid,Site,as,fe");
+        assert_eq!(lines[1], "A1,Baca,1.5,3");
+        assert!(!export.content.contains("analytical_uuid"));
+
+        // Transformed export includes the ratio column, computed on demand.
+        let definition = TransformationDefinition {
+            name: "ratios".into(),
+            transform_method: TransformMethod::None,
+            imputation_method: ImputationMethod::None,
+            imputation_seed: None,
+            elemental_columns: vec!["as".into(), "fe".into()],
+            descriptive_columns: vec![],
+            group_column: None,
+            ratios: vec![RatioSpecDto {
+                output_name: None,
+                numerator: "as".into(),
+                denominator: "fe".into(),
+            }],
+            ratio_mode: RatioMode::Append,
+        };
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/exports/transformed")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ExportTransformedRequest {
+                            path: path.clone(),
+                            definition,
+                            raw_text: false,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let export: ExportResult = serde_json::from_slice(&bytes).unwrap();
+        assert!(export.content.contains("as_fe"));
+        assert!(export.content.contains("0.5"));
+
+        // PCA-score export follows the legacy pcadf shape (Section 3.2).
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/exports/pca-scores")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ExportPcaScoresRequest {
+                            path: path.clone(),
+                            columns: vec!["as".into(), "fe".into()],
+                            scale: false,
+                            transformation: None,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let export: ExportResult = serde_json::from_slice(&bytes).unwrap();
+        let lines: Vec<&str> = export.content.trim_end_matches('\n').split('\n').collect();
+        assert_eq!(lines[0], "anid,Site,PC1,PC2");
+        assert_eq!(lines.len(), commit.groups[0].row_count as usize + 1);
+
+        // Unknown elemental column is a 422 validation error.
+        let response = app
+            .oneshot(
+                axum::http::Request::post("/api/v1/exports/pca-scores")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ExportPcaScoresRequest {
+                            path,
+                            columns: vec!["cu".into()],
+                            scale: false,
+                            transformation: None,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let envelope: ErrorEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(envelope.code, "validation_error");
     }
 }

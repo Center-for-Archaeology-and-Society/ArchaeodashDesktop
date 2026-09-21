@@ -4,15 +4,16 @@
 //! invocation logic testable without a webview runtime.
 
 use archaeodash_application::{
-    ExploreService, GroupService, ImportService, OrdinationService, SourceFileService,
-    TransformService,
+    ExploreService, ExportService, GroupService, ImportService, OrdinationService,
+    SourceFileService, TransformService,
 };
 use archaeodash_contracts::{
     AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
     DeleteGroupRequest, DuplicateGroupRequest, ExploreCompositionalProfileRequest,
     ExploreCompositionalProfileResponse, ExploreCrosstabRequest, ExploreCrosstabResponse,
     ExploreHistogramRequest, ExploreHistogramResponse, ExploreMissingProfileRequest,
-    ExploreMissingProfileResponse, FileDownload, FileUploadRequest, GroupCandidate, GroupSummary,
+    ExploreMissingProfileResponse, ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult,
+    ExportTransformedRequest, FileDownload, FileUploadRequest, GroupCandidate, GroupSummary,
     ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse,
     LdaRequest, LdaResponse, MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest,
     PcaResponse, RatioSpecDto, SaveTransformationResponse, StagedFile, TransactionResponse,
@@ -432,6 +433,71 @@ impl DesktopOrdination {
 }
 
 impl Default for DesktopOrdination {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Desktop export state: one project-scoped export service sharing the
+/// project root (Section 7.3 result exports are ephemeral CSV strings; the
+/// client saves through a native dialog, Section 5 storage invariant).
+pub struct DesktopExports {
+    service: Mutex<Option<ExportService>>,
+}
+
+impl DesktopExports {
+    /// No project open yet; `open_project` sets the root.
+    pub fn new() -> Self {
+        Self {
+            service: Mutex::new(None),
+        }
+    }
+
+    /// Opens (or re-opens) the project root for export use cases.
+    pub fn open_project(&self, root: impl Into<PathBuf>) -> Result<(), String> {
+        let service = ExportService::new(root).map_err(|e| e.to_string())?;
+        *self.service.lock().map_err(|e| e.to_string())? = Some(service);
+        Ok(())
+    }
+
+    fn with_service<T>(
+        &self,
+        op: impl FnOnce(&ExportService) -> Result<T, DomainError>,
+    ) -> Result<T, String> {
+        let guard = self.service.lock().map_err(|e| e.to_string())?;
+        let service = guard.as_ref().ok_or_else(|| {
+            "no project open: call open_project with a directory first".to_string()
+        })?;
+        op(service).map_err(|e| e.to_string())
+    }
+
+    /// Desktop `export_measured_data` command body: the measured chemical
+    /// frame (legacy `rvals$selectedData`) as ephemeral CSV (Section 7.3).
+    pub fn export_measured_data(
+        &self,
+        req: ExportMeasuredDataRequest,
+    ) -> Result<ExportResult, String> {
+        self.with_service(|svc| svc.export_measured_data(&req))
+    }
+
+    /// Desktop `export_transformed` command body: the explicitly computed
+    /// transformed result as ephemeral CSV (Section 7.3; never persisted,
+    /// Section 5).
+    pub fn export_transformed(
+        &self,
+        req: ExportTransformedRequest,
+    ) -> Result<ExportResult, String> {
+        self.with_service(|svc| svc.export_transformed(&req))
+    }
+
+    /// Desktop `export_pca_scores` command body: the computed PCA score frame
+    /// (Section 3.2 correction of the legacy `rvals$pcaData` bug).
+    pub fn export_pca_scores(&self, req: ExportPcaScoresRequest) -> Result<ExportResult, String> {
+        self.with_service(|svc| svc.export_pca_scores(&req))
+    }
+}
+
+impl Default for DesktopExports {
     fn default() -> Self {
         Self::new()
     }
@@ -946,6 +1012,69 @@ mod tests {
             .expect_err("missing group file");
         assert!(!err.contains("no project open"));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_commands_run_against_committed_groups() {
+        use archaeodash_contracts::ExportMeasuredDataRequest;
+
+        let dir = std::env::temp_dir().join(format!(
+            "archaeodash-desktop-exports-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("project dir");
+
+        let exports = DesktopExports::new();
+        let err = exports
+            .export_measured_data(ExportMeasuredDataRequest {
+                path: "groups/whatever.parquet".into(),
+                raw_text: false,
+            })
+            .expect_err("no project open");
+        assert!(err.contains("no project open"));
+
+        exports.open_project(&dir).expect("open project");
+        std::fs::write(
+            dir.join("mini.csv"),
+            "anid,Site,as,fe\nA1,Baca,1.5,3\nA2,Baca,2,4\n",
+        )
+        .expect("write source");
+        let import = ImportService::new(&dir).expect("import service");
+        let commit = import
+            .commit(&ImportCommitRequest {
+                source: "mini.csv".into(),
+                group_column: "Site".into(),
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+            })
+            .expect("commit");
+        let path = commit.groups[0].path.clone();
+
+        // Measured-data export: legacy filename hint, CSV media type, visible
+        // ID + descriptive + elemental columns, hidden uuid absent.
+        let export = exports
+            .export_measured_data(ExportMeasuredDataRequest {
+                path: path.clone(),
+                raw_text: false,
+            })
+            .expect("measured export");
+        assert_eq!(export.file_name, "Baca.csv");
+        assert_eq!(export.media_type, "text/csv");
+        assert!(export.content.starts_with("anid,Site,as,fe\n"));
+        assert!(export.content.contains("A1,Baca,1.5,3"));
+        assert!(!export.content.contains("analytical_uuid"));
+
+        // Ephemeral: the group file is byte-identical after exporting.
+        let before = std::fs::read(dir.join(&path)).expect("read group");
+        assert_eq!(
+            std::fs::read(dir.join(&path)).expect("read group"),
+            before,
+            "group file byte-identical after export"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
