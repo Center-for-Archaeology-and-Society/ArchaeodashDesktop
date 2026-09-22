@@ -166,6 +166,9 @@ importers:
 
   .:
     devDependencies:
+      amaro:
+        specifier: ^1.2.1
+        version: 1.2.1
       typescript:
         specifier: ~5.9.0
         version: 5.9.3
@@ -545,6 +548,10 @@ packages:
   '@types/node@24.13.4':
     resolution: {integrity: sha512-YJ7EqCstVTzIr0fMr7qul/977en+pQHrfmuKIo6Zr9i75Be21dr3MovcfvGtyvi2HAUrRerWps5sMO9I7WaxDw==}
 
+  amaro@1.2.1:
+    resolution: {integrity: sha512-RXNB1/mbpbpwr4mVlQgYZVdY4CHl7rFExwov+XOTWfghpsM1s2sD/5u4oTQkKL4Pt0BGNIExSVjRcLMjcytIDQ==}
+    engines: {node: '>=22'}
+
   esbuild@0.28.2:
     resolution: {integrity: sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA==}
     engines: {node: '>=18'}
@@ -804,6 +811,8 @@ snapshots:
   '@types/node@24.13.4':
     dependencies:
       undici-types: 7.18.2
+
+  amaro@1.2.1: {}
 
   esbuild@0.28.2:
     optionalDependencies:
