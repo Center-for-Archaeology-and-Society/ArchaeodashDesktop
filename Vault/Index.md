@@ -50,6 +50,7 @@ Up: [[../../Vault/Index]]
  - [[Phase_4_Typed_Preferences_2026-09-21]]
 - [[Interaction_Log_2026-09-21]]
  - [[Phase_4_Client_Transport_Port_2026-09-22]]
+- [[Phase_4_Client_App_Shell_2026-09-22]]
 - [[Interaction_Log_2026-09-22]]
 
 ## Notes
