@@ -13,5 +13,12 @@ export type {
   ExportsService,
   PreferencesService,
 } from './transport.ts';
-export { themes, type ThemeTokens } from '@archaeodash/design-system';
+export {
+  themes,
+  normalizeTheme,
+  themeCssVariables,
+  themeStorageKey,
+  type ThemeTokens,
+  type ThemeName,
+} from '@archaeodash/design-system';
 export * from '@archaeodash/contracts';

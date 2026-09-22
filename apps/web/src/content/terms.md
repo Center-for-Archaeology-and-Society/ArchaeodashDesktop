@@ -1,0 +1,27 @@
+# **Terms and Conditions**
+
+## **Introduction**
+
+Welcome to ArchaeoDash. By accessing or using our application, you agree to comply with and be bound by the following terms and conditions. Please review them carefully. If you do not agree to these terms, you should not use this application.
+
+## **User Accounts**
+
+### **Registration**
+
+To use certain features of ArchaeoDash, you must register for an account. To register, click the *LOGIN* button on the left sidebar, check the checkbox by *Register as a new user*, and fill out the information. You must agree to the notice to complete registration and verify your email address before logging in. If you forget your password, use the *Forgot your password?* option in the login dialog to request a reset email.
+
+## **Data Security and Privacy**
+
+Uploaded data will be stored in a secure database and you retain all rights to your data. You must be logged in to access your data. No guarantees are made regarding the persistence of data storage. Please back up your data regularly.
+
+## **Saved Transformations**
+
+When logged in, you may save named transformations from the Data Manager. Saved transformations are stored as account-linked data products (including transformed element data and optional PCA/UMAP/LDA result tables) so they can be reloaded later. You are responsible for naming, organizing, and backing up these transformations.
+
+## **Limitation of Liability**
+
+ArchaeoDash is provided "as is" and "as available" without any warranties of any kind. We do not guarantee that the application will be uninterrupted or error-free.
+
+## **Changes to the Terms**
+
+We reserve the right to modify these terms at any time. Any changes will be posted on this page, and your continued use of the application constitutes acceptance of the modified terms.

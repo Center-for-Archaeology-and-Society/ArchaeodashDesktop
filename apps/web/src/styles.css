@@ -1,0 +1,186 @@
+/*
+ * App shell styles (Section 9.3). Custom properties mirror the legacy
+ * inst/app/www/styles.css palette per theme; `body[data-theme]` values are
+ * written by applyTheme() from the design-system tokens.
+ */
+:root {
+  --bg: #eef6f3;
+  --bg-grad-1: #f4fbf8;
+  --bg-grad-2: #deefe8;
+  --text: #163126;
+  --muted: #3d5f53;
+  --panel: rgba(255, 255, 255, 0.74);
+  --side-bg-1: #b9ebd4;
+  --side-bg-2: #9ad6bc;
+  --accent: #1e8f66;
+  --accent-2: #48c895;
+  --btn-text: #f4fffa;
+  --radius: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: 'Lexend Deca', sans-serif;
+  color: var(--text);
+  background:
+    linear-gradient(160deg, var(--bg-grad-1), var(--bg-grad-2)) fixed,
+    var(--bg);
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Top navigation */
+.topnav {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0.75rem;
+  background: var(--panel);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.brand {
+  font-weight: 700;
+  color: var(--accent);
+  margin-right: 0.75rem;
+}
+
+.nav-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.nav-link {
+  display: inline-block;
+  padding: 0.4rem 0.7rem;
+  border-radius: 10px;
+  color: var(--text);
+  text-decoration: none;
+  border: none;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.nav-link:hover {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+
+.nav-link.active {
+  background: linear-gradient(130deg, var(--accent), var(--accent-2));
+  color: var(--btn-text);
+}
+
+.nav-menu {
+  position: relative;
+}
+
+.nav-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  min-width: 12rem;
+  list-style: none;
+  margin: 0.25rem 0 0;
+  padding: 0.25rem;
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.theme-select {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--muted);
+}
+
+/* Sidebar (Data Manager) + main panel */
+.app-body {
+  flex: 1;
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  align-items: flex-start;
+}
+
+.sidebar {
+  flex: 0 0 18rem;
+  border-radius: var(--radius);
+  padding: 1rem;
+  background: linear-gradient(160deg, var(--side-bg-1), var(--side-bg-2));
+}
+
+.sidebar h2 {
+  margin-top: 0;
+}
+
+.sidebar-footer {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.main-panel {
+  flex: 1;
+  min-width: 0;
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 1rem 1.25rem;
+}
+
+.sidebar-toggle {
+  border: none;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--text);
+  cursor: pointer;
+  padding: 0.3rem 0.55rem;
+}
+
+/* Narrow screens: the sidebar becomes a full-width block above content. */
+@media (max-width: 50rem) {
+  .app-body {
+    flex-direction: column;
+  }
+  .sidebar {
+    flex-basis: auto;
+    width: 100%;
+  }
+  .app-shell[data-sidebar-open='false'] .sidebar {
+    display: none;
+  }
+}
+
+/* Wide screens: collapsing the sidebar lets the main panel span the row. */
+@media (min-width: 50.01rem) {
+  .app-shell[data-sidebar-open='false'] .app-body {
+    display: block;
+  }
+  .app-shell[data-sidebar-open='false'] .sidebar {
+    display: none;
+  }
+}
+
+.markdown-body {
+  max-width: 60rem;
+}
+
+.markdown-body pre {
+  overflow-x: auto;
+}
