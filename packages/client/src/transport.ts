@@ -1,12 +1,58 @@
 /**
- * Transport abstraction (Section 9): the client never knows whether it talks
- * to the Axum HTTP API or Tauri IPC. One adapter per delivery mode.
+ * Transport abstraction (Section 9.2): the client never knows whether it talks
+ * to the Axum HTTP API or Tauri IPC. One adapter per delivery mode, one
+ * `Transport` port with the service groups that exist so far (jobs, projects,
+ * and workspaces land with their phases).
  */
-import type { AppInfo, ErrorEnvelope } from '@archaeodash/contracts';
+import type {
+  AppliedTransformation,
+  AppInfo,
+  ApplyTransformationRequest,
+  BatchRatioRequest,
+  DeleteGroupRequest,
+  DuplicateGroupRequest,
+  ErrorEnvelope,
+  ExploreCrosstabRequest,
+  ExploreCrosstabResponse,
+  ExploreCompositionalProfileRequest,
+  ExploreCompositionalProfileResponse,
+  ExploreHistogramRequest,
+  ExploreHistogramResponse,
+  ExploreMissingProfileRequest,
+  ExploreMissingProfileResponse,
+  ExportMeasuredDataRequest,
+  ExportPcaScoresRequest,
+  ExportResult,
+  ExportTransformedRequest,
+  FileDownload,
+  GetPreferencesResponse,
+  GroupCandidate,
+  GroupSummary,
+  ImportCommitRequest,
+  ImportCommitResponse,
+  ImportPreviewRequest,
+  ImportPreviewResponse,
+  LdaRequest,
+  LdaResponse,
+  MergeGroupsRequest,
+  PcaRequest,
+  PcaResponse,
+  PreferenceEntry,
+  PreferenceKey,
+  PatchDescriptiveValuesRequest,
+  RatioSpecDto,
+  SaveTransformationRequest,
+  SaveTransformationResponse,
+  StagedFile,
+  TransformationDefinition,
+  TransformationListResponse,
+  TransactionResponse,
+  TransferUnitsRequest,
+  UmapRequest,
+  UmapResponse,
+} from '@archaeodash/contracts';
 
-export interface Transport {
-  appInfo(): Promise<AppInfo>;
-}
+export type { AppInfo, ErrorEnvelope };
 
 export class TransportError extends Error {
   readonly envelope: ErrorEnvelope;
@@ -18,19 +64,86 @@ export class TransportError extends Error {
   }
 }
 
-/** HTTP adapter for the hosted web client. */
-export class HttpTransport implements Transport {
-  private readonly baseUrl: string;
+export interface ImportsService {
+  preview(request: ImportPreviewRequest): Promise<ImportPreviewResponse>;
+  commit(request: ImportCommitRequest): Promise<ImportCommitResponse>;
+}
 
-  constructor(baseUrl: string = '') {
-    this.baseUrl = baseUrl;
-  }
+export interface FilesService {
+  /** HTTP sends raw bytes; Tauri wraps them in a FileUploadRequest. */
+  upload(path: string, content: Uint8Array): Promise<StagedFile>;
+  metadata(fileId: string): Promise<StagedFile>;
+  download(fileId: string): Promise<FileDownload>;
+  remove(fileId: string): Promise<StagedFile>;
+}
 
-  async appInfo(): Promise<AppInfo> {
-    const res = await fetch(`${this.baseUrl}/healthz`);
-    if (!res.ok) {
-      throw new TransportError({ code: `http_${res.status}`, message: res.statusText });
+export interface GroupsService {
+  scan(): Promise<GroupCandidate[]>;
+  validate(path: string): Promise<GroupSummary>;
+  transferUnits(request: TransferUnitsRequest): Promise<TransactionResponse>;
+  mergeGroups(request: MergeGroupsRequest): Promise<TransactionResponse>;
+  patchDescriptiveValues(request: PatchDescriptiveValuesRequest): Promise<TransactionResponse>;
+  duplicateGroup(request: DuplicateGroupRequest): Promise<TransactionResponse>;
+  deleteGroup(request: DeleteGroupRequest): Promise<TransactionResponse>;
+}
+
+export interface TransformationsService {
+  save(request: SaveTransformationRequest): Promise<SaveTransformationResponse>;
+  list(): Promise<TransformationListResponse>;
+  load(name: string): Promise<TransformationDefinition>;
+  remove(name: string): Promise<TransformationDefinition>;
+  batchRatios(request: BatchRatioRequest): Promise<RatioSpecDto[]>;
+  apply(request: ApplyTransformationRequest): Promise<AppliedTransformation>;
+}
+
+export interface OrdinationService {
+  pca(request: PcaRequest): Promise<PcaResponse>;
+  lda(request: LdaRequest): Promise<LdaResponse>;
+  umap(request: UmapRequest): Promise<UmapResponse>;
+}
+
+export interface ExploreService {
+  missingProfile(request: ExploreMissingProfileRequest): Promise<ExploreMissingProfileResponse>;
+  histogram(request: ExploreHistogramRequest): Promise<ExploreHistogramResponse>;
+  crosstab(request: ExploreCrosstabRequest): Promise<ExploreCrosstabResponse>;
+  compositionalProfile(
+    request: ExploreCompositionalProfileRequest,
+  ): Promise<ExploreCompositionalProfileResponse>;
+}
+
+export interface ExportsService {
+  measuredData(request: ExportMeasuredDataRequest): Promise<ExportResult>;
+  transformed(request: ExportTransformedRequest): Promise<ExportResult>;
+  pcaScores(request: ExportPcaScoresRequest): Promise<ExportResult>;
+}
+
+export interface PreferencesService {
+  get(): Promise<GetPreferencesResponse>;
+  put(key: PreferenceKey, value: unknown): Promise<void>;
+}
+
+export interface Transport {
+  readonly kind: 'http' | 'tauri';
+  appInfo(): Promise<AppInfo>;
+  readonly imports: ImportsService;
+  readonly files: FilesService;
+  readonly groups: GroupsService;
+  readonly transformations: TransformationsService;
+  readonly ordination: OrdinationService;
+  readonly explore: ExploreService;
+  readonly exports: ExportsService;
+  readonly preferences: PreferencesService;
+}
+
+/** Normalizes any backend rejection into a TransportError. */
+export function toTransportError(err: unknown, fallbackCode: string): TransportError {
+  if (err instanceof TransportError) return err;
+  if (typeof err === 'object' && err !== null) {
+    const candidate = err as Partial<ErrorEnvelope>;
+    if (typeof candidate.code === 'string' && typeof candidate.message === 'string') {
+      return new TransportError({ code: candidate.code, message: candidate.message });
     }
-    return (await res.json()) as AppInfo;
   }
+  const message = typeof err === 'string' ? err : String(err);
+  return new TransportError({ code: fallbackCode, message });
 }
