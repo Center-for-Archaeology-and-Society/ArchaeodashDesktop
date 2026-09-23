@@ -43,12 +43,24 @@ Commit `cbacf56`.
   sanitized group id comes from `sanitize_group_name`
   (crates/data-io/src/group_profile.rs:121, keeps `[A-Za-z0-9._-]`).
 
+## Slice B — multiplot + plot save (`44d02fa`)
+
+- `multiplot-model.ts`: `samplingPlan` (stride-from-zero, deterministic
+  sampled index set per procedure 13; ceiling 100k labeled in UI),
+  `allPairs` (disjoint ordered pairs), `svgToDataUrl`.
+- `Multiplot.tsx`: static SVG panel grid (point size 1–10, height 500–2000,
+  progressive render chunk of 12 with continue control, Save plots SVG),
+  wired into VisualizePage behind a plot-mode toggle sharing the filtered
+  row indices and group palette.
+- Interactive Plotly mode for multiplots is a follow-up (single-plot
+  lasso/selection already uses Plotly scattergl).
+
 ## Next
 
-- Phase 5 remainder: multiplots (X/Y disjoint selectors, point size, height
-  500–2000, static/interactive, 100k-point deterministic sampling with
-  sampling label), plot saves, e2e for uuid-hidden selection/assignment.
-- Then Phase 5 exit gate: procedures 6–8 & 12 re-run + Section 15.2
-  web/desktop e2e for assignment atomicity.
+- Phase 5 remainder: interactive multiplot mode (Plotly + sampling label),
+  desktop (Tauri) e2e for uuid-hidden selection/assignment, and the Phase 5
+  exit gate: procedures 6–8 & 12 re-run + Section 15.2 web/desktop e2e for
+  assignment atomicity. Then Phase 6 (Cluster, membership, Euclidean).
+- `open_project` Tauri command gap (noted 2026-09-22) still pending.
 
 Back to [[Interaction_Log_2026-09-23]].
