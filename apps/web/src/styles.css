@@ -306,3 +306,19 @@ body {
   padding: 0.5rem;
   border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
 }
+
+/* Multiplot grid (Section 9.4): disjoint X/Y pairs, static SVG panels. */
+.multiplot-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.multiplot-cell {
+  border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
+  padding: 0.25rem;
+}
+
+.multiplot-panel {
+  max-width: 100%;
+}

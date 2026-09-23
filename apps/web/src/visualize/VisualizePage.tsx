@@ -17,6 +17,7 @@ import type {
   PcaResponse,
 } from '@archaeodash/client';
 import { VisualizeScatter, type ScatterPoint, type ScatterTraceSpec } from './VisualizeScatter.tsx';
+import { Multiplot } from './Multiplot.tsx';
 import {
   clearSelection,
   colorFor,
@@ -105,6 +106,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
   const [xIdx, setXIdx] = useState(0);
   const [yIdx, setYIdx] = useState(1);
   const [usePca, setUsePca] = useState(false);
+  const [plotMode, setPlotMode] = useState<'single' | 'multiplot'>('single');
   const [filterColumn, setFilterColumn] = useState('');
   const [filterValue, setFilterValue] = useState('');
   const [ellipseLevel, setEllipseLevel] = useState('off');
@@ -426,7 +428,30 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       </div>
       {loadState.kind === 'loading' && <p role="status">Loading dataset…</p>}
       {loadState.kind === 'error' && <p role="alert">Error: {loadState.message}</p>}
-      {sameAxis ? (
+      <div className="explore-controls">
+        <label>
+          Plot mode
+          <select value={plotMode} onChange={(e) => setPlotMode(e.target.value as 'single' | 'multiplot')}>
+            <option value="single">Single plot</option>
+            <option value="multiplot">Multiplot (all pairs)</option>
+          </select>
+        </label>
+      </div>
+      {plotMode === 'multiplot' && data ? (
+        <Multiplot
+          columns={data.elemental_columns}
+          values={data.rows.map((r) => r.elemental)}
+          groupLabels={data.rows.map((r) => {
+            const gi = data.descriptive_columns.findIndex((c) => c.toLowerCase() === 'group');
+            return gi >= 0 ? normalizeFilterValue(r.descriptive[gi]) : 'All';
+          })}
+          groupNames={[...new Set(data.rows.map((r) => {
+            const gi = data.descriptive_columns.findIndex((c) => c.toLowerCase() === 'group');
+            return gi >= 0 ? normalizeFilterValue(r.descriptive[gi]) : 'All';
+          }))]}
+          rowIndices={filteredIdx}
+        />
+      ) : sameAxis ? (
         <p className="muted">Pick two different axes to plot.</p>
       ) : (
         <VisualizeScatter

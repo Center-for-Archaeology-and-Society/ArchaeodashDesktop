@@ -9,6 +9,7 @@ import type {
   OrdinationService,
 } from '@archaeodash/client';
 import { SelectedRowsTable, VisualizePage, type VisualizeDeps } from './VisualizePage.tsx';
+import { Multiplot } from './Multiplot.tsx';
 import { chiSquare2, symbolFor } from './visualize-model.ts';
 
 const rows: GroupRowsResponse = {
@@ -151,4 +152,41 @@ test('ten-symbol map and chi-square ellipse quantiles match the legacy contract'
   assert.equal(symbolFor(0), 'circle');
   assert.equal(symbolFor(10), 'circle');
   assert.ok(Math.abs(chiSquare2(0.95) - 5.991464547107979) < 1e-12);
+});
+
+test('multiplot renders static SVG panels for all disjoint pairs with sampling label', () => {
+  const values: (number | null)[][] = [
+    [1, 2, 3, 4],
+    [2, 4, 6, 8],
+    [null, 1, 2, 3],
+  ];
+  const html = renderToString(
+    <Multiplot
+      columns={['Ti', 'Sr', 'Zr']}
+      values={values}
+      groupLabels={['Baca', 'Baca', 'Other', 'Other']}
+      groupNames={['Baca', 'Other']}
+      rowIndices={[0, 1, 2, 3]}
+    />,
+  );
+  // 3 columns -> 6 ordered pairs.
+  assert.equal((html.match(/multiplot-panel/g) ?? []).length, 6, 'one panel per ordered pair');
+  assert.ok(html.includes('Scatter of Sr by Ti'), 'aria labels name the axes');
+  assert.ok(html.includes('Save plots (SVG)'), 'plot save control present');
+  // Null cells render nothing but panels still exist.
+  assert.ok(!html.includes('NaN'));
+});
+
+test('multiplot point size and height controls are exposed', () => {
+  const html = renderToString(
+    <Multiplot
+      columns={['Ti', 'Sr']}
+      values={[[1, 2], [3, 4]]}
+      groupLabels={['All', 'All']}
+      groupNames={['All']}
+      rowIndices={[0, 1]}
+    />,
+  );
+  assert.ok(html.includes('Point size'), 'point size control');
+  assert.ok(html.includes('Height'), 'height control');
 });
