@@ -17,11 +17,14 @@ import type {
 } from '@archaeodash/client';
 import { downloadExportResult } from '../exports.ts';
 import { HiddenIdNote } from './HiddenIdNote.tsx';
-
 export interface ExploreDeps {
   readonly groups: GroupsService;
   readonly explore: ExploreService;
   readonly exports: ExportsService;
+  /** Legacy `lastOpenedDataset` preference (Section 10.1/9.4). */
+  readonly onDatasetOpened?: (path: string) => void;
+  /** Restored `lastOpenedDataset` preference, or empty string. */
+  readonly initialDataset?: string;
 }
 
 type LoadState =
@@ -485,9 +488,9 @@ function ProfileView({
   );
 }
 
-export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
+export function ExplorePage({ deps, initialDataset = '' }: { deps: ExploreDeps; initialDataset?: string }): ReactElement {
   const [candidates, setCandidates] = useState<Awaited<ReturnType<GroupsService['scan']>>>([]);
-  const [selectedPath, setSelectedPath] = useState('');
+  const [selectedPath, setSelectedPath] = useState(initialDataset);
   const [loadState, setLoadState] = useState<LoadState>({ kind: 'idle' });
   const [view, setView] = useState<ExploreView>('table');
 
@@ -516,8 +519,11 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
       .then((list) => {
         if (cancelled) return;
         setCandidates(list);
-        const first = list.find((c) => c.ready && c.group);
-        setSelectedPath((current) => current || first?.path || '');
+        const preferred =
+          list.find((c) => c.ready && c.path === initialDataset)?.path ??
+          list.find((c) => c.ready && c.group)?.path ??
+          '';
+        setSelectedPath((current) => current || preferred);
       })
       .catch(() => {
         if (!cancelled) setCandidates([]);
@@ -525,11 +531,13 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [deps]);
-
+  }, [deps, initialDataset]);
   useEffect(() => {
-    if (selectedPath) loadRows(selectedPath);
-  }, [selectedPath, loadRows]);
+    if (selectedPath) {
+      loadRows(selectedPath);
+      deps.onDatasetOpened?.(selectedPath);
+    }
+  }, [selectedPath, loadRows, deps]);
 
   return (
     <section aria-labelledby="explore-heading">

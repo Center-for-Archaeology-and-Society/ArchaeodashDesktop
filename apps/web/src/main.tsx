@@ -28,7 +28,7 @@ import { applyTheme, hydrateTheme, readStoredTheme } from './theme.ts';
 function AppRoot({ transport }: { transport: Transport }): ReactElement {
   const [theme, setTheme] = useState<string>(() => readStoredTheme());
   const [appInfo, setAppInfo] = useState<AppInfo | undefined>(undefined);
-
+  const [lastOpenedDataset, setLastOpenedDataset] = useState('');
   useEffect(() => {
     let cancelled = false;
     transport
@@ -42,6 +42,17 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
     void hydrateTheme(transport, readStoredTheme()).then((hydrated) => {
       if (!cancelled) setTheme(hydrated);
     });
+    // Restore the legacy `lastOpenedDataset` selector default (Section 10.1).
+    transport.preferences
+      .get()
+      .then((prefs) => {
+        if (cancelled) return;
+        const pref = prefs.preferences.find((p) => p.key === 'lastOpenedDataset');
+        if (typeof pref?.value === 'string' && pref.value) setLastOpenedDataset(pref.value);
+      })
+      .catch(() => {
+        /* offline: fall back to the first ready candidate */
+      });
     return () => {
       cancelled = true;
     };
@@ -51,10 +62,15 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
     () => ({
       groups: transport.groups,
       explore: transport.explore,
+      exports: transport.exports,
+      onDatasetOpened: (path: string) => {
+        // Legacy `lastOpenedDataset` selector-default semantics (Section 10.1).
+        void transport.preferences.put('lastOpenedDataset', path).catch(() => {});
+      },
+      initialDataset: lastOpenedDataset,
     }),
-    [transport],
+    [transport, lastOpenedDataset],
   );
-
   return (
     <AppShell
       theme={theme}
