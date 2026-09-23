@@ -11,14 +11,17 @@ import type {
   ExploreMissingProfileResponse,
   ExploreCompositionalProfileResponse,
   ExploreService,
+  ExportsService,
   GroupRowsResponse,
   GroupsService,
 } from '@archaeodash/client';
+import { downloadExportResult } from '../exports.ts';
 import { HiddenIdNote } from './HiddenIdNote.tsx';
 
 export interface ExploreDeps {
   readonly groups: GroupsService;
   readonly explore: ExploreService;
+  readonly exports: ExportsService;
 }
 
 type LoadState =
@@ -143,6 +146,17 @@ export function DataTable({
           onClick={() => void saveEdits()}
         >
           Save descriptive edits ({editList.length})
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            void deps.exports
+              .measuredData({ path: data.path, raw_text: false })
+              .then(downloadExportResult)
+              .catch((err: unknown) => setSaveState({ error: err instanceof Error ? err.message : String(err) }))
+          }
+        >
+          Export measured data (CSV)
         </button>
         {saveState === 'saved' && <span role="status">Saved.</span>}
         {typeof saveState === 'object' && 'error' in saveState && (

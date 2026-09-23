@@ -2,10 +2,12 @@
  * Ordination route (Section 8.5–8.7): PCA with explained-variance bars and a
  * score scatter/table, UMAP embedding with the fixed legacy seed default, and
  * LDA group-gated on the first descriptive column. Ordinations are ephemeral
- * (Section 5): nothing is persisted; recompute re-requests.
+ * (Section 5): nothing is persisted; recompute re-requests. PCA scores export
+ * as ephemeral CSV via the exports service (Section 7.3).
  */
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
 import type {
+  ExportsService,
   GroupsService,
   GroupRowsResponse,
   LdaResponse,
@@ -13,10 +15,12 @@ import type {
   PcaResponse,
   UmapResponse,
 } from '@archaeodash/client';
+import { downloadExportResult } from '../exports.ts';
 
 export interface OrdinationDeps {
   readonly groups: GroupsService;
   readonly ordination: OrdinationService;
+  readonly exports: ExportsService;
 }
 
 type AsyncState<T> =
@@ -106,44 +110,16 @@ function ScatterPlot({
   );
 }
 
-export function PcaView({
-  deps,
-  data,
-}: {
-  deps: OrdinationDeps;
-  data: GroupRowsResponse;
-}): ReactElement {
-  const [state, setState] = useState<AsyncState<PcaResponse>>({ kind: 'idle' });
-
-  const run = useCallback(async () => {
-    setState({ kind: 'loading' });
-    try {
-      const r = await deps.ordination.pca({
-        path: data.path,
-        columns: data.elemental_columns,
-      });
-      setState({ kind: 'loaded', data: r });
-    } catch (err: unknown) {
-      setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
-    }
-  }, [deps, data]);
-
-  useEffect(() => {
-    void run();
-  }, [run]);
-
-  return (
-    <>
-      {state.kind === 'loading' && <p role="status">Computing PCA…</p>}
-      {state.kind === 'error' && <p role="alert">Error: {state.message}</p>}
-      {state.kind === 'loaded' && <PcaResult result={state.data} onRecompute={() => void run()} />}
-      {state.kind === 'idle' && <p>No PCA yet.</p>}
-    </>
-  );
-}
-
 /** Pure PCA result presentation (variance bars, scatter, score table). */
-export function PcaResult({ result, onRecompute }: { result: PcaResponse; onRecompute: () => void }): ReactElement {
+export function PcaResult({
+  result,
+  onRecompute,
+  onExportScores,
+}: {
+  result: PcaResponse;
+  onRecompute: () => void;
+  onExportScores?: () => void;
+}): ReactElement {
   return (
     <div>
       <div className="variance-bars" role="img" aria-label="Explained variance per component">
@@ -169,73 +145,87 @@ export function PcaResult({ result, onRecompute }: { result: PcaResponse; onReco
       <button type="button" onClick={onRecompute}>
         Recompute
       </button>
+      {onExportScores && (
+        <button type="button" onClick={onExportScores}>
+          Export PCA scores (CSV)
+        </button>
+      )}
     </div>
   );
 }
 
-export function UmapView({
+function useOrdination<TResp>(
+  request: () => Promise<TResp>,
+  deps: readonly unknown[],
+): { state: AsyncState<TResp>; reload: () => void } {
+  const [state, setState] = useState<AsyncState<TResp>>({ kind: 'idle' });
+  const run = useCallback(async () => {
+    setState({ kind: 'loading' });
+    try {
+      const r = await request();
+      setState({ kind: 'loaded', data: r });
+    } catch (err: unknown) {
+      setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+  useEffect(() => {
+    void run();
+  }, [run]);
+  return { state, reload: () => void run() };
+}
+
+function PcaView({
   deps,
   data,
 }: {
   deps: OrdinationDeps;
   data: GroupRowsResponse;
 }): ReactElement {
-  const [state, setState] = useState<AsyncState<UmapResponse>>({ kind: 'idle' });
-
-  const run = useCallback(async () => {
-    setState({ kind: 'loading' });
-    try {
-      const r = await deps.ordination.umap({
-        path: data.path,
-        columns: data.elemental_columns,
-        // Fixed default seed (Section 8.7: reproducible UMAP).
-        seed: 20260914,
-      });
-      setState({ kind: 'loaded', data: r });
-    } catch (err: unknown) {
-      setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
-    }
-  }, [deps, data]);
-
-  useEffect(() => {
-    void run();
-  }, [run]);
-
-  if (state.kind === 'loading') return <p role="status">Computing UMAP…</p>;
-  if (state.kind === 'error') return <p role="alert">Error: {state.message}</p>;
-  if (state.kind !== 'loaded') return <p>No UMAP yet.</p>;
+  const { state, reload } = useOrdination<PcaResponse>(
+    () => deps.ordination.pca({ path: data.path, columns: data.elemental_columns }),
+    [deps, data],
+  );
   return (
-    <div>
-      <p className="muted">
-        seed {state.data.seed}, n_neighbors {state.data.n_neighbors}, n_epochs {state.data.n_epochs}
-        {state.data.warnings.length > 0 && ` — warnings: ${state.data.warnings.join('; ')}`}
-      </p>
-      <ScatterPlot
-        x={state.data.embedding.map((r) => r[0] ?? 0)}
-        y={state.data.embedding.map((r) => r[1] ?? 0)}
-        xLabel="V1"
-        yLabel="V2"
-      />
-      <ScoreTable
-        scoreNames={state.data.score_names}
-        scores={state.data.embedding}
-        rowPrefix="Row"
-      />
-      <button type="button" onClick={() => void run()}>
-        Recompute
-      </button>
-    </div>
+    <>
+      {state.kind === 'loading' && <p role="status">Computing PCA…</p>}
+      {state.kind === 'error' && <p role="alert">Error: {state.message}</p>}
+      {state.kind === 'loaded' && (
+        <PcaResult
+          result={state.data}
+          onRecompute={reload}
+          onExportScores={() =>
+            void deps.exports
+              .pcaScores({ path: data.path, columns: data.elemental_columns })
+              .then(downloadExportResult)
+              .catch((err: unknown) => console.error(err))
+          }
+        />
+      )}
+      {state.kind === 'idle' && <p>No PCA yet.</p>}
+    </>
   );
 }
 
-/** Pure UMAP result presentation (seed echo, scatter, score table). */
-export function UmapResult({
-  result,
-  onRecompute,
+function UmapView({
+  deps,
+  data,
 }: {
-  result: UmapResponse;
-  onRecompute: () => void;
+  deps: OrdinationDeps;
+  data: GroupRowsResponse;
 }): ReactElement {
+  const { state } = useOrdination<UmapResponse>(
+    () => deps.ordination.umap({ path: data.path, columns: data.elemental_columns, seed: 20260914 }),
+    [deps, data],
+  );
+  if (state.kind === 'loading') return <p role="status">Computing UMAP…</p>;
+  if (state.kind === 'error') return <p role="alert">Error: {state.message}</p>;
+  if (state.kind !== 'loaded') return <p>No UMAP yet.</p>;
+  return <UmapResult result={state.data} />;
+}
+
+/** Pure UMAP result presentation (seed echo, embedding scatter, score table). */
+export function UmapResult({ result }: { result: UmapResponse }): ReactElement {
   return (
     <div>
       <p className="muted">
@@ -248,14 +238,8 @@ export function UmapResult({
         xLabel="V1"
         yLabel="V2"
       />
-      <ScoreTable
-        scoreNames={result.score_names}
-        scores={result.embedding}
-        rowPrefix="Row"
-      />
-      <button type="button" onClick={onRecompute}>
-        Recompute
-      </button>
+      <ScoreTable scoreNames={result.score_names} scores={result.embedding} rowPrefix="Row" />
+      <p className="muted">Re-run uses the same seed: the embedding is reproducible.</p>
     </div>
   );
 }
@@ -268,26 +252,10 @@ export function LdaView({
   data: GroupRowsResponse;
 }): ReactElement {
   const groupColumn = data.descriptive_columns[0] ?? '';
-  const [state, setState] = useState<AsyncState<LdaResponse>>({ kind: 'idle' });
-
-  const run = useCallback(async () => {
-    if (!groupColumn) return;
-    setState({ kind: 'loading' });
-    try {
-      const r = await deps.ordination.lda({
-        path: data.path,
-        columns: data.elemental_columns,
-        group_column: groupColumn,
-      });
-      setState({ kind: 'loaded', data: r });
-    } catch (err: unknown) {
-      setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
-    }
-  }, [deps, data, groupColumn]);
-
-  useEffect(() => {
-    void run();
-  }, [run]);
+  const { state, reload } = useOrdination<LdaResponse>(
+    () => deps.ordination.lda({ path: data.path, columns: data.elemental_columns, group_column: groupColumn }),
+    [deps, data, groupColumn],
+  );
 
   if (!groupColumn) {
     return <p role="alert">LDA needs a descriptive group column; this dataset has none.</p>;
@@ -310,14 +278,7 @@ export function LdaView({
         xLabel="LD1"
         yLabel="LD2"
       />
-      <ScoreTable
-        scoreNames={state.data.score_names}
-        scores={state.data.scores}
-        rowPrefix="Row"
-      />
-      <button type="button" onClick={() => void run()}>
-        Recompute
-      </button>
+      <ScoreTable scoreNames={state.data.score_names} scores={state.data.scores} rowPrefix="Row" />
     </div>
   );
 }

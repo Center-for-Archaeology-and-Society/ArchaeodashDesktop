@@ -10,6 +10,7 @@ import type {
   UmapResponse,
 } from '@archaeodash/client';
 import { LdaView, OrdinationPage, PcaResult, UmapResult } from './OrdinationPage.tsx';
+import type { ExportsService } from '@archaeodash/client';
 
 const rows = {
   path: 'groups/Baca.parquet',
@@ -81,7 +82,12 @@ const lda: LdaResponse = {
   warnings: [],
 };
 
-function makeDeps(): { groups: GroupsService; ordination: OrdinationService } {
+function makeDeps(): {
+  groups: GroupsService;
+  explore?: never;
+  ordination: OrdinationService;
+  exports: ExportsService;
+} {
   const groups = {
     scan: async () => [
       {
@@ -125,7 +131,20 @@ function makeDeps(): { groups: GroupsService; ordination: OrdinationService } {
     umap: async () => umap,
     lda: async () => lda,
   } satisfies OrdinationService;
-  return { groups, ordination };
+  const exports = {
+    measuredData: async () => {
+      throw new Error('unused in ordination tests');
+    },
+    transformed: async () => {
+      throw new Error('unused in ordination tests');
+    },
+    pcaScores: async () => ({
+      file_name: 'pca_scores.csv',
+      media_type: 'text/csv',
+      content: 'Row,PC1,PC2\\n1,1,0',
+    }),
+  } satisfies ExportsService;
+  return { groups, ordination, exports };
 }
 
 test('ordination page renders the legacy PCA/UMAP/LDA tab order', () => {
@@ -146,7 +165,7 @@ test('PCA view shows variance bars, cumulative summary, and score table', () => 
 });
 
 test('UMAP view surfaces the fixed legacy seed and warnings', () => {
-  const html = renderToString(<UmapResult result={umap} onRecompute={() => {}} />);
+  const html = renderToString(<UmapResult result={umap} />);
   assert.ok(html.includes('20260914'), 'fixed legacy seed echoed');
   assert.ok(html.includes('n_neighbors') && html.includes('15'));
   assert.ok(html.includes('V1') && html.includes('V2'));

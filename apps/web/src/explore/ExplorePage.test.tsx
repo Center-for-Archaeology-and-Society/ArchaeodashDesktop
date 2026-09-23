@@ -2,10 +2,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToString } from 'react-dom/server';
-import type { ExploreService, GroupsService } from '@archaeodash/client';
+import type { ExploreService, ExportsService, GroupsService } from '@archaeodash/client';
 import { ExplorePage, DataTable } from './ExplorePage.tsx';
-
-function makeDeps(): { groups: GroupsService; explore: ExploreService } {
+function makeDeps(): { groups: GroupsService; explore: ExploreService; exports: ExportsService } {
   const groups = {
     scan: async () => [
       {
@@ -88,7 +87,18 @@ function makeDeps(): { groups: GroupsService; explore: ExploreService } {
       rows: [{ rowid: 1, element: 'Ti', value: 1.5, group_label: null }],
     }),
   } satisfies ExploreService;
-  return { groups, explore };
+  const exports = {
+    measuredData: async () => {
+      throw new Error('unused in explore tests');
+    },
+    transformed: async () => {
+      throw new Error('unused in explore tests');
+    },
+    pcaScores: async () => {
+      throw new Error('unused in explore tests');
+    },
+  } satisfies ExportsService;
+  return { groups, explore, exports };
 }
 
 test('explore renders the legacy view tabs; table hides hidden identity', async () => {

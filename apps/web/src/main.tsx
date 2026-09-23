@@ -61,6 +61,11 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
       onThemeChange={(next) => {
         setTheme(next);
         applyTheme(next as Parameters<typeof applyTheme>[0]);
+        // Section 10.1: theme is an allowlisted persisted preference; local
+        // choice paints immediately, the server upsert follows.
+        void transport.preferences.put('theme', next).catch(() => {
+          /* offline: the local choice still stands */
+        });
       }}
       appInfo={appInfo}
     />
