@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --import ../../scripts/ts-register.mjs src/*.test.ts src/*.test.tsx src/**/*.test.tsx"
+    "test": "node --test --import ../../scripts/ts-register.mjs \"src/**/*.test.tsx\" \"src/**/*.test.ts\""
   },
   "dependencies": {
     "@archaeodash/client": "workspace:*",

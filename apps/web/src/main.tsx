@@ -9,19 +9,20 @@ import { createRoot } from 'react-dom/client';
 import { createBrowserRouter, Outlet, RouterProvider, type RouteObject } from 'react-router';
 import type { AppInfo, Transport } from '@archaeodash/client';
 import { AppShell } from './shell/AppShell.tsx';
-import { ExplorePage, type ExploreDeps } from './explore/ExplorePage';
 import {
   ClusterPage,
   EuclideanPage,
   ExplorePage,
+  type ExploreDeps,
   HelpPage,
   HomePage,
-  OrdinationPage,
+  OrdinationPage as OrdinationView,
   PrivacyPage,
   ProbabilitiesPage,
   TermsPage,
   VisualizePage,
 } from './shell/routes.tsx';
+import { OrdinationPage, type OrdinationDeps } from './ordination/OrdinationPage.tsx';
 import { applyTheme, hydrateTheme, readStoredTheme } from './theme.ts';
 
 function AppRoot({ transport }: { transport: Transport }): ReactElement {
@@ -66,12 +67,12 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
   );
 }
 
-function routeChildren(deps: ExploreDeps): RouteObject[] {
+function routeChildren(deps: ExploreDeps, ordinationDeps: OrdinationDeps): RouteObject[] {
   return [
     { index: true, element: <HomePage /> },
     { path: 'explore', element: <ExplorePage deps={deps} /> },
     { path: 'visualize', element: <VisualizePage /> },
-    { path: 'ordination', element: <OrdinationPage /> },
+    { path: 'ordination', element: <OrdinationPage deps={ordinationDeps} /> },
     { path: 'cluster', element: <ClusterPage /> },
     { path: 'probabilities', element: <ProbabilitiesPage /> },
     { path: 'euclidean', element: <EuclideanPage /> },
@@ -84,9 +85,13 @@ function routeChildren(deps: ExploreDeps): RouteObject[] {
 }
 
 export function createAppRouter(transport: Transport) {
-  const deps: ExploreDeps = { groups: transport.groups, explore: transport.explore };
+  const exploreDeps: ExploreDeps = { groups: transport.groups, explore: transport.explore };
+  const ordinationDeps: OrdinationDeps = {
+    groups: transport.groups,
+    ordination: transport.ordination,
+  };
   return createBrowserRouter([
-    { element: <AppRoot transport={transport} />, children: routeChildren(deps) },
+    { element: <AppRoot transport={transport} />, children: routeChildren(exploreDeps, ordinationDeps) },
   ]);
 }
 

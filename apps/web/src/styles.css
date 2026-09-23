@@ -292,3 +292,17 @@ body {
   color: var(--muted);
   font-size: 0.85rem;
 }
+
+.plot-point {
+  fill: var(--accent);
+}
+
+.variance-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 6rem;
+  max-width: 20rem;
+  padding: 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
+}
