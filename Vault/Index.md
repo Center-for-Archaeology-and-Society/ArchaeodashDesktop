@@ -52,6 +52,8 @@ Up: [[../../Vault/Index]]
  - [[Phase_4_Client_Transport_Port_2026-09-22]]
 - [[Phase_4_Client_App_Shell_2026-09-22]]
 - [[Interaction_Log_2026-09-22]]
+- [[Phase_4_Client_Ordination_Prefs_Exports_2026-09-23]]
+- [[Interaction_Log_2026-09-23]]
 
 ## Notes
 - This vault uses atomic notes (one concept per file) linked with `[[Wikilinks]]`.
