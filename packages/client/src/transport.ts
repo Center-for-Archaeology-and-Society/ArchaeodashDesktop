@@ -27,6 +27,7 @@ import type {
   FileDownload,
   GetPreferencesResponse,
   GroupCandidate,
+  GroupRowsResponse,
   GroupSummary,
   ImportCommitRequest,
   ImportCommitResponse,
@@ -80,6 +81,7 @@ export interface FilesService {
 export interface GroupsService {
   scan(): Promise<GroupCandidate[]>;
   validate(path: string): Promise<GroupSummary>;
+  rows(path: string): Promise<GroupRowsResponse>;
   transferUnits(request: TransferUnitsRequest): Promise<TransactionResponse>;
   mergeGroups(request: MergeGroupsRequest): Promise<TransactionResponse>;
   patchDescriptiveValues(request: PatchDescriptiveValuesRequest): Promise<TransactionResponse>;

@@ -218,4 +218,28 @@ export function registerTransportContractTests(
     );
     assert.equal(h.calls[0]?.label, labels.groupsValidate);
   });
+
+  test('groups.rows returns the full dataset payload with hidden identity', async () => {
+    const h = makeHarness();
+    const rows = {
+      path: 'groups/Baca.parquet',
+      revision_id: 'rev-1',
+      visible_id_column: 'anid',
+      legacy_rowid_column: 'rowid',
+      descriptive_columns: ['Site'],
+      elemental_columns: ['Ti', 'Sr'],
+      rows: [
+        {
+          analytical_uuid: '0197aaaa-bbbb-7ccc-ddee-ffff00000001',
+          legacy_rowid: '1',
+          visible_id: 'A1',
+          descriptive: ['Baca'],
+          elemental: [1.5, 3.0],
+        },
+      ],
+    };
+    h.respond(rows);
+    assert.deepEqual(await h.transport.groups.rows('groups/Baca.parquet'), rows);
+    assert.equal(h.calls[0]?.label, labels.groupsRows);
+  });
 }

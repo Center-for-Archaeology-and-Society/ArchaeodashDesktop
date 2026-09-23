@@ -173,6 +173,31 @@ export interface DuplicateGroupRequest {
   preserve_uuids?: boolean;
 }
 
+/** Full row data of one group file for the client dataset table (Section 9.4).
+ *  The hidden `analytical_uuid` travels for edit addressing; the UI never
+ *  displays it and ordinary exports never contain it (Section 3.2). */
+export interface GroupRowsRequest {
+  path: string;
+}
+
+export interface GroupRowDto {
+  analytical_uuid: string;
+  legacy_rowid?: string | null;
+  visible_id?: string | null;
+  descriptive: (string | null)[];
+  elemental: (number | null)[];
+}
+
+export interface GroupRowsResponse {
+  path: string;
+  revision_id: string;
+  visible_id_column: string;
+  legacy_rowid_column: string;
+  descriptive_columns: string[];
+  elemental_columns: string[];
+  rows: GroupRowDto[];
+}
+
 export interface TransactionResponse {
   transaction_id: string;
   action: string;

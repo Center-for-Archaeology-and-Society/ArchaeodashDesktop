@@ -85,6 +85,20 @@ fn validate_group_file(
         .validate_group_file(path)
 }
 
+/// Full row data of one group file for the client dataset table
+/// (`group_rows`; hidden UUIDs address edits, Section 9.4).
+#[tauri::command]
+fn group_rows(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    path: String,
+) -> Result<archaeodash_contracts::GroupRowsResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .groups
+        .group_rows(path)
+}
+
 /// Move/copy analytical units by hidden UUID (`move_analytical_units` /
 /// `copy_analytical_units`).
 #[tauri::command]
@@ -476,6 +490,7 @@ pub fn run() {
             source_file_metadata,
             download_source_file,
             delete_source_file,
+            group_rows,
             save_transformation,
             list_transformations,
             load_transformation,

@@ -26,12 +26,13 @@ use archaeodash_contracts::{
     ExploreCompositionalProfileResponse, ExploreCrosstabRequest, ExploreCrosstabResponse,
     ExploreHistogramRequest, ExploreHistogramResponse, ExploreMissingProfileRequest,
     ExploreMissingProfileResponse, ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult,
-    ExportTransformedRequest, GetPreferencesResponse, GroupCandidate, GroupSummary,
-    ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse,
-    LdaRequest, LdaResponse, MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest,
-    PcaResponse, PutPreferenceRequest, SaveTransformationRequest, SaveTransformationResponse,
-    StagedFile, TransactionResponse, TransferUnitsRequest, TransformationDefinition,
-    TransformationListResponse, UmapRequest, UmapResponse,
+    ExportTransformedRequest, GetPreferencesResponse, GroupCandidate, GroupRowsResponse,
+    GroupSummary, ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest,
+    ImportPreviewResponse, LdaRequest, LdaResponse, MergeGroupsRequest,
+    PatchDescriptiveValuesRequest, PcaRequest, PcaResponse, PutPreferenceRequest,
+    SaveTransformationRequest, SaveTransformationResponse, StagedFile, TransactionResponse,
+    TransferUnitsRequest, TransformationDefinition, TransformationListResponse, UmapRequest,
+    UmapResponse,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_domain::DomainError;
@@ -120,6 +121,26 @@ async fn groups_scan(
     state
         .groups
         .scan_candidates()
+        .map(Json)
+        .map_err(store_error_response)
+}
+
+/// Query parameters for the group dataset read: the project-relative path.
+#[derive(Debug, serde::Deserialize)]
+struct GroupRowsQuery {
+    path: String,
+}
+
+/// `GET /api/v1/groups/rows`: full row data of one group file for the client
+/// dataset table. The hidden `analytical_uuid` rides in the payload for edit
+/// addressing; displaying it is a client-side contract violation (Section 3.2).
+async fn groups_rows(
+    State(state): State<AppState>,
+    Query(query): Query<GroupRowsQuery>,
+) -> Result<Json<GroupRowsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .groups
+        .rows(&query.path)
         .map(Json)
         .map_err(store_error_response)
 }
@@ -564,6 +585,7 @@ pub fn root_router(state: AppState) -> Router {
         .route("/api/v1/files/{id}/download", get(files_download))
         .route("/api/v1/groups", get(groups_scan))
         .route("/api/v1/groups/validate", post(groups_validate))
+        .route("/api/v1/groups/rows", get(groups_rows))
         .route("/api/v1/groups/transfer-units", post(groups_transfer_units))
         .route("/api/v1/groups/merge", post(groups_merge))
         .route(
@@ -614,8 +636,9 @@ mod tests {
 
     use super::*;
     use archaeodash_contracts::{
-        BatchRatioMode, CrosstabRows, DescriptiveEdit, DuplicateGroupRequest, ImputationMethod,
-        PatchDescriptiveValuesRequest, RatioMode, RatioSpecDto, TransferAction, TransformMethod,
+        BatchRatioMode, CrosstabRows, DescriptiveEdit, DuplicateGroupRequest, GroupRowsResponse,
+        ImputationMethod, PatchDescriptiveValuesRequest, RatioMode, RatioSpecDto, TransferAction,
+        TransformMethod,
     };
     use axum::body::Body;
     use http_body_util::BodyExt;
@@ -879,6 +902,55 @@ mod tests {
         assert_eq!(tx.outputs[0].row_count, 3);
         assert_eq!(tx.deleted_paths, vec![commit.groups[1].path.clone()]);
         assert!(!dir.path().join(&commit.groups[1].path).exists());
+    }
+
+    #[tokio::test]
+    async fn group_rows_route_returns_full_dataset_with_hidden_uuids() {
+        let (state, dir) = test_state();
+        let app = root_router(state);
+        let _commit = commit_fixture(app.clone(), &dir).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get("/api/v1/groups/rows?path=groups/Baca.parquet")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let rows: GroupRowsResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(rows.path, "groups/Baca.parquet");
+        assert_eq!(rows.visible_id_column, "anid");
+        assert_eq!(rows.descriptive_columns, vec!["Site"]);
+        assert_eq!(rows.elemental_columns, vec!["as", "fe"]);
+        assert_eq!(rows.rows.len(), 2);
+        // Hidden identity rides in the payload for edit addressing; visible ID
+        // and descriptive cells round-trip; measured values stay numeric.
+        assert!(rows
+            .rows
+            .iter()
+            .all(|row| uuid::Uuid::parse_str(&row.analytical_uuid).is_ok()));
+        assert_eq!(rows.rows[0].visible_id.as_deref(), Some("A1"));
+        assert_eq!(rows.rows[0].descriptive, vec![Some("Baca".into())]);
+        assert_eq!(rows.rows[0].elemental, vec![Some(1.5), Some(3.0)]);
+
+        // Unknown paths fail closed with the store error envelope (missing
+        // group files surface as io_error, per store_error_response).
+        let response = app
+            .oneshot(
+                axum::http::Request::get("/api/v1/groups/rows?path=groups/Missing.parquet")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let envelope: ErrorEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(envelope.code, "io_error");
     }
 
     #[tokio::test]

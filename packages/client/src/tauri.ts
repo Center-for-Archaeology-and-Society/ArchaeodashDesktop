@@ -129,6 +129,7 @@ export class TauriTransport implements Transport {
     return {
       scan: () => this.call<GroupCandidate[]>('scan_group_candidates'),
       validate: (path: string) => this.call<GroupSummary>('validate_group_file', { path }),
+      rows: (path: string) => this.call('group_rows', { path }),
       transferUnits: (request: TransferUnitsRequest) => this.call('transfer_units', { request }),
       mergeGroups: (request: MergeGroupsRequest) => this.call('merge_groups', { request }),
       patchDescriptiveValues: (request: PatchDescriptiveValuesRequest) =>

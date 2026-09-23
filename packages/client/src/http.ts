@@ -173,6 +173,7 @@ export class HttpTransport implements Transport {
       scan: () => this.request<GroupCandidate[]>('GET', '/api/v1/groups'),
       // The validate route takes a bare JSON string body, not an object.
       validate: (path) => this.request('POST', '/api/v1/groups/validate', { body: path }),
+      rows: (path) => this.request('GET', '/api/v1/groups/rows', { query: { path } }),
       transferUnits: (request) =>
         this.request('POST', '/api/v1/groups/transfer-units', { body: request }),
       mergeGroups: (request) => this.request('POST', '/api/v1/groups/merge', { body: request }),

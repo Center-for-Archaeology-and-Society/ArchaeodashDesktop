@@ -5,8 +5,9 @@
 use std::path::PathBuf;
 
 use archaeodash_contracts::{
-    DeleteGroupRequest, DuplicateGroupRequest, GroupCandidate, GroupSummary, MergeGroupsRequest,
-    PatchDescriptiveValuesRequest, TransactionResponse, TransferAction, TransferUnitsRequest,
+    DeleteGroupRequest, DuplicateGroupRequest, GroupCandidate, GroupRowDto, GroupRowsResponse,
+    GroupSummary, MergeGroupsRequest, PatchDescriptiveValuesRequest, TransactionResponse,
+    TransferAction, TransferUnitsRequest,
 };
 use archaeodash_data_io::{
     sanitize_group_name, scan_project, GroupFileData, GroupProfile, GroupRow,
@@ -79,6 +80,32 @@ impl GroupService {
             elemental_columns: profile.roles.elemental.clone(),
             descriptive_columns: profile.roles.descriptive.clone(),
         }
+    }
+
+    /// Full row data for the client dataset table (Section 9.4 Explore):
+    /// hidden UUIDs for edit addressing, role columns for table headers.
+    pub fn rows(&self, path: &str) -> Result<GroupRowsResponse, StoreError> {
+        let data = self.store.read_group(path)?;
+        let roles = &data.profile.roles;
+        Ok(GroupRowsResponse {
+            path: path.to_string(),
+            revision_id: data.profile.revision_id.clone(),
+            visible_id_column: roles.visible_id.clone(),
+            legacy_rowid_column: roles.legacy_rowid.clone(),
+            descriptive_columns: roles.descriptive.clone(),
+            elemental_columns: roles.elemental.clone(),
+            rows: data
+                .rows
+                .iter()
+                .map(|row| GroupRowDto {
+                    analytical_uuid: row.uuid.to_string(),
+                    legacy_rowid: row.legacy_rowid.clone(),
+                    visible_id: row.visible.clone(),
+                    descriptive: row.descriptive.clone(),
+                    elemental: row.elemental.clone(),
+                })
+                .collect(),
+        })
     }
 
     fn summary_of_output(path: &str, out: &PlannedOutput) -> GroupSummary {

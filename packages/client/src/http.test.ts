@@ -51,6 +51,7 @@ const httpLabels = {
   appInfo: 'GET /healthz',
   groupsScan: 'GET /api/v1/groups',
   groupsValidate: 'POST /api/v1/groups/validate',
+  groupsRows: 'GET /api/v1/groups/rows?path=groups%2FBaca.parquet',
   preferencesGet: 'GET /api/v1/preferences',
   preferencesPut: 'PUT /api/v1/preferences',
   transformationsSave: 'POST /api/v1/transformations',

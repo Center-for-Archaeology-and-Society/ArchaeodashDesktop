@@ -141,6 +141,41 @@ pub struct GroupSummary {
     pub descriptive_columns: Vec<String>,
 }
 
+/// Full row data of one group file for the client dataset table (Section
+/// 9.4). The hidden `analytical_uuid` travels in this payload so edits can
+/// address immutable row identity, but the UI never displays it and ordinary
+/// exports never contain it (Section 3.2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroupRowsRequest {
+    /// Project-relative group file path.
+    pub path: String,
+}
+
+/// One analytical-unit row aligned with the profile role columns.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroupRowDto {
+    /// Hidden immutable row identity (never rendered by the client).
+    pub analytical_uuid: String,
+    pub legacy_rowid: Option<String>,
+    pub visible_id: Option<String>,
+    /// Descriptive cells in `descriptive_columns` order (editable).
+    pub descriptive: Vec<Option<String>>,
+    /// Measured elemental cells in `elemental_columns` order (read-only).
+    pub elemental: Vec<Option<f64>>,
+}
+
+/// `GET /groups/rows` response: one group file's editable dataset view.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroupRowsResponse {
+    pub path: String,
+    pub revision_id: String,
+    pub visible_id_column: String,
+    pub legacy_rowid_column: String,
+    pub descriptive_columns: Vec<String>,
+    pub elemental_columns: Vec<String>,
+    pub rows: Vec<GroupRowDto>,
+}
+
 /// One discovered Parquet candidate with its readiness state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupCandidate {

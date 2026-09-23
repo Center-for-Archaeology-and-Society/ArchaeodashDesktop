@@ -14,8 +14,8 @@ use archaeodash_contracts::{
     ExploreHistogramRequest, ExploreHistogramResponse, ExploreMissingProfileRequest,
     ExploreMissingProfileResponse, ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult,
     ExportTransformedRequest, FileDownload, FileUploadRequest, GetPreferencesResponse,
-    GroupCandidate, GroupSummary, ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest,
-    ImportPreviewResponse, LdaRequest, LdaResponse, MergeGroupsRequest,
+    GroupCandidate, GroupRowsResponse, GroupSummary, ImportCommitRequest, ImportCommitResponse,
+    ImportPreviewRequest, ImportPreviewResponse, LdaRequest, LdaResponse, MergeGroupsRequest,
     PatchDescriptiveValuesRequest, PcaRequest, PcaResponse, PutPreferenceRequest, RatioSpecDto,
     SaveTransformationResponse, StagedFile, TransactionResponse, TransferUnitsRequest,
     TransformationDefinition, TransformationListResponse, UmapRequest, UmapResponse,
@@ -70,6 +70,12 @@ impl DesktopGroups {
     /// Desktop `validate_group_file` command body: full validation-on-add.
     pub fn validate_group_file(&self, path: String) -> Result<GroupSummary, String> {
         self.with_service(|svc| svc.validate(&path))
+    }
+
+    /// Desktop `group_rows` command body: full row data of one group file
+    /// for the client dataset table (hidden UUIDs address edits, Section 9.4).
+    pub fn group_rows(&self, path: String) -> Result<GroupRowsResponse, String> {
+        self.with_service(|svc| svc.rows(&path))
     }
 
     /// Desktop `move_analytical_units` / `copy_analytical_units` command body.
