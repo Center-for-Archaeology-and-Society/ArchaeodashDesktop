@@ -20,7 +20,6 @@ import {
   PrivacyPage,
   ProbabilitiesPage,
   TermsPage,
-  VisualizePage,
 } from './shell/routes.tsx';
 import { navRoutes } from './shell/nav.ts';
 import { normalizeTheme, themes } from '@archaeodash/client';
@@ -98,7 +97,6 @@ test('phase routes render their structured placeholders', () => {
   for (const [el, label] of [
     [<HomePage />, 'Home'],
     [<ExplorePage />, 'Explore'],
-    [<VisualizePage />, 'Visualize &amp; Assign'],
     [<OrdinationPage />, 'Ordination'],
     [<ClusterPage />, 'Cluster'],
     [<ProbabilitiesPage />, 'Probabilities and Distances'],

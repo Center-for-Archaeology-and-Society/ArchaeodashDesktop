@@ -12,23 +12,21 @@ import { AppShell } from './shell/AppShell.tsx';
 import {
   ClusterPage,
   EuclideanPage,
-  ExplorePage,
-  type ExploreDeps,
   HelpPage,
   HomePage,
-  OrdinationPage as OrdinationView,
   PrivacyPage,
   ProbabilitiesPage,
   TermsPage,
-  VisualizePage,
 } from './shell/routes.tsx';
+import { ExplorePage, type ExploreDeps } from './explore/ExplorePage.tsx';
 import { OrdinationPage, type OrdinationDeps } from './ordination/OrdinationPage.tsx';
+import { VisualizePage, type VisualizeDeps } from './visualize/VisualizePage.tsx';
 import { applyTheme, hydrateTheme, readStoredTheme } from './theme.ts';
+import { createTransport } from './transport.ts';
 
 function AppRoot({ transport }: { transport: Transport }): ReactElement {
   const [theme, setTheme] = useState<string>(() => readStoredTheme());
   const [appInfo, setAppInfo] = useState<AppInfo | undefined>(undefined);
-  const [lastOpenedDataset, setLastOpenedDataset] = useState('');
   useEffect(() => {
     let cancelled = false;
     transport
@@ -42,35 +40,11 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
     void hydrateTheme(transport, readStoredTheme()).then((hydrated) => {
       if (!cancelled) setTheme(hydrated);
     });
-    // Restore the legacy `lastOpenedDataset` selector default (Section 10.1).
-    transport.preferences
-      .get()
-      .then((prefs) => {
-        if (cancelled) return;
-        const pref = prefs.preferences.find((p) => p.key === 'lastOpenedDataset');
-        if (typeof pref?.value === 'string' && pref.value) setLastOpenedDataset(pref.value);
-      })
-      .catch(() => {
-        /* offline: fall back to the first ready candidate */
-      });
     return () => {
       cancelled = true;
     };
   }, [transport]);
 
-  const deps = useMemo(
-    () => ({
-      groups: transport.groups,
-      explore: transport.explore,
-      exports: transport.exports,
-      onDatasetOpened: (path: string) => {
-        // Legacy `lastOpenedDataset` selector-default semantics (Section 10.1).
-        void transport.preferences.put('lastOpenedDataset', path).catch(() => {});
-      },
-      initialDataset: lastOpenedDataset,
-    }),
-    [transport, lastOpenedDataset],
-  );
   return (
     <AppShell
       theme={theme}
@@ -88,11 +62,11 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
   );
 }
 
-function routeChildren(deps: ExploreDeps, ordinationDeps: OrdinationDeps): RouteObject[] {
+function routeChildren(deps: ExploreDeps, ordinationDeps: OrdinationDeps, visualizeDeps: VisualizeDeps): RouteObject[] {
   return [
     { index: true, element: <HomePage /> },
     { path: 'explore', element: <ExplorePage deps={deps} /> },
-    { path: 'visualize', element: <VisualizePage /> },
+    { path: 'visualize', element: <VisualizePage deps={visualizeDeps} /> },
     { path: 'ordination', element: <OrdinationPage deps={ordinationDeps} /> },
     { path: 'cluster', element: <ClusterPage /> },
     { path: 'probabilities', element: <ProbabilitiesPage /> },
@@ -106,13 +80,38 @@ function routeChildren(deps: ExploreDeps, ordinationDeps: OrdinationDeps): Route
 }
 
 export function createAppRouter(transport: Transport) {
-  const exploreDeps: ExploreDeps = { groups: transport.groups, explore: transport.explore };
+  const visualizeDeps: VisualizeDeps = {
+    groups: transport.groups,
+    ordination: transport.ordination,
+    exports: transport.exports,
+  };
+  const exploreDeps: ExploreDeps = {
+    groups: transport.groups,
+    explore: transport.explore,
+    exports: transport.exports,
+    // Legacy `lastOpenedDataset` selector default (Section 10.1): hydrate on
+    // mount, persist on every dataset open. Stable callbacks so the router
+    // never remounts Explore when the preference changes.
+    getInitialDataset: async () => {
+      try {
+        const prefs = await transport.preferences.get();
+        const pref = prefs.preferences.find((p) => p.key === 'lastOpenedDataset');
+        return typeof pref?.value === 'string' ? pref.value : '';
+      } catch {
+        return '';
+      }
+    },
+    onDatasetOpened: (path: string) => {
+      void transport.preferences.put('lastOpenedDataset', path).catch(() => {});
+    },
+  };
   const ordinationDeps: OrdinationDeps = {
     groups: transport.groups,
     ordination: transport.ordination,
+    exports: transport.exports,
   };
   return createBrowserRouter([
-    { element: <AppRoot transport={transport} />, children: routeChildren(exploreDeps, ordinationDeps) },
+    { element: <AppRoot transport={transport} />, children: routeChildren(exploreDeps, ordinationDeps, visualizeDeps) },
   ]);
 }
 

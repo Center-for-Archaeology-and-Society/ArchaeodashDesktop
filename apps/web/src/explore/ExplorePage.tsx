@@ -21,10 +21,10 @@ export interface ExploreDeps {
   readonly groups: GroupsService;
   readonly explore: ExploreService;
   readonly exports: ExportsService;
-  /** Legacy `lastOpenedDataset` preference (Section 10.1/9.4). */
-  readonly onDatasetOpened?: (path: string) => void;
-  /** Restored `lastOpenedDataset` preference, or empty string. */
-  readonly initialDataset?: string;
+  /** Restored legacy `lastOpenedDataset` preference (Section 10.1/9.4). */
+  readonly getInitialDataset: () => Promise<string>;
+  /** Persist the legacy `lastOpenedDataset` preference on dataset open. */
+  readonly onDatasetOpened: (path: string) => void;
 }
 
 type LoadState =
@@ -488,9 +488,9 @@ function ProfileView({
   );
 }
 
-export function ExplorePage({ deps, initialDataset = '' }: { deps: ExploreDeps; initialDataset?: string }): ReactElement {
+export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
   const [candidates, setCandidates] = useState<Awaited<ReturnType<GroupsService['scan']>>>([]);
-  const [selectedPath, setSelectedPath] = useState(initialDataset);
+  const [selectedPath, setSelectedPath] = useState('');
   const [loadState, setLoadState] = useState<LoadState>({ kind: 'idle' });
   const [view, setView] = useState<ExploreView>('table');
 
@@ -514,14 +514,13 @@ export function ExplorePage({ deps, initialDataset = '' }: { deps: ExploreDeps; 
 
   useEffect(() => {
     let cancelled = false;
-    deps.groups
-      .scan()
-      .then((list) => {
+    void Promise.all([deps.getInitialDataset(), deps.groups.scan()])
+      .then(([stored, list]) => {
         if (cancelled) return;
         setCandidates(list);
         const preferred =
-          list.find((c) => c.ready && c.path === initialDataset)?.path ??
-          list.find((c) => c.ready && c.group)?.path ??
+          (stored && list.find((c) => c.ready && c.path === stored)?.path) ||
+          list.find((c) => c.ready && c.group)?.path ||
           '';
         setSelectedPath((current) => current || preferred);
       })
@@ -531,11 +530,11 @@ export function ExplorePage({ deps, initialDataset = '' }: { deps: ExploreDeps; 
     return () => {
       cancelled = true;
     };
-  }, [deps, initialDataset]);
+  }, [deps]);
   useEffect(() => {
     if (selectedPath) {
       loadRows(selectedPath);
-      deps.onDatasetOpened?.(selectedPath);
+      deps.onDatasetOpened(selectedPath);
     }
   }, [selectedPath, loadRows, deps]);
 

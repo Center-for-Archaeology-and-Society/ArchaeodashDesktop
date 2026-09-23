@@ -1,8 +1,8 @@
 /**
- * Route elements (Section 9.3/9.4). Phase 4 ships Home, Info (Help/Terms/
- * Privacy rendered in-app from the legacy markdown), and the Explore and
- * Ordination routes; Cluster, Probabilities and Distances, Euclidean
- * Distance, and Visualize & Assign render structured placeholders until
+ * Route elements (Section 9.3/9.4). Shipped so far: Home, Info (Help/Terms/
+ * Privacy rendered in-app from the legacy markdown), Explore, Ordination,
+ * and Visualize & Assign (see src/visualize/). Cluster, Probabilities and
+ * Distances, and Euclidean Distance render structured placeholders until
  * their phases land.
  */
 import { marked } from 'marked';
@@ -49,10 +49,6 @@ export function HomePage(): ReactElement {
 
 export function ExplorePage(): ReactElement {
   return <Placeholder title="Explore" phase="the Explore slice" />;
-}
-
-export function VisualizePage(): ReactElement {
-  return <Placeholder title="Visualize & Assign" phase="Phase 5" />;
 }
 
 export function OrdinationPage(): ReactElement {

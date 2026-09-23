@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToString } from 'react-dom/server';
 import type { ExploreService, ExportsService, GroupsService } from '@archaeodash/client';
-import { ExplorePage, DataTable } from './ExplorePage.tsx';
-function makeDeps(): { groups: GroupsService; explore: ExploreService; exports: ExportsService } {
+import { ExplorePage, DataTable, type ExploreDeps } from './ExplorePage.tsx';
+function makeDeps(): ExploreDeps {
   const groups = {
     scan: async () => [
       {
@@ -98,7 +98,13 @@ function makeDeps(): { groups: GroupsService; explore: ExploreService; exports: 
       throw new Error('unused in explore tests');
     },
   } satisfies ExportsService;
-  return { groups, explore, exports };
+  return {
+    groups,
+    explore,
+    exports,
+    getInitialDataset: async () => '',
+    onDatasetOpened: () => {},
+  };
 }
 
 test('explore renders the legacy view tabs; table hides hidden identity', async () => {
