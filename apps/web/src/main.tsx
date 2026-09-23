@@ -4,11 +4,12 @@
  * async resolves, then hydrate the persisted theme preference without the
  * legacy startup race.
  */
-import { StrictMode, useEffect, useState, type ReactElement } from 'react';
+import { StrictMode, useEffect, useMemo, useState, type ReactElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createBrowserRouter, Outlet, RouterProvider, type RouteObject } from 'react-router';
 import type { AppInfo, Transport } from '@archaeodash/client';
 import { AppShell } from './shell/AppShell.tsx';
+import { ExplorePage, type ExploreDeps } from './explore/ExplorePage';
 import {
   ClusterPage,
   EuclideanPage,
@@ -45,6 +46,14 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
     };
   }, [transport]);
 
+  const deps = useMemo(
+    () => ({
+      groups: transport.groups,
+      explore: transport.explore,
+    }),
+    [transport],
+  );
+
   return (
     <AppShell
       theme={theme}
@@ -57,24 +66,27 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
   );
 }
 
-const routeChildren: RouteObject[] = [
-  { index: true, element: <HomePage /> },
-  { path: 'explore', element: <ExplorePage /> },
-  { path: 'visualize', element: <VisualizePage /> },
-  { path: 'ordination', element: <OrdinationPage /> },
-  { path: 'cluster', element: <ClusterPage /> },
-  { path: 'probabilities', element: <ProbabilitiesPage /> },
-  { path: 'euclidean', element: <EuclideanPage /> },
-  { path: 'info', element: <HelpPage /> },
-  { path: 'info/help', element: <HelpPage /> },
-  { path: 'info/terms', element: <TermsPage /> },
-  { path: 'info/privacy', element: <PrivacyPage /> },
-  { path: '*', element: <HomePage /> },
-];
+function routeChildren(deps: ExploreDeps): RouteObject[] {
+  return [
+    { index: true, element: <HomePage /> },
+    { path: 'explore', element: <ExplorePage deps={deps} /> },
+    { path: 'visualize', element: <VisualizePage /> },
+    { path: 'ordination', element: <OrdinationPage /> },
+    { path: 'cluster', element: <ClusterPage /> },
+    { path: 'probabilities', element: <ProbabilitiesPage /> },
+    { path: 'euclidean', element: <EuclideanPage /> },
+    { path: 'info', element: <HelpPage /> },
+    { path: 'info/help', element: <HelpPage /> },
+    { path: 'info/terms', element: <TermsPage /> },
+    { path: 'info/privacy', element: <PrivacyPage /> },
+    { path: '*', element: <HomePage /> },
+  ];
+}
 
 export function createAppRouter(transport: Transport) {
+  const deps: ExploreDeps = { groups: transport.groups, explore: transport.explore };
   return createBrowserRouter([
-    { element: <AppRoot transport={transport} />, children: routeChildren },
+    { element: <AppRoot transport={transport} />, children: routeChildren(deps) },
   ]);
 }
 
