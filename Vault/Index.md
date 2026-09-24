@@ -55,6 +55,7 @@ Up: [[../../Vault/Index]]
 - [[Phase_4_Client_Ordination_Prefs_Exports_2026-09-23]]
 - [[Phase_5_Visualize_Assign_Slice_A_2026-09-23]]
 - [[Interaction_Log_2026-09-23]]
+- [[OpenCode_Session_Stuck_Goal_Auto_Continue_Diagnosis_2026-09-24]]
 
 ## Notes
 - This vault uses atomic notes (one concept per file) linked with `[[Wikilinks]]`.

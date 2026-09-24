@@ -1,0 +1,7 @@
+# OpenCode Session Stuck — Goal Auto-Continue Loop (2026-09-24)
+
+- **Symptom**: Session `ses_f3615379cffeKDAEnQYW0x6M0X` ("witty-river") appeared stuck; user cancels were followed by automatic restarts.
+- **Diagnosis**: The `@prevalentware/opencode-goal-plugin` had an **active goal with no turn/token/duration limits** (`autoTurns: 14`, 145.4M tokens, ~48h). Each user cancel triggered a "Continue working toward the active session goal" auto-continuation prompt. Additionally, the session's ~215k-token context was re-sent **uncached** every step (`cache read/write: 0` — the `asu` provider's cache was not engaging), so each step took 2–3 minutes and looked frozen.
+- **Root cause of "stuck" appearance**: goal auto-continue + no cache hits + repeated `MessageAbortedError` cancel/restart cycles (3 within 3 minutes).
+- **Fix**: Goal state lives in `~/.local/share/opencode-goal-plugin/goals.json` (path derived in plugin `dist/server.js` `defaultStateFile()`). In-session goal tools returned `null`/`cleared: false` (state scoping quirk), so the goal was **paused by editing `goals.json` directly** (backup: `/tmp/opencode/goals.json.bak`). Verified `status: "paused"` via goal listing.
+- **Note**: Two other stale active goals on sessions `ses_f3ab39f36ffexHDXIYyOkxrgn0` and `ses_f401f34baffeIcuhS8ibfbyyDe` (idle since Sep 21-22) were paused the same way at user request. No active goals remain.
