@@ -56,6 +56,9 @@ Up: [[../../Vault/Index]]
 - [[Phase_5_Visualize_Assign_Slice_A_2026-09-23]]
 - [[Interaction_Log_2026-09-23]]
 - [[OpenCode_Session_Stuck_Goal_Auto_Continue_Diagnosis_2026-09-24]]
+- [[Golden_09_Clustering_Kmeans_Pam_Parity_Fix_2026-09-24]]
+- [[Golden_09_Clustering_Hclust_Diana_Parity_Fix_2026-09-24]]
+- [[Phase_6_Membership_Euclidean_Goldens_2026-09-24]]
 
 ## Notes
 - This vault uses atomic notes (one concept per file) linked with `[[Wikilinks]]`.
