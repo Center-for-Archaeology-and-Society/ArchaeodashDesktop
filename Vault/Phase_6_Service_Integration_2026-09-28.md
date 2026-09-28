@@ -34,3 +34,12 @@ Client typechecks and tests pass, including result visibility, fallback labels, 
 - Phase 6: dendrogram/diagnostic plots and expanded views; PCA/PC-count/source controls; UUID-addressed result selection, assignment, and recording with revision checks; jobs/progress/cancellation; performance budgets and statistical matrix approval.
 - Service caps do not replace job cancellation or dataset benchmark acceptance. The current pairwise ceiling is 1,000 rows.
 - Hosted authentication and operations (Phase 7) have not been declared complete or started as a substitute for these gates.
+
+## Final validation checkpoint
+
+- Combined Rust suite passed for analysis, contracts, application, API, desktop, and all existing parity tests (including PCA/UMAP/LDA and goldens 09–11).
+- Final nullable-distance regression keeps missing-data Euclidean results valid JSON (`null`), round-trippable by Rust, and correctly typed in TypeScript. Application tests now total 53; contracts tests total 11.
+- All client workspace tests/typechecks and production builds pass (42 web tests). The build retains the Plotly bundle-size warning.
+- Final API/desktop tests, `cargo fmt --all -- --check`, Tauri shell compilation, and library clippy with warnings denied pass.
+- New Vault notes have incoming links from the index/interaction log; no new orphan note was introduced.
+- Commits during this interaction separately capture the status checkpoint, existing multiplot completion, typed transports, Rust services/adapters, client pages, and final wire-contract cleanup.

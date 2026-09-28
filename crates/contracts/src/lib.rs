@@ -995,8 +995,9 @@ pub struct EuclideanMatchDto {
     pub id: String,
     /// Match ID value.
     pub match_id: String,
-    /// Euclidean distance (`NaN` distances sort last like R's radix order).
-    pub distance: f64,
+    /// Euclidean distance; `null` represents a non-finite distance (for
+    /// example, when a measured cell is missing).
+    pub distance: Option<f64>,
     /// Observation group label.
     pub group: String,
     /// Match group label.
@@ -1606,7 +1607,7 @@ mod cluster_membership_dto_tests {
                 rowid: "1".into(),
                 id: "A1".into(),
                 match_id: "B1".into(),
-                distance: 2.5,
+                distance: Some(2.5),
                 group: "A".into(),
                 match_group: "B".into(),
             }],

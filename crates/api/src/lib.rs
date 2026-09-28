@@ -17,8 +17,8 @@
 use std::sync::Arc;
 
 use archaeodash_application::{
-    ClusterService, ExploreService, ExportService, GroupService, ImportService, OrdinationService,
-    PreferenceService, SourceFileService, TransformService, app_info,
+    app_info, ClusterService, ExploreService, ExportService, GroupService, ImportService,
+    OrdinationService, PreferenceService, SourceFileService, TransformService,
 };
 use archaeodash_contracts::{
     AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
@@ -41,7 +41,7 @@ use archaeodash_domain::DomainError;
 use archaeodash_storage::StoreError;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
@@ -1170,11 +1170,10 @@ mod tests {
         assert_eq!(rows.rows.len(), 2);
         // Hidden identity rides in the payload for edit addressing; visible ID
         // and descriptive cells round-trip; measured values stay numeric.
-        assert!(
-            rows.rows
-                .iter()
-                .all(|row| uuid::Uuid::parse_str(&row.analytical_uuid).is_ok())
-        );
+        assert!(rows
+            .rows
+            .iter()
+            .all(|row| uuid::Uuid::parse_str(&row.analytical_uuid).is_ok()));
         assert_eq!(rows.rows[0].visible_id.as_deref(), Some("A1"));
         assert_eq!(rows.rows[0].descriptive, vec![Some("Baca".into())]);
         assert_eq!(rows.rows[0].elemental, vec![Some(1.5), Some(3.0)]);

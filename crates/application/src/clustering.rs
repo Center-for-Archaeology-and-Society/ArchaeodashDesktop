@@ -104,14 +104,14 @@ impl ClusterService {
         context: &str,
         needs_distances: bool,
     ) -> Result<(), DomainError> {
-        let cells = n.checked_mul(p).unwrap_or(usize::MAX);
+        let cells = n.saturating_mul(p);
         if cells > MAX_INPUT_CELLS {
             return Err(validation(
                 "cluster_resource_limit",
                 format!("{context}: input has {cells} cells; limit is {MAX_INPUT_CELLS}"),
             ));
         }
-        if needs_distances && n.checked_mul(n).unwrap_or(usize::MAX) > MAX_DISTANCE_CELLS {
+        if needs_distances && n.saturating_mul(n) > MAX_DISTANCE_CELLS {
             return Err(validation(
                 "cluster_resource_limit",
                 format!("{context}: {n} rows exceed the pairwise distance limit"),
@@ -447,13 +447,7 @@ impl ClusterService {
         let ids = Self::id_values(&data, &req.id_column, &req.path)?;
         let groups = Self::group_labels(&data, &req.group_column, &req.path)?;
         let eligible = get_eligible(&groups, matrix.cols.len());
-        if data
-            .rows
-            .len()
-            .checked_mul(eligible.len())
-            .unwrap_or(usize::MAX)
-            > MAX_DISTANCE_CELLS
-        {
+        if data.rows.len().saturating_mul(eligible.len()) > MAX_DISTANCE_CELLS {
             return Err(validation(
                 "cluster_resource_limit",
                 format!("{}: membership result exceeds the cell limit", req.path),
@@ -555,7 +549,7 @@ impl ClusterService {
                     rowid: visible_rowids.get(&m.rowid).cloned().unwrap_or(m.rowid),
                     id: m.id,
                     match_id: m.match_id,
-                    distance: m.distance,
+                    distance: m.distance.is_finite().then_some(m.distance),
                     group: m.group,
                     match_group: m.match_group,
                 })
@@ -1080,6 +1074,40 @@ mod tests {
                 || (row.id == "X1" && row.match_id == "X0"))
                 && row.rowid == "duplicate"
         }), "distinct UUID-backed observations remain match candidates despite duplicate legacy keys");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_cells_return_null_distance_and_round_trip_json() {
+        let (service, dir, path) = service_with_merged_group();
+        let file = dir.join(&path);
+        let mut data = read_group_file(&file).expect("read group");
+        data.rows[0].elemental[0] = None;
+        write_group_rows(&file, data.profile, &data.rows).expect("write missing cell");
+
+        let response = service
+            .euclidean_matches(&EuclideanMatchesRequest {
+                path,
+                columns: vec!["as".into(), "fe".into()],
+                group_column: "Site".into(),
+                id_column: "anid".into(),
+                limit: 100,
+                within_group: true,
+            })
+            .expect("legacy distance matching accepts missing cells");
+        assert!(response
+            .rows
+            .iter()
+            .any(|row| row.id == "X0" && row.distance.is_none()));
+        let json = serde_json::to_string(&response).expect("serialize null distances");
+        assert!(json.contains("\"distance\":null"));
+        let round_trip: EuclideanMatchesResponse =
+            serde_json::from_str(&json).expect("deserialize null distance");
+        assert_eq!(round_trip.rows.len(), response.rows.len());
+        assert!(round_trip
+            .rows
+            .iter()
+            .any(|row| row.id == "X0" && row.distance.is_none()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

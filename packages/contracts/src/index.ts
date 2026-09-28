@@ -400,7 +400,7 @@ export interface EuclideanMatchDto {
   rowid: string;
   id: string;
   match_id: string;
-  distance: number;
+  distance: number | null;
   group: string;
   match_group: string;
 }
