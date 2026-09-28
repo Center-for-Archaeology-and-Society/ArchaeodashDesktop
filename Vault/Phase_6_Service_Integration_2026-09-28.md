@@ -31,7 +31,7 @@ Client typechecks and tests pass, including result visibility, fallback labels, 
 ## Remaining phase gates
 
 - Phase 5: desktop project-opening command/UI wiring, web/desktop assignment e2e, and plot performance acceptance.
-- Phase 6: dendrogram/diagnostic plots and expanded views; PCA/PC-count/source controls; UUID-addressed result selection, assignment, and recording with revision checks; jobs/progress/cancellation; performance budgets and statistical matrix approval.
+- Phase 6: additional distance/linkage options; PCA/PC-count/source controls; UUID-addressed result selection, assignment, and recording with revision checks; jobs/progress/cancellation; performance budgets and statistical matrix approval.
 - Service caps do not replace job cancellation or dataset benchmark acceptance. The current pairwise ceiling is 1,000 rows.
 - Hosted authentication and operations (Phase 7) have not been declared complete or started as a substitute for these gates.
 
@@ -43,3 +43,7 @@ Client typechecks and tests pass, including result visibility, fallback labels, 
 - Final API/desktop tests, `cargo fmt --all -- --check`, Tauri shell compilation, and library clippy with warnings denied pass.
 - New Vault notes have incoming links from the index/interaction log; no new orphan note was introduced.
 - Commits during this interaction separately capture the status checkpoint, existing multiplot completion, typed transports, Rust services/adapters, client pages, and final wire-contract cleanup.
+
+## Follow-up
+
+Diagnostic charts and horizontal dendrograms with cut coloring, leaf-size controls, and expanded viewports are implemented in [[Phase_6_Cluster_Plots_2026-09-28]].

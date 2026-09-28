@@ -1,3 +1,4 @@
+import { AnalysisPlots } from './AnalysisPlots.tsx';
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import type {
   Transport, GroupRowsResponse, ClusterMethod, MembershipMethod,
@@ -144,6 +145,6 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     <button disabled={disabled} onClick={() => void run()}>Run analysis</button>
     {kind === 'cluster' && <button disabled={disabled} onClick={() => void run(true)}>Run cluster diagnostics</button>}
     {busy && <p role="status">Computing…</p>}{error && <p role="alert">{error}</p>}
-    {result && <ResultTable key={generation.current} result={result} />}
+    {result && <div key={generation.current}><AnalysisPlots result={result} /><ResultTable result={result} /></div>}
   </section>;
 }

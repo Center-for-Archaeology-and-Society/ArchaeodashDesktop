@@ -322,3 +322,40 @@ body {
 .multiplot-panel {
   max-width: 100%;
 }
+
+
+/* Cluster plots keep every leaf and use keyboard-scrollable viewports. */
+.cluster-plot-panel {
+  margin-block: 1rem;
+  padding: 1rem;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
+  border-radius: var(--radius);
+}
+.cluster-plot-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+.cluster-plot-toolbar h2 { margin: 0; flex: 1; }
+.cluster-plot-toolbar input[type="number"] { width: 5rem; }
+.cluster-plot-toolbar button { font: inherit; cursor: pointer; }
+.cluster-plot-viewport { overflow: auto; max-height: 32rem; }
+.cluster-plot-viewport:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cluster-plot-panel.expanded .cluster-plot-viewport { max-height: 80vh; }
+.cluster-plot-panel figure { margin: 0 0 1rem; }
+.cluster-plot-panel.expanded figure { min-width: 70rem; }
+@media (prefers-reduced-motion: no-preference) {
+  .cluster-plot-viewport { scroll-behavior: smooth; }
+}
+.cluster-diagnostics-plots {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+  gap: 1rem;
+}
+.cluster-diagnostic-svg { display: block; width: 100%; min-width: 20rem; font: inherit; }
+.cluster-plot-panel.expanded .cluster-diagnostic-plot { min-width: 0; }
+.cluster-plot-panel.expanded .cluster-diagnostics-plots { min-width: 70rem; }
