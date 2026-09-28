@@ -67,3 +67,5 @@ Up: [[../../Vault/Index]]
 - [[Multiplot_Async_Promise_Robustness_Fix_2026-04-13]]
 
 - [[Phase_6_Service_Integration_2026-09-28]]
+
+- [[Phase_6_Cluster_Plots_2026-09-28]]
