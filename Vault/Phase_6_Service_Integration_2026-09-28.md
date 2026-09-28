@@ -2,7 +2,7 @@
 
 ## Checkpoint
 
-The plan header was stale. Code and linked phase notes show implementation slices through Phase 5 and numerical goldens for Phase 6. Phase 5 desktop assignment e2e and performance acceptance are still open. Phase 6 UI routes are placeholders; full statistical matrix approval and job cancellation remain open.
+The plan header was stale. Code and linked phase notes show implementation slices through Phase 5 and numerical goldens for Phase 6. Phase 5 desktop assignment e2e and performance acceptance are still open. Phase 6 UI routes were placeholders at the start of this interaction; full statistical matrix approval and job cancellation remain open.
 
 Existing working-tree edits include Phase 5 interactive multiplots and Phase 6 Rust service/contracts/adapters. These were preserved. Three Luna agents own separate client transport, service hardening, and adapter-test tasks; service hardening uses medium reasoning, mechanical integration tasks use low reasoning. The primary agent integrates and verifies the results.
 
@@ -21,3 +21,16 @@ The Phase 6 service resolves canonical project-contained paths, rejects escaping
 Review corrected singleton silhouette widths to zero, restored undefined trivial-cluster means, and made fallback best-group selection follow the effective Mahalanobis method (minimum distance). Regression tests and numerical goldens 09–11 pass. The membership service fixture previously had singular covariance; a nonsingular deterministic fixture now exercises the intended Hotelling path. Analysis unit tests (30), application tests (52), and API tests (17) pass.
 
 These resource limits are conservative service limits, not measured performance acceptance. Input-file reading and transformation expansion can allocate before the service checks dimensions. Jobs, cancellation, and full performance acceptance remain future work.
+
+## Client workflow increment
+
+The Cluster, Probabilities and Distances, and Euclidean routes now use the shared typed transport. Controls select group files and measured columns, algorithms, group/ID columns, seeds, and match limits. Results show diagnostics, partitions, merge heights, effective membership method, and nearest matches. Tables initially render 100 rows with an explicit continuation control. Internal UUID/row keys are excluded from the displayed result tables. Changing datasets/settings invalidates pending results. The obsolete shell placeholders were removed.
+
+Client typechecks and tests pass, including result visibility, fallback labels, merge/diagnostic rendering, and initial table bounds. Production build passes with the existing large Plotly chunk warning. These are unit/SSR and adapter tests, not browser or desktop end-to-end acceptance.
+
+## Remaining phase gates
+
+- Phase 5: desktop project-opening command/UI wiring, web/desktop assignment e2e, and plot performance acceptance.
+- Phase 6: dendrogram/diagnostic plots and expanded views; PCA/PC-count/source controls; UUID-addressed result selection, assignment, and recording with revision checks; jobs/progress/cancellation; performance budgets and statistical matrix approval.
+- Service caps do not replace job cancellation or dataset benchmark acceptance. The current pairwise ceiling is 1,000 rows.
+- Hosted authentication and operations (Phase 7) have not been declared complete or started as a substitute for these gates.

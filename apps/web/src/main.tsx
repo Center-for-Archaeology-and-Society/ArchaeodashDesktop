@@ -10,17 +10,15 @@ import { createBrowserRouter, Outlet, RouterProvider, type RouteObject } from 'r
 import type { AppInfo, Transport } from '@archaeodash/client';
 import { AppShell } from './shell/AppShell.tsx';
 import {
-  ClusterPage,
-  EuclideanPage,
   HelpPage,
   HomePage,
   PrivacyPage,
-  ProbabilitiesPage,
   TermsPage,
 } from './shell/routes.tsx';
 import { ExplorePage, type ExploreDeps } from './explore/ExplorePage.tsx';
 import { OrdinationPage, type OrdinationDeps } from './ordination/OrdinationPage.tsx';
 import { VisualizePage, type VisualizeDeps } from './visualize/VisualizePage.tsx';
+import { AnalysisPage, type AnalysisDeps } from './clustering/AnalysisPage.tsx';
 import { applyTheme, hydrateTheme, readStoredTheme } from './theme.ts';
 import { createTransport } from './transport.ts';
 
@@ -62,15 +60,15 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
   );
 }
 
-function routeChildren(deps: ExploreDeps, ordinationDeps: OrdinationDeps, visualizeDeps: VisualizeDeps): RouteObject[] {
+function routeChildren(deps: ExploreDeps, ordinationDeps: OrdinationDeps, visualizeDeps: VisualizeDeps, analysisDeps: AnalysisDeps): RouteObject[] {
   return [
     { index: true, element: <HomePage /> },
     { path: 'explore', element: <ExplorePage deps={deps} /> },
     { path: 'visualize', element: <VisualizePage deps={visualizeDeps} /> },
     { path: 'ordination', element: <OrdinationPage deps={ordinationDeps} /> },
-    { path: 'cluster', element: <ClusterPage /> },
-    { path: 'probabilities', element: <ProbabilitiesPage /> },
-    { path: 'euclidean', element: <EuclideanPage /> },
+    { path: 'cluster', element: <AnalysisPage key="cluster" kind="cluster" deps={analysisDeps} /> },
+    { path: 'probabilities', element: <AnalysisPage key="membership" kind="membership" deps={analysisDeps} /> },
+    { path: 'euclidean', element: <AnalysisPage key="euclidean" kind="euclidean" deps={analysisDeps} /> },
     { path: 'info', element: <HelpPage /> },
     { path: 'info/help', element: <HelpPage /> },
     { path: 'info/terms', element: <TermsPage /> },
@@ -111,7 +109,7 @@ export function createAppRouter(transport: Transport) {
     exports: transport.exports,
   };
   return createBrowserRouter([
-    { element: <AppRoot transport={transport} />, children: routeChildren(exploreDeps, ordinationDeps, visualizeDeps) },
+    { element: <AppRoot transport={transport} />, children: routeChildren(exploreDeps, ordinationDeps, visualizeDeps, transport) },
   ]);
 }
 

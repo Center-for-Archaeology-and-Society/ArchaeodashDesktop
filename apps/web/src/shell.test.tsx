@@ -11,14 +11,9 @@ import { MemoryRouter } from 'react-router';
 import type { ReactElement } from 'react';
 import { AppShell } from './shell/AppShell.tsx';
 import {
-  ClusterPage,
-  EuclideanPage,
-  ExplorePage,
   HelpPage,
   HomePage,
-  OrdinationPage,
   PrivacyPage,
-  ProbabilitiesPage,
   TermsPage,
 } from './shell/routes.tsx';
 import { navRoutes } from './shell/nav.ts';
@@ -93,16 +88,8 @@ test('info routes render the legacy markdown content in-app (no iframe)', () => 
   assert.ok(privacy.includes('Privacy'));
 });
 
-test('phase routes render their structured placeholders', () => {
-  for (const [el, label] of [
-    [<HomePage />, 'Home'],
-    [<ExplorePage />, 'Explore'],
-    [<OrdinationPage />, 'Ordination'],
-    [<ClusterPage />, 'Cluster'],
-    [<ProbabilitiesPage />, 'Probabilities and Distances'],
-    [<EuclideanPage />, 'Euclidean Distance'],
-  ] as const) {
-    const html = renderToString(<MemoryRouter>{el}</MemoryRouter>);
-    assert.ok(html.includes(label), `placeholder missing: ${label}`);
-  }
+test('home route renders the project entry guidance', () => {
+  const html = renderToString(<MemoryRouter><HomePage /></MemoryRouter>);
+  assert.ok(html.includes('Home'));
+  assert.ok(html.includes('Data Manager'));
 });
