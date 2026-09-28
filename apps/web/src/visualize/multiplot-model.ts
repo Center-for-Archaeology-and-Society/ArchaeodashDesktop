@@ -52,6 +52,27 @@ export function allPairs(columnCount: number): PlotPair[] {
 }
 
 /**
+ * Human-readable sampling status for the interactive ceiling (Section 3.2:
+ * preserve the 100k ceiling but display the deterministic sampling
+ * status/count). Returns null when nothing was dropped.
+ */
+export function samplingStatusText(plan: SamplingPlan, total: number): string | null {
+  if (!plan.sampled) return null;
+  return `Sampled ${plan.indices.length} of ${total} points (stride ${plan.stride}, deterministic)`;
+}
+
+/**
+ * Extract the selection uuids from a `plotly_selected` event: each point
+ * carries `[analytical_uuid]` in `customdata` and the uuid is never rendered.
+ */
+export function uuidsFromSelectedEvent(eventData: unknown): string[] {
+  const points = (eventData as { points?: { customdata?: unknown[] }[] } | null)?.points ?? [];
+  return points
+    .map((p) => (Array.isArray(p.customdata) ? String(p.customdata[0]) : ''))
+    .filter((u) => u !== '');
+}
+
+/**
  * Static SVG scatter serialization for plot save: the browser stringifies
  * the live panel SVG; tests pass the element through `XMLSerializer`-shaped
  * `{ serializeToString }`. Returns a data URL safe to anchor-download.

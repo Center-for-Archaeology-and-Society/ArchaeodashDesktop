@@ -450,6 +450,8 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
             return gi >= 0 ? normalizeFilterValue(r.descriptive[gi]) : 'All';
           }))]}
           rowIndices={filteredIdx}
+          rowUuids={data.rows.map((r) => r.analytical_uuid)}
+          onSelect={(uuids) => setSelection(replaceSelection(uuids))}
         />
       ) : sameAxis ? (
         <p className="muted">Pick two different axes to plot.</p>

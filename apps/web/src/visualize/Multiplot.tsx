@@ -3,15 +3,29 @@
  * selectors, point size, panel height 500–2000, static/interactive mode,
  * deterministic 100k-point interactive sampling (labeled per procedure 13),
  * progressive render with cancel, and plot save (SVG download in static
- * mode; the uuid stays internal to selection only).
+ * mode; Plotly toImage SVG export in interactive mode; the uuid stays
+ * internal to selection only).
  */
-import { useMemo, useRef, useState, type ReactElement } from 'react';
-import { allPairs, samplingPlan, svgToDataUrl, type PlotPair } from './multiplot-model.ts';
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import type { Data, Layout } from 'plotly.js-dist-min';
+import {
+  allPairs,
+  samplingPlan,
+  samplingStatusText,
+  svgToDataUrl,
+  uuidsFromSelectedEvent,
+  type PlotPair,
+  type SamplingPlan,
+} from './multiplot-model.ts';
 import { colorFor } from './visualize-model.ts';
 
 export const MIN_HEIGHT = 500;
 export const MAX_HEIGHT = 2000;
 export const PANEL_CHUNK = 12;
+/** Panel width shared by the static SVG and interactive Plotly renders. */
+export const PANEL_WIDTH = 340;
+
+export type MultiplotMode = 'static' | 'interactive';
 
 export interface MultiplotProps {
   /** Display names of the numeric columns being paired. */
@@ -24,6 +38,12 @@ export interface MultiplotProps {
   readonly groupNames: readonly string[];
   /** Row indices surviving the metadata filter. */
   readonly rowIndices: readonly number[];
+  /** analytical_uuid per row (customdata for selection; never rendered). */
+  readonly rowUuids?: readonly string[];
+  /** Selection callback shared with the single-plot path (optional). */
+  readonly onSelect?: (uuids: readonly string[]) => void;
+  /** Initial render mode; tests use 'interactive' to prove SSR safety. */
+  readonly initialMode?: MultiplotMode;
 }
 
 export interface PanelTrace {
@@ -34,7 +54,7 @@ export interface PanelTrace {
 
 /** Pure panel geometry: sampled points bucketed per group. */
 export function panelPoints(
-  props: MultiplotProps,
+  props: Pick<MultiplotProps, 'values' | 'groupLabels' | 'groupNames'>,
   pair: PlotPair,
   indices: readonly number[],
 ): { traces: PanelTrace[]; drawn: number } {
@@ -57,6 +77,15 @@ export function panelPoints(
     })),
     drawn: [...byGroup.values()].reduce((n, pts) => n + pts.length, 0),
   };
+}
+
+function downloadAnchor(name: string, href: string): void {
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  a.remove();
 }
 
 /** Static SVG panel (no Plotly): deterministic full-fidelity render. */
@@ -114,34 +143,155 @@ export function StaticPanel({
   );
 }
 
+type PlotlyModule = typeof import('plotly.js-dist-min');
+
+/**
+ * Interactive Plotly panel (scattergl per group): `plotly.js-dist-min` is
+ * dynamically imported inside the layout effect so `renderToString` never
+ * touches `window`. Selection is keyed internally by `analytical_uuid`
+ * carried in `customdata`; hover shows the group only, never the uuid.
+ */
+export function InteractivePanel({
+  xLabel,
+  yLabel,
+  width,
+  height,
+  pointSize,
+  traces,
+  pair,
+  rowUuids,
+  onSelect,
+}: {
+  xLabel: string;
+  yLabel: string;
+  width: number;
+  height: number;
+  pointSize: number;
+  traces: readonly PanelTrace[];
+  pair: PlotPair;
+  rowUuids: readonly string[];
+  onSelect?: (uuids: readonly string[]) => void;
+}): ReactElement {
+  const holder = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!holder.current) return;
+    let disposed = false;
+    void (async () => {
+      const Plotly = (await import('plotly.js-dist-min')) as PlotlyModule;
+      if (disposed || !holder.current) return;
+      const data: Data[] = traces.map((t) => ({
+        type: 'scattergl',
+        mode: 'markers',
+        name: t.name,
+        x: t.points.map((p) => p.x),
+        y: t.points.map((p) => p.y),
+        // customdata[0] is the analytical_uuid for selection; never rendered.
+        customdata: t.points.map((p) => [rowUuids[p.row] ?? '', t.name]),
+        // Hover shows the group only, never the uuid.
+        hovertemplate: `${t.name}<extra></extra>`,
+        marker: { color: t.color, size: pointSize },
+      } as Data));
+      const layout = {
+        dragmode: 'lasso',
+        width,
+        height,
+        xaxis: { title: { text: xLabel } },
+        yaxis: { title: { text: yLabel } },
+        showlegend: traces.length > 1,
+      } as Layout;
+      const config = { responsive: false, displayModeBar: true } as const;
+      void Plotly.react(holder.current, data, layout, config).then(() => {
+        if (disposed || !holder.current) return;
+        const gd = holder.current as unknown as {
+          on: (event: string, cb: (eventData: unknown) => void) => void;
+          removeAllListeners?: (event: string) => void;
+        };
+        gd.removeAllListeners?.('plotly_selected');
+        gd.removeAllListeners?.('plotly_doubleclick');
+        gd.on('plotly_selected', (eventData: unknown) => {
+          onSelect?.(uuidsFromSelectedEvent(eventData));
+        });
+        gd.on('plotly_doubleclick', () => onSelect?.([]));
+      });
+    })().catch(() => {
+      /* plotly load failure leaves the placeholder; SSR tests never reach this */
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [traces, xLabel, yLabel, width, height, pointSize, rowUuids, onSelect]);
+
+  return (
+    <div
+      ref={holder}
+      className="multiplot-panel-plotly"
+      data-pair={`${pair.xIndex}-${pair.yIndex}`}
+      role="img"
+      aria-label={`Scatter of ${yLabel} by ${xLabel}`}
+    />
+  );
+}
+
 export function Multiplot(props: MultiplotProps): ReactElement {
   const [pointSize, setPointSize] = useState(4);
   const [height, setHeight] = useState(600);
+  const [mode, setMode] = useState<MultiplotMode>(props.initialMode ?? 'static');
   const [renderCount, setRenderCount] = useState<number | null>(PANEL_CHUNK);
   const gridRef = useRef<HTMLDivElement | null>(null);
 
   const pairs = useMemo(() => allPairs(props.columns.length), [props.columns]);
-  const plan = useMemo(() => samplingPlan(props.rowIndices.length), [props.rowIndices]);
+  const plan: SamplingPlan = useMemo(
+    () => samplingPlan(props.rowIndices.length),
+    [props.rowIndices],
+  );
   const visiblePairs = renderCount === null ? pairs : pairs.slice(0, renderCount);
 
   const savePlots = (): void => {
     const holder = gridRef.current;
     if (!holder) return;
-    const serializer = new XMLSerializer();
-    const panels = holder.querySelectorAll('svg.multiplot-panel');
-    panels.forEach((svg, i) => {
-      const a = document.createElement('a');
-      a.href = svgToDataUrl(serializer, svg);
-      a.download = `multiplot_panel_${i + 1}.svg`;
-      document.body.append(a);
-      a.click();
-      a.remove();
+    if (mode === 'static') {
+      const serializer = new XMLSerializer();
+      const panels = holder.querySelectorAll('svg.multiplot-panel');
+      panels.forEach((svg, i) => {
+        downloadAnchor(`multiplot_panel_${i + 1}.svg`, svgToDataUrl(serializer, svg));
+      });
+      return;
+    }
+    void (async () => {
+      const Plotly = (await import('plotly.js-dist-min')) as PlotlyModule;
+      const figures = holder.querySelectorAll('div.multiplot-panel-plotly');
+      let i = 0;
+      for (const fig of figures) {
+        i += 1;
+        const url = await Plotly.toImage(fig as unknown as Parameters<typeof Plotly.toImage>[0], {
+          format: 'svg',
+          width: PANEL_WIDTH,
+          height,
+        });
+        downloadAnchor(`multiplot_panel_${i}.svg`, url);
+      }
+    })().catch(() => {
+      /* plotly load failure leaves the existing plots untouched */
     });
   };
+
+  const samplingStatus = samplingStatusText(plan, props.rowIndices.length);
 
   return (
     <div className="multiplot">
       <div className="explore-controls">
+        <label>
+          Render mode
+          <select
+            aria-label="Render mode"
+            value={mode}
+            onChange={(e) => setMode(e.target.value as MultiplotMode)}
+          >
+            <option value="static">Static (SVG)</option>
+            <option value="interactive">Interactive (Plotly)</option>
+          </select>
+        </label>
         <label>
           Point size
           <input
@@ -169,12 +319,7 @@ export function Multiplot(props: MultiplotProps): ReactElement {
           Save plots (SVG)
         </button>
       </div>
-      {plan.sampled && (
-        <p role="status">
-          Interactive ceiling: showing {plan.indices.length} of {props.rowIndices.length} points
-          (stride {plan.stride}, deterministic).
-        </p>
-      )}
+      {samplingStatus !== null && <p role="status">{samplingStatus}</p>}
       {pairs.length === 0 && <p className="muted">Pick at least two predictors for a multiplot.</p>}
       <div className="multiplot-grid" ref={gridRef}>
         {visiblePairs.map((pair) => (
@@ -182,8 +327,10 @@ export function Multiplot(props: MultiplotProps): ReactElement {
             key={`${pair.xIndex}-${pair.yIndex}`}
             props={props}
             pair={pair}
+            plan={plan}
             pointSize={pointSize}
             height={height}
+            mode={mode}
           />
         ))}
       </div>
@@ -199,25 +346,45 @@ export function Multiplot(props: MultiplotProps): ReactElement {
 function MultiplotPanel({
   props,
   pair,
+  plan,
   pointSize,
   height,
+  mode,
 }: {
   props: MultiplotProps;
   pair: PlotPair;
+  plan: SamplingPlan;
   pointSize: number;
   height: number;
+  mode: MultiplotMode;
 }): ReactElement {
-  const plan = samplingPlan(props.rowIndices.length);
   const { traces } = panelPoints(props, pair, plan.indices);
   const xLabel = props.columns[pair.xIndex] ?? `X${pair.xIndex}`;
   const yLabel = props.columns[pair.yIndex] ?? `Y${pair.yIndex}`;
+  if (mode === 'interactive') {
+    return (
+      <div className="multiplot-cell">
+        <InteractivePanel
+          pair={pair}
+          xLabel={xLabel}
+          yLabel={yLabel}
+          width={PANEL_WIDTH}
+          height={height}
+          pointSize={pointSize}
+          traces={traces}
+          rowUuids={props.rowUuids ?? []}
+          onSelect={props.onSelect}
+        />
+      </div>
+    );
+  }
   return (
     <div className="multiplot-cell">
       <StaticPanel
         pair={pair}
         xLabel={xLabel}
         yLabel={yLabel}
-        width={340}
+        width={PANEL_WIDTH}
         height={height}
         pointSize={pointSize}
         traces={traces}

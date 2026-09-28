@@ -59,7 +59,11 @@ Up: [[../../Vault/Index]]
 - [[Golden_09_Clustering_Kmeans_Pam_Parity_Fix_2026-09-24]]
 - [[Golden_09_Clustering_Hclust_Diana_Parity_Fix_2026-09-24]]
 - [[Phase_6_Membership_Euclidean_Goldens_2026-09-24]]
+ - [[Phase_5_Interactive_Multiplot_Plotly_2026-09-24]]
+- [[Interaction_Log_2026-09-24]]
 
 ## Notes
 - This vault uses atomic notes (one concept per file) linked with `[[Wikilinks]]`.
 - [[Multiplot_Async_Promise_Robustness_Fix_2026-04-13]]
+
+- [[Phase_6_Service_Integration_2026-09-28]]

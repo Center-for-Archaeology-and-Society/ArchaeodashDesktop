@@ -1,7 +1,7 @@
 /** Multiplot model tests: deterministic sampling, disjoint pairs, svg data url. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { allPairs, samplingPlan, svgToDataUrl } from './multiplot-model.ts';
+import { allPairs, samplingPlan, samplingStatusText, svgToDataUrl, uuidsFromSelectedEvent } from './multiplot-model.ts';
 
 test('sampling keeps every row at or below the 100k ceiling', () => {
   const plan = samplingPlan(100_000);
@@ -49,4 +49,29 @@ test('svg serialization yields a downloadable data url', () => {
   const url = svgToDataUrl(fakeSerializer, el);
   assert.ok(url.startsWith('data:image/svg+xml;charset=utf-8,'));
   assert.ok(decodeURIComponent(url).includes('panel-1'));
+});
+
+test('sampling status text appears only when the ceiling dropped points', () => {
+  assert.equal(samplingStatusText(samplingPlan(100_000), 100_000), null);
+  assert.equal(samplingStatusText(samplingPlan(0), 0), null);
+  const plan = samplingPlan(100_001);
+  assert.equal(plan.stride, 2);
+  assert.equal(
+    samplingStatusText(plan, 100_001),
+    'Sampled 50001 of 100001 points (stride 2, deterministic)',
+  );
+});
+
+test('selection uuids are extracted from plotly_selected customdata only', () => {
+  const event = {
+    points: [
+      { customdata: ['uuid-1', 'Baca'] },
+      { customdata: ['uuid-2', 'Other'] },
+      { customdata: ['', 'skipped'] },
+      { x: 1, y: 2 },
+    ],
+  };
+  assert.deepEqual(uuidsFromSelectedEvent(event), ['uuid-1', 'uuid-2']);
+  assert.deepEqual(uuidsFromSelectedEvent(null), []);
+  assert.deepEqual(uuidsFromSelectedEvent({ points: [] }), []);
 });
