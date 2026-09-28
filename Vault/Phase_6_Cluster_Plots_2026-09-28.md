@@ -25,3 +25,7 @@ Zero-height branches meet their leaf labels; finite extreme height labels remain
 ## Remaining scope
 
 Browser/desktop interaction and performance acceptance remain open (no browser was available through the browser tool). Additional distance metrics/linkages, PCA inputs, UUID-addressed result assignment/recording, and cancellable jobs remain next steps. This increment changes no numerical backend or persistent group data.
+
+## Final verification
+
+Production workspace build passes with the existing Plotly chunk-size warning. `git diff --check` is clean. The new atomic note is linked from the Vault index, daily log, and preceding integration checkpoint. Implementation was committed in three increments (scope note, diagnostic charts, dendrogram integration), followed by this validation record.
