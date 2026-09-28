@@ -43,10 +43,26 @@ const tauriLabels = {
   transformationsList: 'invoke list_transformations',
   ordinationPca: 'invoke ordination_pca',
   ordinationUmap: 'invoke ordination_umap',
+  clusterDiagnostics: 'invoke cluster_diagnostics',
+  clusterFit: 'invoke cluster_fit',
+  membershipProbabilities: 'invoke membership_probabilities',
+  euclideanMatches: 'invoke euclidean_matches',
   filesUpload: 'invoke upload_source_file',
 };
 
 registerTransportContractTests(test, makeHarness, tauriLabels);
+
+test('tauri: phase 6 commands wrap snake_case DTOs under request', async () => {
+  const h = makeHarness();
+  h.respond({ path: 'groups/A.parquet', revision_id: 'r', rows: [] });
+  const request = {
+    path: 'groups/A.parquet', columns: ['Ti'], group_column: 'Group', id_column: 'ID',
+    limit: 3, within_group: true,
+  };
+  await h.transport.clustering.euclideanMatches(request);
+  assert.equal(h.calls[0]?.label, 'invoke euclidean_matches');
+  assert.deepEqual(h.calls[0]?.payload, { request });
+});
 
 test('tauri: save_transformation takes the bare definition, not the save wrapper', async () => {
   const h = makeHarness();

@@ -8,6 +8,8 @@ Existing working-tree edits include Phase 5 interactive multiplots and Phase 6 R
 
 ## Validation and remaining work
 
-In progress. The configured pnpm shim currently points at a missing installation; locate a working package runner before client verification.
+Integration in progress. The configured pnpm shim points at a missing `.cjs` entry; running the installed `bin/pnpm.mjs` succeeds. Baseline client tests passed, and the existing Phase 5 interactive multiplot work was committed as `18a51ed`.
+
+The typed Phase 6 client transport now implements the four shared operations through HTTP and Tauri; contracts/client tests and typechecks pass. Adapter integration tests pass against imported/merged group fixtures. Tauri shell imports/state were repaired and `cargo check -p archaeodash-desktop-app` passes. Service review added project containment and bounded pairwise resources; numerical edge-case review is ongoing before committing that increment.
 
 Related: [[Phase_6_Membership_Euclidean_Goldens_2026-09-24]], [[Phase_5_Interactive_Multiplot_Plotly_2026-09-24]], [[Interaction_Log_2026-09-28]].

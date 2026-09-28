@@ -9,6 +9,7 @@ export type {
   GroupsService,
   TransformationsService,
   OrdinationService,
+  ClusteringService,
   ExploreService,
   ExportsService,
   PreferencesService,

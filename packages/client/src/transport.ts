@@ -9,9 +9,15 @@ import type {
   AppInfo,
   ApplyTransformationRequest,
   BatchRatioRequest,
+  ClusterDiagnosticsRequest,
+  ClusterDiagnosticsResponse,
+  ClusterFitRequest,
+  ClusterFitResponse,
   DeleteGroupRequest,
   DuplicateGroupRequest,
   ErrorEnvelope,
+  EuclideanMatchesRequest,
+  EuclideanMatchesResponse,
   ExploreCrosstabRequest,
   ExploreCrosstabResponse,
   ExploreCompositionalProfileRequest,
@@ -35,6 +41,8 @@ import type {
   ImportPreviewResponse,
   LdaRequest,
   LdaResponse,
+  MembershipProbabilitiesRequest,
+  MembershipProbabilitiesResponse,
   MergeGroupsRequest,
   PcaRequest,
   PcaResponse,
@@ -104,6 +112,13 @@ export interface OrdinationService {
   umap(request: UmapRequest): Promise<UmapResponse>;
 }
 
+export interface ClusteringService {
+  diagnostics(request: ClusterDiagnosticsRequest): Promise<ClusterDiagnosticsResponse>;
+  fit(request: ClusterFitRequest): Promise<ClusterFitResponse>;
+  membershipProbabilities(request: MembershipProbabilitiesRequest): Promise<MembershipProbabilitiesResponse>;
+  euclideanMatches(request: EuclideanMatchesRequest): Promise<EuclideanMatchesResponse>;
+}
+
 export interface ExploreService {
   missingProfile(request: ExploreMissingProfileRequest): Promise<ExploreMissingProfileResponse>;
   histogram(request: ExploreHistogramRequest): Promise<ExploreHistogramResponse>;
@@ -132,6 +147,7 @@ export interface Transport {
   readonly groups: GroupsService;
   readonly transformations: TransformationsService;
   readonly ordination: OrdinationService;
+  readonly clustering: ClusteringService;
   readonly explore: ExploreService;
   readonly exports: ExportsService;
   readonly preferences: PreferencesService;

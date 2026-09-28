@@ -330,6 +330,86 @@ export interface UmapResponse extends OrdinationResponseBase {
   warnings: string[];
 }
 
+// --- Clustering, membership and nearest matches (Phase 6) ---
+
+export type ClusterMethod = 'kmeans' | 'pam' | 'hclust_ward_d2' | 'diana';
+export interface ClusterDiagnosticsRequest extends OrdinationRequestBase {
+  max_k: number;
+  seed: number;
+}
+export interface ClusterDiagnosticsResponse {
+  path: string;
+  revision_id: string;
+  column_names: string[];
+  n_rows: number;
+  wss: number[];
+  /** Silhouette values correspond to k=2..=max_k; null represents NaN. */
+  silhouette: (number | null)[];
+}
+export interface ClusterFitRequest extends OrdinationRequestBase {
+  method: ClusterMethod;
+  k?: number | null;
+  iter_max?: number;
+  nstart?: number;
+  seed?: number | null;
+}
+export interface ClusterFitResponse {
+  path: string;
+  revision_id: string;
+  method: ClusterMethod;
+  n_rows: number;
+  cluster?: number[] | null;
+  size?: number[] | null;
+  tot_withinss?: number | null;
+  centers?: number[][] | null;
+  medoids?: number[] | null;
+  merge?: [number, number][] | null;
+  height?: number[] | null;
+  order?: number[] | null;
+  silhouette?: (number | null)[] | null;
+}
+export type MembershipMethod = 'hotellings' | 'mahalanobis';
+export interface MembershipProbabilitiesRequest {
+  path: string;
+  columns: string[];
+  group_column: string;
+  id_column: string;
+  method: MembershipMethod;
+}
+export interface MembershipProbabilitiesResponse {
+  path: string;
+  revision_id: string;
+  effective_method: MembershipMethod;
+  eligible_groups: string[];
+  ids: string[];
+  groups: string[];
+  probabilities: (number | null)[][];
+  best_group: (string | null)[];
+  best_value: (number | null)[];
+  in_group: boolean[];
+}
+export interface EuclideanMatchesRequest {
+  path: string;
+  columns: string[];
+  group_column: string;
+  id_column: string;
+  limit: number;
+  within_group: boolean;
+}
+export interface EuclideanMatchDto {
+  rowid: string;
+  id: string;
+  match_id: string;
+  distance: number;
+  group: string;
+  match_group: string;
+}
+export interface EuclideanMatchesResponse {
+  path: string;
+  revision_id: string;
+  rows: EuclideanMatchDto[];
+}
+
 // --- Explore (Section 8.12) ---
 
 export interface ExploreMissingProfileRequest extends OrdinationRequestBase {}

@@ -14,6 +14,10 @@ import type {
   AppliedTransformation,
   ApplyTransformationRequest,
   BatchRatioRequest,
+  ClusterDiagnosticsRequest,
+  ClusterDiagnosticsResponse,
+  ClusterFitRequest,
+  ClusterFitResponse,
   DeleteGroupRequest,
   DuplicateGroupRequest,
   ExploreCrosstabRequest,
@@ -28,6 +32,8 @@ import type {
   ExportPcaScoresRequest,
   ExportResult,
   ExportTransformedRequest,
+  EuclideanMatchesRequest,
+  EuclideanMatchesResponse,
   FileDownload,
   FileUploadRequest,
   GetPreferencesResponse,
@@ -39,6 +45,8 @@ import type {
   ImportPreviewResponse,
   LdaRequest,
   LdaResponse,
+  MembershipProbabilitiesRequest,
+  MembershipProbabilitiesResponse,
   MergeGroupsRequest,
   PcaRequest,
   PcaResponse,
@@ -63,6 +71,7 @@ import {
   type GroupsService,
   type ImportsService,
   type OrdinationService,
+  type ClusteringService,
   type PreferencesService,
   type TransformationsService,
   type Transport,
@@ -80,6 +89,7 @@ export class TauriTransport implements Transport {
   readonly groups: GroupsService;
   readonly transformations: TransformationsService;
   readonly ordination: OrdinationService;
+  readonly clustering: ClusteringService;
   readonly explore: ExploreService;
   readonly exports: ExportsService;
   readonly preferences: PreferencesService;
@@ -91,6 +101,7 @@ export class TauriTransport implements Transport {
     this.groups = this.makeGroups();
     this.transformations = this.makeTransformations();
     this.ordination = this.makeOrdination();
+    this.clustering = this.makeClustering();
     this.explore = this.makeExplore();
     this.exports = this.makeExports();
     this.preferences = this.makePreferences();
@@ -160,6 +171,19 @@ export class TauriTransport implements Transport {
       pca: (request: PcaRequest) => this.call<PcaResponse>('ordination_pca', { request }),
       lda: (request: LdaRequest) => this.call<LdaResponse>('ordination_lda', { request }),
       umap: (request: UmapRequest) => this.call<UmapResponse>('ordination_umap', { request }),
+    };
+  }
+
+  private makeClustering(): ClusteringService {
+    return {
+      diagnostics: (request: ClusterDiagnosticsRequest) =>
+        this.call<ClusterDiagnosticsResponse>('cluster_diagnostics', { request }),
+      fit: (request: ClusterFitRequest) =>
+        this.call<ClusterFitResponse>('cluster_fit', { request }),
+      membershipProbabilities: (request: MembershipProbabilitiesRequest) =>
+        this.call<MembershipProbabilitiesResponse>('membership_probabilities', { request }),
+      euclideanMatches: (request: EuclideanMatchesRequest) =>
+        this.call<EuclideanMatchesResponse>('euclidean_matches', { request }),
     };
   }
 

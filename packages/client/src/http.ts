@@ -8,6 +8,10 @@ import type {
   AppliedTransformation,
   ApplyTransformationRequest,
   BatchRatioRequest,
+  ClusterDiagnosticsRequest,
+  ClusterDiagnosticsResponse,
+  ClusterFitRequest,
+  ClusterFitResponse,
   DeleteGroupRequest,
   DuplicateGroupRequest,
   ExploreCrosstabRequest,
@@ -22,6 +26,8 @@ import type {
   ExportPcaScoresRequest,
   ExportResult,
   ExportTransformedRequest,
+  EuclideanMatchesRequest,
+  EuclideanMatchesResponse,
   FileDownload,
   GetPreferencesResponse,
   ErrorEnvelope,
@@ -33,6 +39,8 @@ import type {
   ImportPreviewResponse,
   LdaRequest,
   LdaResponse,
+  MembershipProbabilitiesRequest,
+  MembershipProbabilitiesResponse,
   MergeGroupsRequest,
   PcaRequest,
   PcaResponse,
@@ -57,6 +65,7 @@ import {
   type GroupsService,
   type ImportsService,
   type OrdinationService,
+  type ClusteringService,
   type PreferencesService,
   type TransformationsService,
   type Transport,
@@ -75,6 +84,7 @@ export class HttpTransport implements Transport {
   readonly groups: GroupsService;
   readonly transformations: TransformationsService;
   readonly ordination: OrdinationService;
+  readonly clustering: ClusteringService;
   readonly explore: ExploreService;
   readonly exports: ExportsService;
   readonly preferences: PreferencesService;
@@ -87,6 +97,7 @@ export class HttpTransport implements Transport {
     this.groups = this.makeGroups();
     this.transformations = this.makeTransformations();
     this.ordination = this.makeOrdination();
+    this.clustering = this.makeClustering();
     this.explore = this.makeExplore();
     this.exports = this.makeExports();
     this.preferences = this.makePreferences();
@@ -213,6 +224,19 @@ export class HttpTransport implements Transport {
       pca: (request: PcaRequest) => this.request('POST', '/api/v1/ordination/pca', { body: request }),
       lda: (request: LdaRequest) => this.request('POST', '/api/v1/ordination/lda', { body: request }),
       umap: (request: UmapRequest) => this.request('POST', '/api/v1/ordination/umap', { body: request }),
+    };
+  }
+
+  private makeClustering(): ClusteringService {
+    return {
+      diagnostics: (request: ClusterDiagnosticsRequest) =>
+        this.request<ClusterDiagnosticsResponse>('POST', '/api/v1/cluster/diagnostics', { body: request }),
+      fit: (request: ClusterFitRequest) =>
+        this.request<ClusterFitResponse>('POST', '/api/v1/cluster/fit', { body: request }),
+      membershipProbabilities: (request: MembershipProbabilitiesRequest) =>
+        this.request<MembershipProbabilitiesResponse>('POST', '/api/v1/membership/probabilities', { body: request }),
+      euclideanMatches: (request: EuclideanMatchesRequest) =>
+        this.request<EuclideanMatchesResponse>('POST', '/api/v1/euclidean/matches', { body: request }),
     };
   }
 

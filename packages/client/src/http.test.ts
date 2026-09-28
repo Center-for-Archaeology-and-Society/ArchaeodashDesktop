@@ -58,10 +58,23 @@ const httpLabels = {
   transformationsList: 'GET /api/v1/transformations',
   ordinationPca: 'POST /api/v1/ordination/pca',
   ordinationUmap: 'POST /api/v1/ordination/umap',
+  clusterDiagnostics: 'POST /api/v1/cluster/diagnostics',
+  clusterFit: 'POST /api/v1/cluster/fit',
+  membershipProbabilities: 'POST /api/v1/membership/probabilities',
+  euclideanMatches: 'POST /api/v1/euclidean/matches',
   filesUpload: 'POST /api/v1/files?path=sources%2FINAA_test.csv',
 };
 
 registerTransportContractTests(test, makeHarness, httpLabels);
+
+test('http: phase 6 requests use the Rust route paths and snake_case JSON DTOs', async () => {
+  const h = makeHarness();
+  const request = { path: 'groups/A.parquet', columns: ['Ti'], max_k: 4, seed: 91 };
+  h.respond({ path: request.path, revision_id: 'r', column_names: ['Ti'], n_rows: 5, wss: [], silhouette: [] });
+  await h.transport.clustering.diagnostics(request);
+  assert.equal(h.calls[0]?.label, 'POST /api/v1/cluster/diagnostics');
+  assert.deepEqual(h.calls[0]?.payload, request);
+});
 
 test('http: group validate sends a bare JSON string body', async () => {
   const h = makeHarness();

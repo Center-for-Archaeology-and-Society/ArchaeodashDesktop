@@ -9,8 +9,12 @@ import assert from 'node:assert/strict';
 import type { Transport } from './transport.ts';
 import type {
   AppInfo,
+  ClusterDiagnosticsResponse,
+  ClusterFitResponse,
+  EuclideanMatchesResponse,
   GetPreferencesResponse,
   GroupCandidate,
+  MembershipProbabilitiesResponse,
   PcaResponse,
   SaveTransformationResponse,
   StagedFile,
@@ -186,6 +190,49 @@ export function registerTransportContractTests(
     });
     assert.deepEqual(umapOut, umap);
     assert.equal(h.calls[1]?.label, labels.ordinationUmap);
+  });
+
+  test('phase 6 clustering and result transports preserve their typed payloads', async () => {
+    const h = makeHarness();
+    const clusterRequest = { path: 'groups/Baca.parquet', columns: ['Ti', 'Sr'], max_k: 3, seed: 7 };
+    const diagnostics: ClusterDiagnosticsResponse = {
+      path: clusterRequest.path, revision_id: 'rev-1', column_names: clusterRequest.columns,
+      n_rows: 3, wss: [5, 1.2, 0], silhouette: [0.71, null],
+    };
+    h.respond(diagnostics);
+    assert.deepEqual(await h.transport.clustering.diagnostics(clusterRequest), diagnostics);
+    assert.equal(h.calls[0]?.label, labels.clusterDiagnostics);
+
+    const fitRequest = { path: clusterRequest.path, columns: ['Ti'], method: 'pam' as const, k: 2 };
+    const fit: ClusterFitResponse = {
+      path: fitRequest.path, revision_id: 'rev-1', method: 'pam', n_rows: 3,
+      cluster: [1, 2, 1], size: null, tot_withinss: null, centers: null,
+      medoids: [1, 2], merge: null, height: null, order: null, silhouette: [0.4, 0.5, 0.6],
+    };
+    h.respond(fit);
+    assert.deepEqual(await h.transport.clustering.fit(fitRequest), fit);
+    assert.equal(h.calls[1]?.label, labels.clusterFit);
+
+    const membership: MembershipProbabilitiesResponse = {
+      path: clusterRequest.path, revision_id: 'rev-1', effective_method: 'mahalanobis',
+      eligible_groups: ['A', 'B'], ids: ['s1'], groups: ['A'],
+      probabilities: [[0.8, 0.2]], best_group: ['A'], best_value: [0.8], in_group: [true],
+    };
+    h.respond(membership);
+    assert.deepEqual(await h.transport.clustering.membershipProbabilities({
+      path: clusterRequest.path, columns: ['Ti'], group_column: 'Group', id_column: 'ID', method: 'hotellings',
+    }), membership);
+    assert.equal(h.calls[2]?.label, labels.membershipProbabilities);
+
+    const euclidean: EuclideanMatchesResponse = {
+      path: clusterRequest.path, revision_id: 'rev-1',
+      rows: [{ rowid: '1', id: 's1', match_id: 's2', distance: 0.5, group: 'A', match_group: 'B' }],
+    };
+    h.respond(euclidean);
+    assert.deepEqual(await h.transport.clustering.euclideanMatches({
+      path: clusterRequest.path, columns: ['Ti'], group_column: 'Group', id_column: 'ID', limit: 5, within_group: false,
+    }), euclidean);
+    assert.equal(h.calls[3]?.label, labels.euclideanMatches);
   });
 
   test('files.upload passes bytes and returns the staged record', async () => {
