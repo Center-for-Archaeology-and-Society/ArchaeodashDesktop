@@ -4,21 +4,24 @@
 //! invocation logic testable without a webview runtime.
 
 use archaeodash_application::{
-    ExploreService, ExportService, GroupService, ImportService, OrdinationService,
+    ClusterService, ExploreService, ExportService, GroupService, ImportService, OrdinationService,
     PreferenceService, SourceFileService, TransformService,
 };
 use archaeodash_contracts::{
     AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
-    DeleteGroupRequest, DuplicateGroupRequest, ExploreCompositionalProfileRequest,
-    ExploreCompositionalProfileResponse, ExploreCrosstabRequest, ExploreCrosstabResponse,
-    ExploreHistogramRequest, ExploreHistogramResponse, ExploreMissingProfileRequest,
-    ExploreMissingProfileResponse, ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult,
-    ExportTransformedRequest, FileDownload, FileUploadRequest, GetPreferencesResponse,
-    GroupCandidate, GroupRowsResponse, GroupSummary, ImportCommitRequest, ImportCommitResponse,
-    ImportPreviewRequest, ImportPreviewResponse, LdaRequest, LdaResponse, MergeGroupsRequest,
-    PatchDescriptiveValuesRequest, PcaRequest, PcaResponse, PutPreferenceRequest, RatioSpecDto,
-    SaveTransformationResponse, StagedFile, TransactionResponse, TransferUnitsRequest,
-    TransformationDefinition, TransformationListResponse, UmapRequest, UmapResponse,
+    ClusterDiagnosticsRequest, ClusterDiagnosticsResponse, ClusterFitRequest, ClusterFitResponse,
+    DeleteGroupRequest, DuplicateGroupRequest, EuclideanMatchesRequest, EuclideanMatchesResponse,
+    ExploreCompositionalProfileRequest, ExploreCompositionalProfileResponse,
+    ExploreCrosstabRequest, ExploreCrosstabResponse, ExploreHistogramRequest,
+    ExploreHistogramResponse, ExploreMissingProfileRequest, ExploreMissingProfileResponse,
+    ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult, ExportTransformedRequest,
+    FileDownload, FileUploadRequest, GetPreferencesResponse, GroupCandidate, GroupRowsResponse,
+    GroupSummary, ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest,
+    ImportPreviewResponse, LdaRequest, LdaResponse, MembershipProbabilitiesRequest,
+    MembershipProbabilitiesResponse, MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest,
+    PcaResponse, PutPreferenceRequest, RatioSpecDto, SaveTransformationResponse, StagedFile,
+    TransactionResponse, TransferUnitsRequest, TransformationDefinition,
+    TransformationListResponse, UmapRequest, UmapResponse,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_domain::DomainError;
@@ -444,6 +447,77 @@ impl Default for DesktopOrdination {
     }
 }
 
+/// Desktop cluster/membership/euclidean state: one project-scoped cluster
+/// service sharing the project root (Section 8 results are ephemeral,
+/// Section 5 storage invariant).
+pub struct DesktopClustering {
+    service: Mutex<Option<ClusterService>>,
+}
+
+impl DesktopClustering {
+    /// No project open yet; `open_project` sets the root.
+    pub fn new() -> Self {
+        Self {
+            service: Mutex::new(None),
+        }
+    }
+
+    /// Opens (or re-opens) the project root for cluster use cases.
+    pub fn open_project(&self, root: impl Into<PathBuf>) -> Result<(), String> {
+        let service = ClusterService::new(root).map_err(|e| e.to_string())?;
+        *self.service.lock().map_err(|e| e.to_string())? = Some(service);
+        Ok(())
+    }
+
+    fn with_service<T>(
+        &self,
+        op: impl FnOnce(&ClusterService) -> Result<T, DomainError>,
+    ) -> Result<T, String> {
+        let guard = self.service.lock().map_err(|e| e.to_string())?;
+        let service = guard.as_ref().ok_or_else(|| {
+            "no project open: call open_project with a directory first".to_string()
+        })?;
+        op(service).map_err(|e| e.to_string())
+    }
+
+    /// Desktop `cluster_diagnostics` command body: WSS elbow and
+    /// mean-silhouette series over one group file.
+    pub fn cluster_diagnostics(
+        &self,
+        req: ClusterDiagnosticsRequest,
+    ) -> Result<ClusterDiagnosticsResponse, String> {
+        self.with_service(|svc| svc.cluster_diagnostics(&req))
+    }
+
+    /// Desktop `cluster_fit` command body: one kmeans/pam/ward.D2/DIANA fit.
+    pub fn cluster_fit(&self, req: ClusterFitRequest) -> Result<ClusterFitResponse, String> {
+        self.with_service(|svc| svc.cluster_fit(&req))
+    }
+
+    /// Desktop `membership_probabilities` command body: `group.mem.probs`
+    /// parity with the Hotellings-to-Mahalanobis fallback.
+    pub fn membership_probabilities(
+        &self,
+        req: MembershipProbabilitiesRequest,
+    ) -> Result<MembershipProbabilitiesResponse, String> {
+        self.with_service(|svc| svc.membership_probabilities(&req))
+    }
+
+    /// Desktop `euclidean_matches` command body: `calcEDistance` parity.
+    pub fn euclidean_matches(
+        &self,
+        req: EuclideanMatchesRequest,
+    ) -> Result<EuclideanMatchesResponse, String> {
+        self.with_service(|svc| svc.euclidean_matches(&req))
+    }
+}
+
+impl Default for DesktopClustering {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Desktop export state: one project-scoped export service sharing the
 /// project root (Section 7.3 result exports are ephemeral CSV strings; the
 /// client saves through a native dialog, Section 5 storage invariant).
@@ -573,12 +647,160 @@ mod tests {
     #![allow(clippy::expect_used)] // test code; panics are the failure mode
 
     use super::*;
-    use archaeodash_contracts::{ImportCommitRequest, ImportPreviewRequest};
+    use archaeodash_contracts::{
+        ClusterMethod, EuclideanMatchesRequest, ImportCommitRequest, ImportPreviewRequest,
+        MembershipMethodDto, MembershipProbabilitiesRequest,
+    };
 
     #[test]
     fn desktop_smoke_reports_tauri_transport() {
         assert_eq!(app_info().transport, "tauri");
         assert!(app_info().ready);
+    }
+
+    #[test]
+    fn clustering_commands_run_against_committed_groups() {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "archaeodash-desktop-clustering-{}-{n}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("project dir");
+
+        let clustering = DesktopClustering::new();
+        let no_project = clustering
+            .cluster_diagnostics(ClusterDiagnosticsRequest {
+                path: "groups/A.parquet".into(),
+                columns: vec!["as".into(), "fe".into()],
+                transformation: None,
+                max_k: 3,
+                seed: 42,
+            })
+            .expect_err("no project open");
+        assert!(no_project.contains("no project open"));
+        assert!(clustering
+            .euclidean_matches(EuclideanMatchesRequest {
+                path: "groups/A.parquet".into(),
+                columns: vec!["as".into(), "fe".into()],
+                group_column: "Site".into(),
+                id_column: "anid".into(),
+                limit: 2,
+                within_group: false,
+            })
+            .expect_err("no project open")
+            .contains("no project open"));
+        clustering.open_project(&dir).expect("open project");
+
+        let rows: Vec<String> = (0..24)
+            .map(|i| {
+                let group = ["A", "B", "C"][i / 8];
+                let v = i as f64;
+                format!(
+                    "S{i},{group},{},{},{},{}",
+                    1.0 + v * 0.1,
+                    3.0 + v * 0.05,
+                    5.0 - v * 0.02,
+                    2.0 + v * 0.03
+                )
+            })
+            .collect();
+        std::fs::write(
+            dir.join("cluster.csv"),
+            format!("anid,Site,as,fe,co,zn\n{}\n", rows.join("\n")),
+        )
+        .expect("write clustering fixture");
+        let import = ImportService::new(&dir).expect("import service");
+        let imported = import
+            .commit(&ImportCommitRequest {
+                source: "cluster.csv".into(),
+                group_column: "Site".into(),
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+            })
+            .expect("commit fixture");
+
+        let diagnostics = clustering
+            .cluster_diagnostics(ClusterDiagnosticsRequest {
+                path: imported.groups[0].path.clone(),
+                columns: vec!["as".into(), "fe".into()],
+                transformation: None,
+                max_k: 3,
+                seed: 42,
+            })
+            .expect("diagnostics");
+        assert_eq!(diagnostics.n_rows, 8);
+        assert_eq!(diagnostics.wss.len(), 3);
+        assert_eq!(diagnostics.silhouette.len(), 2);
+
+        let fit = clustering
+            .cluster_fit(ClusterFitRequest {
+                path: imported.groups[0].path.clone(),
+                columns: vec!["as".into(), "fe".into()],
+                transformation: None,
+                method: ClusterMethod::Kmeans,
+                k: Some(2),
+                iter_max: 50,
+                nstart: 5,
+                seed: Some(42),
+            })
+            .expect("cluster fit");
+        assert_eq!(fit.method, ClusterMethod::Kmeans);
+        assert_eq!(fit.cluster.as_ref().map(Vec::len), Some(8));
+
+        let groups = GroupService::new(&dir).expect("group service");
+        let merged = groups
+            .merge_groups(&MergeGroupsRequest {
+                sources: imported
+                    .groups
+                    .iter()
+                    .map(|group| group.path.clone())
+                    .collect(),
+                new_group_name: "All Sites".into(),
+            })
+            .expect("merge groups");
+        let path = merged.outputs[0].path.clone();
+        let membership = clustering
+            .membership_probabilities(MembershipProbabilitiesRequest {
+                path: path.clone(),
+                columns: vec!["as".into(), "fe".into(), "co".into(), "zn".into()],
+                group_column: "Site".into(),
+                id_column: "anid".into(),
+                method: MembershipMethodDto::Mahalanobis,
+            })
+            .expect("membership probabilities");
+        assert_eq!(membership.ids.len(), 24);
+        assert_eq!(membership.probabilities.len(), 24);
+        assert_eq!(membership.eligible_groups.len(), 3);
+
+        let matches = clustering
+            .euclidean_matches(EuclideanMatchesRequest {
+                path: path.clone(),
+                columns: vec!["as".into(), "fe".into()],
+                group_column: "Site".into(),
+                id_column: "anid".into(),
+                limit: 2,
+                within_group: false,
+            })
+            .expect("euclidean matches");
+        assert!(!matches.rows.is_empty());
+        assert!(matches.rows.iter().all(|row| row.group != row.match_group));
+
+        let err = clustering
+            .euclidean_matches(EuclideanMatchesRequest {
+                path,
+                columns: vec!["as".into(), "fe".into()],
+                group_column: "Site".into(),
+                id_column: "anid".into(),
+                limit: 0,
+                within_group: false,
+            })
+            .expect_err("invalid limit");
+        assert!(err.contains("limit"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

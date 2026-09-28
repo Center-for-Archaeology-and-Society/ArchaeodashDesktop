@@ -2,16 +2,17 @@
 //! crate (crates/desktop), which calls the shared application use cases.
 
 use archaeodash_contracts::{
-    ApplyTransformationRequest, BatchRatioRequest, DeleteGroupRequest, DuplicateGroupRequest,
+    ApplyTransformationRequest, BatchRatioRequest, ClusterDiagnosticsRequest, ClusterFitRequest,
+    DeleteGroupRequest, DuplicateGroupRequest, EuclideanMatchesRequest,
     ExploreCompositionalProfileRequest, ExploreCrosstabRequest, ExploreHistogramRequest,
     ExploreMissingProfileRequest, ExportMeasuredDataRequest, ExportPcaScoresRequest,
     ExportTransformedRequest, GetPreferencesResponse, ImportCommitRequest, ImportPreviewRequest,
-    LdaRequest, MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest,
-    PutPreferenceRequest, TransferUnitsRequest, UmapRequest,
+    LdaRequest, MembershipProbabilitiesRequest, MergeGroupsRequest, PatchDescriptiveValuesRequest,
+    PcaRequest, PutPreferenceRequest, TransferUnitsRequest, UmapRequest,
 };
 use archaeodash_desktop::{
-    DesktopAppInfo, DesktopExplore, DesktopExports, DesktopFiles, DesktopGroups, DesktopImport,
-    DesktopOrdination, DesktopPreferences, DesktopTransforms,
+    DesktopAppInfo, DesktopClustering, DesktopExplore, DesktopExports, DesktopFiles, DesktopGroups,
+    DesktopImport, DesktopOrdination, DesktopPreferences, DesktopTransforms,
 };
 use std::sync::Mutex;
 
@@ -24,6 +25,7 @@ struct DesktopState {
     transforms: DesktopTransforms,
     explore: DesktopExplore,
     ordination: DesktopOrdination,
+    clustering: DesktopClustering,
     exports: DesktopExports,
     preferences: DesktopPreferences,
 }
@@ -382,6 +384,8 @@ fn ordination_lda(
 
 /// `ordination_umap`: legacy naive UMAP parity with the deterministic seed;
 /// results are ephemeral and never persisted (Section 5 storage invariant).
+/// `ordination_umap`: legacy naive UMAP parity; results are ephemeral and
+/// never persisted (Section 5).
 #[tauri::command]
 fn ordination_umap(
     state: tauri::State<'_, Mutex<DesktopState>>,
@@ -392,6 +396,62 @@ fn ordination_umap(
         .map_err(|e| e.to_string())?
         .ordination
         .ordination_umap(request)
+}
+
+/// `cluster_diagnostics`: WSS elbow + mean-silhouette series; results are
+/// ephemeral and never persisted (Section 5).
+#[tauri::command]
+fn cluster_diagnostics(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: ClusterDiagnosticsRequest,
+) -> Result<archaeodash_contracts::ClusterDiagnosticsResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clustering
+        .cluster_diagnostics(request)
+}
+
+/// `cluster_fit`: one kmeans/pam/ward.D2/DIANA fit; results are ephemeral
+/// and never persisted (Section 5).
+#[tauri::command]
+fn cluster_fit(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: ClusterFitRequest,
+) -> Result<archaeodash_contracts::ClusterFitResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clustering
+        .cluster_fit(request)
+}
+
+/// `membership_probabilities`: `group.mem.probs` parity; results are
+/// ephemeral and never persisted (Section 5).
+#[tauri::command]
+fn membership_probabilities(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: MembershipProbabilitiesRequest,
+) -> Result<archaeodash_contracts::MembershipProbabilitiesResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clustering
+        .membership_probabilities(request)
+}
+
+/// `euclidean_matches`: `calcEDistance` parity; results are ephemeral and
+/// never persisted (Section 5).
+#[tauri::command]
+fn euclidean_matches(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: EuclideanMatchesRequest,
+) -> Result<archaeodash_contracts::EuclideanMatchesResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clustering
+        .euclidean_matches(request)
 }
 
 /// `export_measured_data`: measured chemical frame as ephemeral CSV
@@ -472,6 +532,7 @@ pub fn run() {
             transforms: DesktopTransforms::new(),
             explore: DesktopExplore::new(),
             ordination: DesktopOrdination::new(),
+            clustering: DesktopClustering::new(),
             exports: DesktopExports::new(),
             preferences: DesktopPreferences::new(),
         }))
@@ -504,6 +565,10 @@ pub fn run() {
             ordination_pca,
             ordination_lda,
             ordination_umap,
+            cluster_diagnostics,
+            cluster_fit,
+            membership_probabilities,
+            euclidean_matches,
             export_measured_data,
             export_transformed,
             export_pca_scores,

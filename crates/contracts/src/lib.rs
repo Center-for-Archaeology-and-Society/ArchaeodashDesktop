@@ -786,6 +786,233 @@ pub struct ExploreCompositionalProfileResponse {
     pub rows: Vec<CompositionalProfileRow>,
 }
 
+/// Clustering algorithm selector for `POST /cluster/fit` (`method`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClusterMethod {
+    /// `stats::kmeans` Hartigan-Wong with seeded nstart draws.
+    Kmeans,
+    /// `cluster::pam` (original build + swap).
+    Pam,
+    /// `stats::hclust(method = "ward.D2")`.
+    HclustWardD2,
+    /// `cluster::diana`.
+    Diana,
+}
+
+/// `POST /cluster/diagnostics` request: the WSS elbow series and mean
+/// silhouette series over one group file (Section 8, class T). Results are
+/// ephemeral and never persisted (Section 5 storage invariant).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClusterDiagnosticsRequest {
+    /// Project-relative group file path.
+    pub path: String,
+    /// Columns to cluster: measured elemental names, or post-transform
+    /// output names when `transformation` is present.
+    pub columns: Vec<String>,
+    /// Optional transformation applied to the group matrix first.
+    pub transformation: Option<TransformationDefinition>,
+    /// Largest k in the series; the server clamps to `2..=min(n-1, 20)`
+    /// (the client always sends an explicit value).
+    pub max_k: u32,
+    /// Base RNG seed; series entry k runs `set.seed(seed + k)` (the golden
+    /// capture convention).
+    pub seed: i64,
+}
+
+/// `POST /cluster/diagnostics` response: `wss[k]` for `k = 1..=max_k` and
+/// `silhouette[k]` for `k = 2..=max_k` (`null` where NaN, i.e. `k >= n`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClusterDiagnosticsResponse {
+    pub path: String,
+    /// Revision the group file was at when computed.
+    pub revision_id: String,
+    /// Input column names, in request order.
+    pub column_names: Vec<String>,
+    /// Row count of the clustered matrix.
+    pub n_rows: u64,
+    /// Total within-cluster sum of squares per k, `k = 1..=max_k` (index 0
+    /// is the grand-mean total sum of squares).
+    pub wss: Vec<f64>,
+    /// Mean silhouette width per k, `k = 2..=max_k`; `null` where NaN.
+    pub silhouette: Vec<Option<f64>>,
+}
+
+/// `POST /cluster/fit` request: one clustering of one group file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClusterFitRequest {
+    /// Project-relative group file path.
+    pub path: String,
+    /// Columns to cluster: measured elemental names, or post-transform
+    /// output names when `transformation` is present.
+    pub columns: Vec<String>,
+    /// Optional transformation applied to the group matrix first.
+    pub transformation: Option<TransformationDefinition>,
+    /// Algorithm selector.
+    pub method: ClusterMethod,
+    /// Cluster count; required for `kmeans` and `pam`, ignored for
+    /// `hclust_ward_d2` and `diana`.
+    pub k: Option<u32>,
+    /// `kmeans` `iter.max`; defaults to the legacy 100.
+    #[serde(default = "default_cluster_iter_max")]
+    pub iter_max: u32,
+    /// `kmeans` `nstart`; defaults to the legacy 25.
+    #[serde(default = "default_cluster_nstart")]
+    pub nstart: u32,
+    /// `kmeans` `set.seed` value; defaults to the golden-fixture seed
+    /// (kmeans only; the other families are deterministic).
+    #[serde(default)]
+    pub seed: Option<i64>,
+}
+
+fn default_cluster_iter_max() -> u32 {
+    100
+}
+
+fn default_cluster_nstart() -> u32 {
+    25
+}
+
+/// `POST /cluster/fit` response: algorithm-specific outputs, `None` for the
+/// pieces a family does not produce.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClusterFitResponse {
+    pub path: String,
+    /// Revision the group file was at when computed.
+    pub revision_id: String,
+    /// Echo of the requested method.
+    pub method: ClusterMethod,
+    /// Row count of the clustered matrix.
+    pub n_rows: u64,
+    /// 1-based cluster labels per row (kmeans, pam).
+    pub cluster: Option<Vec<u32>>,
+    /// Cluster sizes in cluster-number order (kmeans).
+    pub size: Option<Vec<u32>>,
+    /// `tot.withinss` (kmeans).
+    pub tot_withinss: Option<f64>,
+    /// Cluster means, centers x columns row-major (kmeans).
+    pub centers: Option<Vec<Vec<f64>>>,
+    /// 1-based medoid object indices in cluster-number order (pam).
+    pub medoids: Option<Vec<u32>>,
+    /// R merge matrix rows, 1-based coding: negative `-v` is leaf `v`,
+    /// positive `v` is the stage-`v` cluster (hclust, diana).
+    pub merge: Option<Vec<[i32; 2]>>,
+    /// Agglomeration/banner heights (hclust, diana).
+    pub height: Option<Vec<f64>>,
+    /// Dendrogram leaf order, 1-based (hclust, diana).
+    pub order: Option<Vec<u32>>,
+    /// Per-row silhouette widths for `kmeans`/`pam`; `null` where NaN
+    /// (trivial `k`); singleton widths are zero.
+    pub silhouette: Option<Vec<Option<f64>>>,
+}
+
+/// Membership probability method selector (`Group_probs.R`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MembershipMethodDto {
+    /// `ICSNP::HotellingsT2` per (row, group) pair; falls back to
+    /// Mahalanobis whole-table on any failure (legacy `tryCatch`).
+    Hotellings,
+    /// `getMahalanobis` whole-table distances.
+    Mahalanobis,
+}
+
+/// `POST /membership/probabilities` request: per-row group membership
+/// probabilities over one group file (Section 8, class T). Results are
+/// ephemeral and never persisted (Section 5 storage invariant).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MembershipProbabilitiesRequest {
+    /// Project-relative group file path.
+    pub path: String,
+    /// Measured elemental (or post-transform) analysis columns; a `PC1`
+    /// column switches to every `PC*` column (legacy principal-components
+    /// branch).
+    pub columns: Vec<String>,
+    /// Descriptive column holding the grouping factor.
+    pub group_column: String,
+    /// Sample ID column for the result table.
+    pub id_column: String,
+    /// Requested method; `effective_method` reports what actually ran.
+    pub method: MembershipMethodDto,
+}
+
+/// `POST /membership/probabilities` response: one row per data row in data
+/// order, probability cells in eligible-group order. `null` cells are the R
+/// `NA` (Hotellings) or non-finite (Mahalanobis `Inf`) values, which the
+/// golden serialiser maps to null.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MembershipProbabilitiesResponse {
+    pub path: String,
+    /// Revision the group file was at when computed.
+    pub revision_id: String,
+    /// Method that actually produced the table (Hotellings requests may
+    /// fall back to Mahalanobis).
+    pub effective_method: MembershipMethodDto,
+    /// Eligible group labels (n > max(n_features, n_groups) + 1), sorted.
+    pub eligible_groups: Vec<String>,
+    /// Per-row ID values (`as.character(data[[ID]])`).
+    pub ids: Vec<String>,
+    /// Per-row group labels.
+    pub groups: Vec<String>,
+    /// Probability cells, row-major in eligible-group order; `null` = NA.
+    pub probabilities: Vec<Vec<Option<f64>>>,
+    /// `BestGroup`: first max (Hotellings) / min (Mahalanobis) over the
+    /// non-NA cells; `null` when the whole row is NA.
+    pub best_group: Vec<Option<String>>,
+    /// `BestValue`; `null` when the whole row is NA or non-finite.
+    pub best_value: Vec<Option<f64>>,
+    /// `InGroup` (`false` where `best_group` is null).
+    pub in_group: Vec<bool>,
+}
+
+/// `POST /euclidean/matches` request: nearest matches by Euclidean distance
+/// over one group file (`calcEDistance`, Section 8, class E). Results are
+/// ephemeral and never persisted (Section 5 storage invariant).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EuclideanMatchesRequest {
+    /// Project-relative group file path.
+    pub path: String,
+    /// Measured elemental (or post-transform) analysis columns.
+    pub columns: Vec<String>,
+    /// Descriptive column holding the grouping factor.
+    pub group_column: String,
+    /// Sample ID column for the result table.
+    pub id_column: String,
+    /// Per-observation match cap (`slice_head(n = limit)`), `1..=100`.
+    pub limit: u32,
+    /// `TRUE` keeps same-group matches; `FALSE` filters them out after the
+    /// per-observation limit is applied (legacy toggle order).
+    pub within_group: bool,
+}
+
+/// One `calcEDistance` result row (`rowid`, observation, match, distance,
+/// and the two group labels).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EuclideanMatchDto {
+    /// Stable row key (`rowid`), self-exclusion key.
+    pub rowid: String,
+    /// Observation ID value.
+    pub id: String,
+    /// Match ID value.
+    pub match_id: String,
+    /// Euclidean distance (`NaN` distances sort last like R's radix order).
+    pub distance: f64,
+    /// Observation group label.
+    pub group: String,
+    /// Match group label.
+    pub match_group: String,
+}
+
+/// `POST /euclidean/matches` response: rows ordered by observation ID then
+/// distance (legacy final `arrange(observation, distance)`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EuclideanMatchesResponse {
+    pub path: String,
+    /// Revision the group file was at when computed.
+    pub revision_id: String,
+    pub rows: Vec<EuclideanMatchDto>,
+}
+
 /// `POST /exports/measured-data` request: the measured chemical frame of one
 /// group file as CSV (Section 7.3; legacy `rvals$selectedData`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1233,6 +1460,161 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<UmapResponse>(&json).unwrap(),
             umap_response
+        );
+    }
+}
+
+#[cfg(test)]
+mod cluster_membership_dto_tests {
+    use super::*;
+
+    #[test]
+    fn cluster_dtos_round_trip() {
+        // Method enum wire names are the legacy snake_case tokens.
+        assert_eq!(
+            serde_json::to_string(&ClusterMethod::HclustWardD2).unwrap(),
+            "\"hclust_ward_d2\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ClusterMethod>("\"kmeans\"").unwrap(),
+            ClusterMethod::Kmeans
+        );
+        assert_eq!(
+            serde_json::to_string(&MembershipMethodDto::Hotellings).unwrap(),
+            "\"hotellings\""
+        );
+        assert_eq!(
+            serde_json::from_str::<MembershipMethodDto>("\"mahalanobis\"").unwrap(),
+            MembershipMethodDto::Mahalanobis
+        );
+
+        let diagnostics = ClusterDiagnosticsRequest {
+            path: "groups/Baca.parquet".into(),
+            columns: vec!["as".into(), "fe".into()],
+            transformation: None,
+            max_k: 10,
+            seed: 20260914,
+        };
+        let json = serde_json::to_string(&diagnostics).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ClusterDiagnosticsRequest>(&json).unwrap(),
+            diagnostics
+        );
+
+        let response = ClusterDiagnosticsResponse {
+            path: "groups/Baca.parquet".into(),
+            revision_id: "rev-1".into(),
+            column_names: vec!["as".into(), "fe".into()],
+            n_rows: 6,
+            wss: vec![40.0, 12.5, 6.0],
+            silhouette: vec![Some(0.42), None],
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("null"), "NaN silhouette serializes as null");
+        assert_eq!(
+            serde_json::from_str::<ClusterDiagnosticsResponse>(&json).unwrap(),
+            response
+        );
+
+        // kmeans defaults: iter_max 100, nstart 25, seed None.
+        let fit: ClusterFitRequest = serde_json::from_str(
+            r#"{"path":"groups/Baca.parquet","columns":["as"],"method":"kmeans","k":3,"iter_max":100,"nstart":25}"#,
+        )
+        .unwrap();
+        assert_eq!(fit.seed, None);
+        let omitted: ClusterFitRequest = serde_json::from_str(
+            r#"{"path":"groups/Baca.parquet","columns":["as"],"method":"pam","k":3}"#,
+        )
+        .unwrap();
+        assert_eq!(omitted.iter_max, 100);
+        assert_eq!(omitted.nstart, 25);
+
+        let fit_response = ClusterFitResponse {
+            path: "groups/Baca.parquet".into(),
+            revision_id: "rev-1".into(),
+            method: ClusterMethod::Pam,
+            n_rows: 3,
+            cluster: Some(vec![1, 2, 2]),
+            size: None,
+            tot_withinss: None,
+            centers: None,
+            medoids: Some(vec![1, 2]),
+            merge: None,
+            height: None,
+            order: None,
+            silhouette: Some(vec![Some(0.5), None, Some(0.1)]),
+        };
+        let json = serde_json::to_string(&fit_response).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ClusterFitResponse>(&json).unwrap(),
+            fit_response
+        );
+    }
+
+    #[test]
+    fn membership_and_euclidean_dtos_round_trip() {
+        let request = MembershipProbabilitiesRequest {
+            path: "groups/Baca.parquet".into(),
+            columns: vec!["as".into(), "fe".into()],
+            group_column: "Site".into(),
+            id_column: "anid".into(),
+            method: MembershipMethodDto::Hotellings,
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            serde_json::from_str::<MembershipProbabilitiesRequest>(&json).unwrap(),
+            request
+        );
+
+        let response = MembershipProbabilitiesResponse {
+            path: "groups/Baca.parquet".into(),
+            revision_id: "rev-1".into(),
+            effective_method: MembershipMethodDto::Mahalanobis,
+            eligible_groups: vec!["Baca".into()],
+            ids: vec!["A1".into()],
+            groups: vec!["A".into()],
+            probabilities: vec![vec![None, Some(0.25)]],
+            best_group: vec![Some("Baca".into())],
+            best_value: vec![Some(0.25)],
+            in_group: vec![false],
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("null"), "NA probability serializes as null");
+        assert_eq!(
+            serde_json::from_str::<MembershipProbabilitiesResponse>(&json).unwrap(),
+            response
+        );
+
+        let matches = EuclideanMatchesRequest {
+            path: "groups/Baca.parquet".into(),
+            columns: vec!["as".into(), "fe".into()],
+            group_column: "Site".into(),
+            id_column: "anid".into(),
+            limit: 10,
+            within_group: false,
+        };
+        let json = serde_json::to_string(&matches).unwrap();
+        assert_eq!(
+            serde_json::from_str::<EuclideanMatchesRequest>(&json).unwrap(),
+            matches
+        );
+
+        let response = EuclideanMatchesResponse {
+            path: "groups/Baca.parquet".into(),
+            revision_id: "rev-1".into(),
+            rows: vec![EuclideanMatchDto {
+                rowid: "1".into(),
+                id: "A1".into(),
+                match_id: "B1".into(),
+                distance: 2.5,
+                group: "A".into(),
+                match_group: "B".into(),
+            }],
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert_eq!(
+            serde_json::from_str::<EuclideanMatchesResponse>(&json).unwrap(),
+            response
         );
     }
 }

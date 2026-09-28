@@ -13,3 +13,11 @@ Integration in progress. The configured pnpm shim points at a missing `.cjs` ent
 The typed Phase 6 client transport now implements the four shared operations through HTTP and Tauri; contracts/client tests and typechecks pass. Adapter integration tests pass against imported/merged group fixtures. Tauri shell imports/state were repaired and `cargo check -p archaeodash-desktop-app` passes. Service review added project containment and bounded pairwise resources; numerical edge-case review is ongoing before committing that increment.
 
 Related: [[Phase_6_Membership_Euclidean_Goldens_2026-09-24]], [[Phase_5_Interactive_Multiplot_Plotly_2026-09-24]], [[Interaction_Log_2026-09-28]].
+
+## Service and numerical verification
+
+The Phase 6 service resolves canonical project-contained paths, rejects escaping symlinks, caps pairwise matrices at 1,000,000 cells (1,000 rows) and input matrices at 4,000,000 cells, bounds k-means iterations/starts, and validates seeds without truncation. Euclidean self-exclusion uses immutable UUIDs internally, preserving distinct observations even with duplicate legacy row IDs. Result payloads retain the source revision and membership effective method. HTTP CPU work runs on the blocking pool.
+
+Review corrected singleton silhouette widths to zero, restored undefined trivial-cluster means, and made fallback best-group selection follow the effective Mahalanobis method (minimum distance). Regression tests and numerical goldens 09–11 pass. The membership service fixture previously had singular covariance; a nonsingular deterministic fixture now exercises the intended Hotelling path. Analysis unit tests (30), application tests (52), and API tests (17) pass.
+
+These resource limits are conservative service limits, not measured performance acceptance. Input-file reading and transformation expansion can allocate before the service checks dimensions. Jobs, cancellation, and full performance acceptance remain future work.

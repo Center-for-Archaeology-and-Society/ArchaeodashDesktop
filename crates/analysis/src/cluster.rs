@@ -1308,7 +1308,7 @@ pub fn diana(x: &ColumnMatrix) -> Result<Diana, DomainError> {
 // ---------------------------------------------------------------------------
 
 /// Row-major dense Euclidean distance matrix.
-fn dense_euclidean(x: &[Vec<f64>], n: usize, p: usize) -> Vec<Vec<f64>> {
+pub fn dense_euclidean(x: &[Vec<f64>], n: usize, p: usize) -> Vec<Vec<f64>> {
     let mut d = vec![vec![0.0f64; n]; n];
     for i in 0..n {
         for j in (i + 1)..n {
@@ -1325,13 +1325,15 @@ fn dense_euclidean(x: &[Vec<f64>], n: usize, p: usize) -> Vec<Vec<f64>> {
     d
 }
 
-/// Mean silhouette width over a 1-based clustering (`cluster::sildist`,
-/// averaged as in the legacy `silhouette_mean` helper). Returns NaN for the
-/// trivial clusterings `k <= 1` or `k >= n`, like `silhouette.default`.
-pub fn silhouette_mean(dist: &[Vec<f64>], clustering: &[i32], k: usize) -> f64 {
+/// Per-row silhouette widths over a 1-based clustering (the `sil_width`
+/// column of `cluster::silhouette`), the row-level companion to
+/// [`silhouette_mean`]: `NaN` for the trivial clusterings `k <= 1` or
+/// `k >= n`, `0` for singleton clusters or when `a == b`, else
+/// `(b - a) / max(a, b)`.
+pub fn silhouette_widths(dist: &[Vec<f64>], clustering: &[i32], k: usize) -> Vec<f64> {
     let n = clustering.len();
     if k <= 1 || k >= n {
-        return f64::NAN;
+        return vec![f64::NAN; n];
     }
     let mut counts = vec![0usize; k];
     let mut di_c = vec![vec![0.0f64; k]; n];
@@ -1344,35 +1346,84 @@ pub fn silhouette_mean(dist: &[Vec<f64>], clustering: &[i32], k: usize) -> f64 {
             di_c[j][ci] += dist[i][j];
         }
     }
-    let mut total = 0.0f64;
-    for i in 0..n {
-        let ci = (clustering[i] - 1) as usize;
-        let mut compute_si = true;
-        for j in 0..k {
-            if j == ci {
-                if counts[j] == 1 {
-                    compute_si = false;
-                } else {
+    (0..n)
+        .map(|i| {
+            let ci = (clustering[i] - 1) as usize;
+            let mut compute_si = true;
+            for j in 0..k {
+                if j == ci {
+                    if counts[j] == 1 {
+                        compute_si = false;
+                        break;
+                    }
                     di_c[i][j] /= (counts[j] - 1) as f64;
+                } else {
+                    di_c[i][j] /= counts[j] as f64;
                 }
+            }
+            if !compute_si {
+                // `cluster::silhouette` assigns singleton observations width 0.
+                return 0.0;
+            }
+            let ai = di_c[i][ci];
+            let mut bi = if ci == 0 { di_c[i][1] } else { di_c[i][0] };
+            for j in 1..k {
+                if j != ci && bi > di_c[i][j] {
+                    bi = di_c[i][j];
+                }
+            }
+            if bi == ai {
+                0.0
             } else {
-                di_c[i][j] /= counts[j] as f64;
+                (bi - ai) / bi.max(ai)
             }
-        }
-        let ai = di_c[i][ci];
-        let mut bi = if ci == 0 { di_c[i][1] } else { di_c[i][0] };
-        for j in 1..k {
-            if j != ci && bi > di_c[i][j] {
-                bi = di_c[i][j];
-            }
-        }
-        total += if compute_si && bi != ai {
-            (bi - ai) / bi.max(ai)
-        } else {
-            0.0
-        };
+        })
+        .collect()
+}
+
+/// Mean silhouette width over a 1-based clustering (`cluster::sildist`,
+/// averaged as in the legacy `silhouette_mean` helper). Returns NaN for the
+/// trivial clusterings `k <= 1` or `k >= n`, like `silhouette.default`.
+pub fn silhouette_mean(dist: &[Vec<f64>], clustering: &[i32], k: usize) -> f64 {
+    if k <= 1 || k >= clustering.len() || clustering.is_empty() {
+        return f64::NAN;
     }
-    total / n as f64
+    let widths = silhouette_widths(dist, clustering, k);
+    let total: f64 = widths.iter().sum();
+    total / clustering.len() as f64
+}
+
+#[cfg(test)]
+mod silhouette_tests {
+    use super::{silhouette_mean, silhouette_widths};
+
+    #[test]
+    fn trivial_clusterings_have_nan_mean() {
+        let dist = vec![
+            vec![0.0, 1.0, 4.0],
+            vec![1.0, 0.0, 3.0],
+            vec![4.0, 3.0, 0.0],
+        ];
+        assert!(silhouette_mean(&dist, &[1, 1, 1], 1).is_nan());
+        assert!(silhouette_mean(&dist, &[1, 2, 3], 3).is_nan());
+    }
+
+    #[test]
+    fn singleton_cluster_width_is_zero() {
+        let dist = vec![
+            vec![0.0, 1.0, 4.0],
+            vec![1.0, 0.0, 3.0],
+            vec![4.0, 3.0, 0.0],
+        ];
+        let widths = silhouette_widths(&dist, &[1, 1, 2], 2);
+        assert_eq!(widths[2], 0.0);
+        assert!(widths[0].is_finite());
+        assert!(widths[1].is_finite());
+        assert!(
+            (silhouette_mean(&dist, &[1, 1, 2], 2) - widths.iter().sum::<f64>() / 3.0).abs()
+                < 1e-12
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

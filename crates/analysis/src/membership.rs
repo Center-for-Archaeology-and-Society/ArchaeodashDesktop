@@ -108,6 +108,23 @@ pub fn group_mem_probs(
     eligible: &[String],
     method: MembershipMethod,
 ) -> Result<MembershipTable, DomainError> {
+    group_mem_probs_tracked(ids, groups, group, chem, chem_select, eligible, method)
+        .map(|(table, _)| table)
+}
+
+/// [`group_mem_probs`] plus the method that was actually effective: the
+/// legacy `tryCatch` falls back from Hotellings to the whole-table
+/// Mahalanobis path on any per-pair failure, and callers surface which one
+/// produced the table.
+pub fn group_mem_probs_tracked(
+    ids: &[String],
+    groups: &[String],
+    group: &str,
+    chem: &ColumnMatrix,
+    chem_select: &[String],
+    eligible: &[String],
+    method: MembershipMethod,
+) -> Result<(MembershipTable, MembershipMethod), DomainError> {
     let n = chem.n_rows();
     if ids.len() != n || groups.len() != n {
         return Err(DomainError::validation(
@@ -157,35 +174,29 @@ pub fn group_mem_probs(
         .map(|i| chem_idx.iter().map(|&j| chem.cols[j][i]).collect())
         .collect();
 
-    let probs = match method {
+    let (probs, effective) = match method {
         MembershipMethod::Hotellings => {
             // The R tryCatch: any per-pair error (na.fail on NA cells,
             // singular pooled covariance) retries the whole table via the
             // Mahalanobis path.
-            hotellings_table(&cells, groups, &eligible).unwrap_or_else(|| {
-                mahalanobis_cells(&cells, groups, &eligible)
-                    .into_iter()
-                    .map(|row| {
-                        row.into_iter()
-                            .map(|v| if v.is_finite() { v } else { f64::INFINITY })
-                            .collect()
-                    })
-                    .collect()
-            })
+            match hotellings_table(&cells, groups, &eligible) {
+                Some(table) => (table, MembershipMethod::Hotellings),
+                None => (
+                    non_finite_to_inf(mahalanobis_cells(&cells, groups, &eligible)),
+                    MembershipMethod::Mahalanobis,
+                ),
+            }
         }
-        MembershipMethod::Mahalanobis => mahalanobis_cells(&cells, groups, &eligible)
-            .into_iter()
-            .map(|row| {
-                row.into_iter()
-                    .map(|v| if v.is_finite() { v } else { f64::INFINITY })
-                    .collect()
-            })
-            .collect(),
+        MembershipMethod::Mahalanobis => (
+            non_finite_to_inf(mahalanobis_cells(&cells, groups, &eligible)),
+            MembershipMethod::Mahalanobis,
+        ),
     };
 
     // probsAll[!is.finite(probsAll)] <- Inf for Mahalanobis was applied above;
-    // getBestGroup picks first which.max / which.min over non-NA cells.
-    let hotellings = method == MembershipMethod::Hotellings;
+    // the legacy recursive fallback calls getBestGroup with method="Mahalanobis",
+    // so selection must follow the effective method rather than the request.
+    let hotellings = effective == MembershipMethod::Hotellings;
     let rows = (0..n)
         .map(|i| {
             let row = &probs[i];
@@ -224,11 +235,27 @@ pub fn group_mem_probs(
         })
         .collect();
 
-    Ok(MembershipTable {
-        eligible,
-        group: group.to_string(),
-        rows,
-    })
+    Ok((
+        MembershipTable {
+            eligible,
+            group: group.to_string(),
+            rows,
+        },
+        effective,
+    ))
+}
+
+/// Mahalanobis-path cell mapping: non-finite distances become `Inf`
+/// (`probsAll[!is.finite(probsAll)] <- Inf`).
+fn non_finite_to_inf(cells: Vec<Vec<f64>>) -> Vec<Vec<f64>> {
+    cells
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|v| if v.is_finite() { v } else { f64::INFINITY })
+                .collect()
+        })
+        .collect()
 }
 
 /// Hotellings pass over every (row, group) pair; `None` replicates the R
@@ -799,5 +826,36 @@ mod tests {
         // Zero-variance columns all dropped -> Inf.
         let refs: Vec<&[f64]> = vec![&[1.0, 1.0], &[2.0, 2.0], &[3.0, 3.0]];
         assert_eq!(mahalanobis_distance(&[1.0, 1.0], &refs), f64::INFINITY);
+    }
+
+    #[test]
+    fn hotellings_fallback_selects_smallest_mahalanobis_distance() {
+        let ids = (0..7).map(|i| format!("s{i}")).collect::<Vec<_>>();
+        let groups = vec!["A", "A", "A", "B", "B", "B", "A"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let chem = ColumnMatrix {
+            names: vec!["Ti".into()],
+            cols: vec![vec![0.0, 2.0, f64::NAN, 10.0, 11.0, 12.0, 1.0]],
+        };
+
+        let (result, effective) = group_mem_probs_tracked(
+            &ids,
+            &groups,
+            "Group",
+            &chem,
+            &["Ti".into()],
+            &["A".into(), "B".into()],
+            MembershipMethod::Hotellings,
+        )
+        .expect("membership result");
+
+        assert_eq!(effective, MembershipMethod::Mahalanobis);
+        // The final observation is closest to A (distance 0 vs. 100 to B).
+        // Picking the maximum here would expose use of the originally requested
+        // Hotellings method after the fallback had already switched methods.
+        assert_eq!(result.rows[6].best_group.as_deref(), Some("A"));
+        assert!(result.rows[6].best_value.unwrap().abs() < 1e-12);
     }
 }

@@ -5,6 +5,7 @@
 
 use archaeodash_contracts::AppInfo;
 
+pub mod clustering;
 pub mod explore;
 pub mod exports;
 pub mod files;
@@ -14,6 +15,7 @@ pub mod ordination;
 pub mod preferences;
 pub mod transforms;
 
+pub use clustering::ClusterService;
 pub use explore::ExploreService;
 pub use exports::{ensure_csv_extension, ExportService};
 pub use files::SourceFileService;

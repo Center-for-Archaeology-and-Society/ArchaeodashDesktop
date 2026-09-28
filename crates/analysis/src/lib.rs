@@ -14,8 +14,8 @@ use archaeodash_data_io::rnum::r_round;
 use archaeodash_domain::DomainError;
 
 pub use cluster::{
-    cluster_diagnostics, diana, hclust_ward_d2, kmeans, pam, silhouette_mean, ClusterDiagnostics,
-    Diana, Hclust, Kmeans, Pam,
+    cluster_diagnostics, dense_euclidean, diana, hclust_ward_d2, kmeans, pam, silhouette_mean,
+    silhouette_widths, ClusterDiagnostics, Diana, Hclust, Kmeans, Pam,
 };
 pub use explore::{
     compositional_profile, crosstab_count, crosstab_value_summary, histogram, missing_profile,
@@ -24,8 +24,8 @@ pub use explore::{
 };
 pub use lda::{lda, Lda, LEGACY_LDA_TOL};
 pub use membership::{
-    calc_e_distance, get_eligible, group_mem_probs, EuclideanMatch, MembershipMethod,
-    MembershipRow, MembershipTable,
+    calc_e_distance, get_eligible, group_mem_probs, group_mem_probs_tracked, EuclideanMatch,
+    MembershipMethod, MembershipRow, MembershipTable,
 };
 pub use pca::{apply_sign_flips, component_sign_flips, pca, Pca};
 pub use umap::{

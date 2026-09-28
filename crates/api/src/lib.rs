@@ -17,35 +17,37 @@
 use std::sync::Arc;
 
 use archaeodash_application::{
-    app_info, ExploreService, ExportService, GroupService, ImportService, OrdinationService,
-    PreferenceService, SourceFileService, TransformService,
+    ClusterService, ExploreService, ExportService, GroupService, ImportService, OrdinationService,
+    PreferenceService, SourceFileService, TransformService, app_info,
 };
 use archaeodash_contracts::{
     AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
-    DeleteGroupRequest, DuplicateGroupRequest, ErrorEnvelope, ExploreCompositionalProfileRequest,
+    ClusterDiagnosticsRequest, ClusterDiagnosticsResponse, ClusterFitRequest, ClusterFitResponse,
+    DeleteGroupRequest, DuplicateGroupRequest, ErrorEnvelope, EuclideanMatchesRequest,
+    EuclideanMatchesResponse, ExploreCompositionalProfileRequest,
     ExploreCompositionalProfileResponse, ExploreCrosstabRequest, ExploreCrosstabResponse,
     ExploreHistogramRequest, ExploreHistogramResponse, ExploreMissingProfileRequest,
     ExploreMissingProfileResponse, ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult,
     ExportTransformedRequest, GetPreferencesResponse, GroupCandidate, GroupRowsResponse,
     GroupSummary, ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest,
-    ImportPreviewResponse, LdaRequest, LdaResponse, MergeGroupsRequest,
-    PatchDescriptiveValuesRequest, PcaRequest, PcaResponse, PutPreferenceRequest,
-    SaveTransformationRequest, SaveTransformationResponse, StagedFile, TransactionResponse,
-    TransferUnitsRequest, TransformationDefinition, TransformationListResponse, UmapRequest,
-    UmapResponse,
+    ImportPreviewResponse, LdaRequest, LdaResponse, MembershipProbabilitiesRequest,
+    MembershipProbabilitiesResponse, MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest,
+    PcaResponse, PutPreferenceRequest, SaveTransformationRequest, SaveTransformationResponse,
+    StagedFile, TransactionResponse, TransferUnitsRequest, TransformationDefinition,
+    TransformationListResponse, UmapRequest, UmapResponse,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_domain::DomainError;
 use archaeodash_storage::StoreError;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 
 /// Shared adapter state: one project-scoped import, group, source-file,
-/// transformation, ordination, and export service.
+/// transformation, ordination, cluster, and export service.
 #[derive(Clone)]
 pub struct AppState {
     pub import: Arc<ImportService>,
@@ -53,6 +55,7 @@ pub struct AppState {
     pub files: Arc<SourceFileService>,
     pub transforms: Arc<TransformService>,
     pub ordination: Arc<OrdinationService>,
+    pub clustering: Arc<ClusterService>,
     pub explore: Arc<ExploreService>,
     pub exports: Arc<ExportService>,
     pub preferences: Arc<PreferenceService>,
@@ -451,6 +454,55 @@ async fn ordination_umap(
         .map_err(domain_error_response)
 }
 
+/// `POST /api/v1/cluster/diagnostics`: the WSS elbow and mean-silhouette
+/// series over one group file; results are ephemeral (Section 5).
+async fn cluster_diagnostics(
+    State(state): State<AppState>,
+    Json(req): Json<ClusterDiagnosticsRequest>,
+) -> Result<Json<ClusterDiagnosticsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let result = tokio::task::spawn_blocking(move || state.clustering.cluster_diagnostics(&req))
+        .await
+        .map_err(|err| domain_error_response(DomainError::Internal(Box::new(err))))?;
+    result.map(Json).map_err(domain_error_response)
+}
+
+/// `POST /api/v1/cluster/fit`: one kmeans/pam/ward.D2/DIANA clustering of
+/// one group file; results are ephemeral (Section 5).
+async fn cluster_fit(
+    State(state): State<AppState>,
+    Json(req): Json<ClusterFitRequest>,
+) -> Result<Json<ClusterFitResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let result = tokio::task::spawn_blocking(move || state.clustering.cluster_fit(&req))
+        .await
+        .map_err(|err| domain_error_response(DomainError::Internal(Box::new(err))))?;
+    result.map(Json).map_err(domain_error_response)
+}
+
+/// `POST /api/v1/membership/probabilities`: `group.mem.probs` parity
+/// (Hotellings with the Mahalanobis fallback); results are ephemeral.
+async fn membership_probabilities(
+    State(state): State<AppState>,
+    Json(req): Json<MembershipProbabilitiesRequest>,
+) -> Result<Json<MembershipProbabilitiesResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let result =
+        tokio::task::spawn_blocking(move || state.clustering.membership_probabilities(&req))
+            .await
+            .map_err(|err| domain_error_response(DomainError::Internal(Box::new(err))))?;
+    result.map(Json).map_err(domain_error_response)
+}
+
+/// `POST /api/v1/euclidean/matches`: `calcEDistance` nearest matches;
+/// results are ephemeral.
+async fn euclidean_matches(
+    State(state): State<AppState>,
+    Json(req): Json<EuclideanMatchesRequest>,
+) -> Result<Json<EuclideanMatchesResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let result = tokio::task::spawn_blocking(move || state.clustering.euclidean_matches(&req))
+        .await
+        .map_err(|err| domain_error_response(DomainError::Internal(Box::new(err))))?;
+    result.map(Json).map_err(domain_error_response)
+}
+
 /// `POST /api/v1/explore/missing-profile`: `profile_missing` band summary;
 /// results are ephemeral (Section 5 storage invariant).
 async fn explore_missing_profile(
@@ -610,6 +662,13 @@ pub fn root_router(state: AppState) -> Router {
         .route("/api/v1/ordination/pca", post(ordination_pca))
         .route("/api/v1/ordination/lda", post(ordination_lda))
         .route("/api/v1/ordination/umap", post(ordination_umap))
+        .route("/api/v1/cluster/diagnostics", post(cluster_diagnostics))
+        .route("/api/v1/cluster/fit", post(cluster_fit))
+        .route(
+            "/api/v1/membership/probabilities",
+            post(membership_probabilities),
+        )
+        .route("/api/v1/euclidean/matches", post(euclidean_matches))
         .route("/api/v1/exports/measured-data", post(exports_measured_data))
         .route("/api/v1/exports/transformed", post(exports_transformed))
         .route("/api/v1/exports/pca-scores", post(exports_pca_scores))
@@ -636,9 +695,10 @@ mod tests {
 
     use super::*;
     use archaeodash_contracts::{
-        BatchRatioMode, CrosstabRows, DescriptiveEdit, DuplicateGroupRequest, GroupRowsResponse,
-        ImputationMethod, PatchDescriptiveValuesRequest, RatioMode, RatioSpecDto, TransferAction,
-        TransformMethod,
+        BatchRatioMode, ClusterMethod, CrosstabRows, DescriptiveEdit, DuplicateGroupRequest,
+        EuclideanMatchesRequest, GroupRowsResponse, ImputationMethod, MembershipMethodDto,
+        MembershipProbabilitiesRequest, PatchDescriptiveValuesRequest, RatioMode, RatioSpecDto,
+        TransferAction, TransformMethod,
     };
     use axum::body::Body;
     use http_body_util::BodyExt;
@@ -657,6 +717,7 @@ mod tests {
             files: Arc::new(SourceFileService::new(dir.path()).expect("file service")),
             transforms: Arc::new(TransformService::new(dir.path()).expect("transform service")),
             ordination: Arc::new(OrdinationService::new(dir.path()).expect("ordination service")),
+            clustering: Arc::new(ClusterService::new(dir.path()).expect("cluster service")),
             explore: Arc::new(ExploreService::new(dir.path()).expect("explore service")),
             exports: Arc::new(ExportService::new(dir.path()).expect("export service")),
             preferences: Arc::new(PreferenceService::new(dir.path()).expect("preference service")),
@@ -712,6 +773,186 @@ mod tests {
         let info: AppInfo = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(info.transport, "http");
         assert!(info.ready);
+    }
+
+    #[tokio::test]
+    async fn clustering_and_distance_routes_round_trip_and_validate() {
+        let (state, dir) = test_state();
+        let app = root_router(state);
+        let rows: Vec<String> = (0..24)
+            .map(|i| {
+                let group = ["A", "B", "C"][i / 8];
+                let v = i as f64;
+                format!(
+                    "S{i},{group},{},{},{},{}",
+                    1.0 + v * 0.1,
+                    3.0 + v * 0.05,
+                    5.0 - v * 0.02,
+                    2.0 + v * 0.03
+                )
+            })
+            .collect();
+        std::fs::write(
+            dir.path().join("cluster.csv"),
+            format!("anid,Site,as,fe,co,zn\n{}\n", rows.join("\n")),
+        )
+        .expect("write clustering fixture");
+        let commit = app.clone();
+        let response = commit
+            .oneshot(
+                axum::http::Request::post("/api/v1/imports/commit")
+                    .header("content-type", "application/json")
+                    .body(json_body(&ImportCommitRequest {
+                        source: "cluster.csv".into(),
+                        group_column: "Site".into(),
+                        visible_id_column: None,
+                        elemental_columns: None,
+                        recipe: None,
+                        destination_dir: None,
+                    }))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let imported: ImportCommitResponse = serde_json::from_slice(&bytes).unwrap();
+        let path = imported.groups[0].path.clone();
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/cluster/diagnostics")
+                    .header("content-type", "application/json")
+                    .body(json_body(&ClusterDiagnosticsRequest {
+                        path: path.clone(),
+                        columns: vec!["as".into(), "fe".into()],
+                        transformation: None,
+                        max_k: 3,
+                        seed: 42,
+                    }))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let diagnostics: ClusterDiagnosticsResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(diagnostics.path, path);
+        assert_eq!(diagnostics.n_rows, 8);
+        assert_eq!(diagnostics.wss.len(), 3);
+        assert_eq!(diagnostics.silhouette.len(), 2);
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/cluster/fit")
+                    .header("content-type", "application/json")
+                    .body(json_body(&ClusterFitRequest {
+                        path: imported.groups[0].path.clone(),
+                        columns: vec!["as".into(), "fe".into()],
+                        transformation: None,
+                        method: ClusterMethod::Kmeans,
+                        k: Some(2),
+                        iter_max: 50,
+                        nstart: 5,
+                        seed: Some(42),
+                    }))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let fit: ClusterFitResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(fit.method, ClusterMethod::Kmeans);
+        assert_eq!(fit.n_rows, 8);
+        assert_eq!(fit.cluster.as_ref().map(Vec::len), Some(8));
+
+        let merged = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/groups/merge")
+                    .header("content-type", "application/json")
+                    .body(json_body(&MergeGroupsRequest {
+                        sources: imported.groups.iter().map(|g| g.path.clone()).collect(),
+                        new_group_name: "All Sites".into(),
+                    }))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(merged.status(), StatusCode::OK);
+        let bytes = merged.into_body().collect().await.unwrap().to_bytes();
+        let merged: TransactionResponse = serde_json::from_slice(&bytes).unwrap();
+        let all_path = merged.outputs[0].path.clone();
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/membership/probabilities")
+                    .header("content-type", "application/json")
+                    .body(json_body(&MembershipProbabilitiesRequest {
+                        path: all_path.clone(),
+                        columns: vec!["as".into(), "fe".into(), "co".into(), "zn".into()],
+                        group_column: "Site".into(),
+                        id_column: "anid".into(),
+                        method: MembershipMethodDto::Mahalanobis,
+                    }))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let membership: MembershipProbabilitiesResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(membership.ids.len(), 24);
+        assert_eq!(membership.probabilities.len(), 24);
+        assert_eq!(membership.eligible_groups.len(), 3);
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/euclidean/matches")
+                    .header("content-type", "application/json")
+                    .body(json_body(&EuclideanMatchesRequest {
+                        path: all_path.clone(),
+                        columns: vec!["as".into(), "fe".into()],
+                        group_column: "Site".into(),
+                        id_column: "anid".into(),
+                        limit: 2,
+                        within_group: false,
+                    }))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let matches: EuclideanMatchesResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(!matches.rows.is_empty());
+        assert!(matches.rows.iter().all(|row| row.group != row.match_group));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::post("/api/v1/euclidean/matches")
+                    .header("content-type", "application/json")
+                    .body(json_body(&EuclideanMatchesRequest {
+                        path: all_path,
+                        columns: vec!["as".into(), "fe".into()],
+                        group_column: "Site".into(),
+                        id_column: "anid".into(),
+                        limit: 0,
+                        within_group: false,
+                    }))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let error: ErrorEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(error.code, "validation_error");
     }
 
     #[tokio::test]
@@ -929,10 +1170,11 @@ mod tests {
         assert_eq!(rows.rows.len(), 2);
         // Hidden identity rides in the payload for edit addressing; visible ID
         // and descriptive cells round-trip; measured values stay numeric.
-        assert!(rows
-            .rows
-            .iter()
-            .all(|row| uuid::Uuid::parse_str(&row.analytical_uuid).is_ok()));
+        assert!(
+            rows.rows
+                .iter()
+                .all(|row| uuid::Uuid::parse_str(&row.analytical_uuid).is_ok())
+        );
         assert_eq!(rows.rows[0].visible_id.as_deref(), Some("A1"));
         assert_eq!(rows.rows[0].descriptive, vec![Some("Baca".into())]);
         assert_eq!(rows.rows[0].elemental, vec![Some(1.5), Some(3.0)]);
