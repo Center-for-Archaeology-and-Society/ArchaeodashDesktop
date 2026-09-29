@@ -60,7 +60,7 @@ export function ResultTable({ result }: { result: AnalysisResult }): ReactElemen
     {method && <p>Method: {method}</p>}
     {result.kind === 'membership' && result.data.fallback_reason && <p role="status">Hotelling probabilities were unavailable for this comparison. Showing Mahalanobis distances instead ({result.data.fallback_reason.replaceAll('_', ' ')}).</p>}
     {result.data.source && <p>Source: {result.data.source}; columns: {result.data.column_names?.join(', ')}</p>}
-    {(result.kind === 'fit' || result.kind === 'diagnostics') && result.data.metric && <p>Distance: {result.data.metric}{result.kind === 'fit' && result.data.merge ? `; linkage: ${result.data.method === 'diana' ? 'DIANA' : result.data.linkage}` : ''}</p>}
+    {(result.kind === 'fit' || result.kind === 'diagnostics') && result.data.metric && <p>Distance: {result.data.metric}{result.kind === 'fit' && result.data.merge ? (result.data.method === 'diana' ? '; method: DIANA' : `; linkage: ${result.data.linkage}`) : ''}</p>}
     {result.kind === 'diagnostics' && <p>Diagnostic method: {result.data.diagnostic_method ?? 'kmeans'}</p>}
     <p>{rows.length} result rows. Showing {Math.min(shown, rows.length)}.</p>
     {rows.length === 0 ? <p>No eligible results for these settings.</p> : <table className="data-table">
@@ -129,7 +129,10 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     }).catch(e => { if (active) setError(String(e)); });
     return () => { active = false; };
   }, [deps, path]);
-  function reset() { activeJob.current?.abort(); generation.current++; setResult(null); setReviewing(false); setError(''); setNotice(''); setBusy(false); }
+  useEffect(() => {
+    if (data && columns.length) setPcCount(current => Math.max(1, Math.min(current, columns.length, data.rows.length)));
+  }, [columns.length, data]);
+  function reset() { activeJob.current?.abort(); activeJob.current = null; generation.current++; setResult(null); setReviewing(false); setError(''); setNotice(''); setBusy(false); }
   async function run(diagnostics = false) {
     if (activeJob.current || moving.current) return;
     const ticket = ++generation.current;
@@ -196,7 +199,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
       <label>Analysis source <select value={source} onChange={e => setSource(e.target.value as AnalysisSource)}>
         <option value="elements">Elements / ratios</option><option value="pca">PCA scores</option><option value="umap">UMAP dimensions</option><option value="lda">Linear discriminants</option>
       </select></label>
-      {source === 'pca' && <label>Principal components <input type="number" min={1} max={columns.length} value={pcCount} onChange={e => setPcCount(Number(e.target.value))} /></label>}
+      {source === 'pca' && <label>Principal components <input type="number" min={1} max={Math.min(columns.length, data.rows.length)} value={pcCount} onChange={e => setPcCount(Number(e.target.value))} /></label>}
       {source === 'lda' && <label>LDA grouping column <select value={sourceGroup} onChange={e => setSourceGroup(e.target.value)}>{data.descriptive_columns.map(c => <option key={c}>{c}</option>)}</select></label>}
       {source === 'umap' && <label>UMAP seed <input type="number" min={0} max={2147483627} value={seed} onChange={e => setSeed(Number(e.target.value))} /></label>}
       <label>Input columns <select multiple value={columns} onChange={e => setColumns(Array.from(e.target.selectedOptions, o => o.value))}>

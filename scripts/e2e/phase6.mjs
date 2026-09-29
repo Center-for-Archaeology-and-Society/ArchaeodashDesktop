@@ -17,6 +17,7 @@ const imported = await api('imports/commit', { source: `${tag}.csv`, group_colum
 await api('groups/merge', { sources: imported.groups.map(g => g.path), new_group_name: 'Combined' });
 const path = imported.groups[0].path;
 const original = await api(`groups/rows?path=${encodeURIComponent(path)}`, undefined, 'GET');
+await api('transformations', { definition: { name: `${tag}-ratio`, transform_method: 'none', imputation_method: 'none', elemental_columns: ['a', 'b'], descriptive_columns: ['Group'], group_column: 'Group', ratios: [{ numerator: 'a', denominator: 'b', output_name: 'a_b' }], ratio_mode: 'only' } });
 const browser = await chromium.launch({ headless: true, ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}) });
 const page = await browser.newPage();
 const pageErrors = [];
@@ -26,6 +27,9 @@ try {
   await page.goto(`${base}/cluster`);
   await page.getByLabel(/^Dataset/).selectOption(path);
   await page.getByLabel('Analysis source').selectOption('pca');
+  await page.getByLabel('Input columns').selectOption(['a']);
+  await page.waitForFunction(() => Array.from(document.querySelectorAll('input[type=number]')).some(el => el.value === '1' && el.max === '1'));
+  await page.getByLabel('Input columns').selectOption(['a', 'b', 'c']);
   await page.getByLabel('Principal components').fill('2');
   await page.getByLabel(/^Method/).selectOption('hclust');
   await page.getByLabel(/^Distance/).selectOption('manhattan');
@@ -38,6 +42,12 @@ try {
   await page.getByRole('button', { name: 'Expand plot view' }).click();
   await page.getByRole('button', { name: 'Reduce plot view' }).click();
   assert.ok(await page.locator('svg').count() > 0);
+  await page.getByLabel('Transformation').selectOption(`${tag}-ratio`);
+  await page.getByRole('button', { name: 'Run analysis', exact: true }).click();
+  await page.getByRole('region', { name: 'Analysis results', exact: true }).waitFor();
+  assert.match(await page.locator('body').innerText(), /Source: pca; columns: PC1/);
+  await page.getByLabel('Transformation').selectOption('');
+  await page.getByLabel('Principal components').fill('2');
   await page.getByLabel(/^Method/).selectOption('pam');
   await page.getByLabel(/^Distance/).selectOption('manhattan');
   await page.getByLabel('Diagnostic method').selectOption('pam');
@@ -93,5 +103,5 @@ try {
   assert.deepEqual(order([...first.rows, ...second.rows]), order(original.rows));
   for (const row of original.rows) assert.ok(!(await page.locator('body').innerText()).includes(row.analytical_uuid));
   assert.deepEqual(pageErrors, []);
-  console.log(JSON.stringify({ status: 'passed', elapsed_ms: Date.now() - begin, cases: ['PCA HCA Manhattan Average', 'cut and expanded dendrogram', 'PAM Manhattan diagnostics', 'UMAP cancellation', 'immutable source', 'hidden UUIDs', 'LDA membership and projection groups', 'UMAP nearest matches', 'partition color modes', 'reviewed two-group recording with immutable rows'] }, null, 2));
+  console.log(JSON.stringify({ status: 'passed', elapsed_ms: Date.now() - begin, cases: ['PCA HCA Manhattan Average', 'transformed ratio PCA and component bounds', 'cut and expanded dendrogram', 'PAM Manhattan diagnostics', 'UMAP cancellation', 'immutable source', 'hidden UUIDs', 'LDA membership and projection groups', 'UMAP nearest matches', 'partition color modes', 'reviewed two-group recording with immutable rows'] }, null, 2));
 } catch (error) { console.error(await page.locator('body').innerText()); throw error; } finally { await browser.close(); }

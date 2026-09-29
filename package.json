@@ -10,11 +10,13 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "test:e2e:phase6": "node scripts/e2e/phase6.mjs"
   },
   "devDependencies": {
     "amaro": "^1.2.1",
     "esbuild": "^0.28.2",
+    "playwright": "1.62.1",
     "typescript": "~5.9.0"
   }
 }
