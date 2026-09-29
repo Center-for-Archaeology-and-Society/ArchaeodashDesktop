@@ -32,3 +32,5 @@ HTTP/desktop integration tests compare result identities to input rows, move uni
 - Client workspace tests (69 web tests), typechecks, production builds, Rust library clippy with warnings denied, Tauri shell compilation, formatting, and diff whitespace checks pass. The existing Plotly bundle-size warning remains.
 - Checks are unit/SSR, application, and adapter integration tests. Browser/desktop UI end-to-end acceptance and performance budgets remain open.
 - Existing-group manual moves are complete in this increment. Automatic best/matched-group assignment, multi-group cluster recording, PCA inputs, additional cluster metrics/linkages, and cancellable jobs remain open. No migration phase exit is declared from these checks alone.
+
+Follow-up: automatic best/matched-group assignment and multi-group cluster recording are implemented in [[Phase_6_Automatic_Assignment_2026-09-28]]; its acceptance limits supersede the corresponding open items above.

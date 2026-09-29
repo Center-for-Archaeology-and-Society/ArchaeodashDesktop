@@ -6,10 +6,10 @@ Status (2026-09-28): implementation in progress through Phase 6; phase exit gate
 
 - Phases 0–4: baseline fixtures, workspace, group-file operations, transformations, ordination, Explore, preferences, and exports have implementation slices recorded in Vault. This is not a claim that every phase exit criterion has passed.
 - Phase 5: visualization, assignment, static/interactive multiplots, and plot export are implemented; desktop end-to-end assignment and performance acceptance remain open.
-- Phase 6 (current): numerical clustering, membership, and Euclidean goldens, bounded shared services, HTTP/Tauri adapters, typed client transports, and analysis controls/result tables, elbow/silhouette plots, and horizontal Ward.D2/DIANA dendrograms with cut coloring and expanded views are implemented. UUID-addressed result selection and confirmed manual moves to existing group files are implemented with source-revision checks. Automatic best/matched-group assignment, multi-group cluster recording, additional distance/linkage options, PCA-based input controls, cancellable jobs, and full exit acceptance remain open.
+- Phase 6 (current): numerical clustering, membership, and Euclidean goldens, bounded shared services, HTTP/Tauri adapters, typed client transports, and analysis controls/result tables, elbow/silhouette plots, and horizontal Ward.D2/DIANA dendrograms with cut coloring and expanded views are implemented. UUID-addressed result selection and confirmed manual moves to existing group files are implemented with source-revision checks. Automatic best/matched-group assignment and multi-group cluster recording now use explicit reviewed destination mappings and one revision-checked batch transaction, with guarded filesystem publication and recovery. Additional distance/linkage options, PCA-based input controls, cancellable jobs, reader snapshot isolation/external-writer concurrency acceptance, and full exit acceptance remain open.
 - Phases 7–9: not yet accepted; do not advance to auth/cutover/legacy removal on the strength of numerical goldens alone.
 
-See [Phase 6 checkpoint](Vault/Phase_6_Service_Integration_2026-09-28.md) for current validation evidence and remaining work.
+See [Phase 6 checkpoint](Vault/Phase_6_Service_Integration_2026-09-28.md) and [automatic assignment checkpoint](Vault/Phase_6_Automatic_Assignment_2026-09-28.md) for validation evidence and remaining work.
 
 Prepared: 2026-09-08
 
