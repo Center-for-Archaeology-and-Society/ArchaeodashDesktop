@@ -4,24 +4,25 @@
 //! invocation logic testable without a webview runtime.
 
 use archaeodash_application::{
-    ClusterService, ExploreService, ExportService, GroupService, ImportService, OrdinationService,
-    PreferenceService, SourceFileService, TransformService,
+    AnalysisJobs, ClusterService, ExploreService, ExportService, GroupService, ImportService,
+    OrdinationService, PreferenceService, SourceFileService, TransformService,
 };
 use archaeodash_contracts::{
-    AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
-    BatchTransferUnitsRequest, ClusterDiagnosticsRequest, ClusterDiagnosticsResponse,
-    ClusterFitRequest, ClusterFitResponse, DeleteGroupRequest, DuplicateGroupRequest,
-    EuclideanMatchesRequest, EuclideanMatchesResponse, ExploreCompositionalProfileRequest,
-    ExploreCompositionalProfileResponse, ExploreCrosstabRequest, ExploreCrosstabResponse,
-    ExploreHistogramRequest, ExploreHistogramResponse, ExploreMissingProfileRequest,
-    ExploreMissingProfileResponse, ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult,
-    ExportTransformedRequest, FileDownload, FileUploadRequest, GetPreferencesResponse,
-    GroupCandidate, GroupRowsResponse, GroupSummary, ImportCommitRequest, ImportCommitResponse,
-    ImportPreviewRequest, ImportPreviewResponse, LdaRequest, LdaResponse,
-    MembershipProbabilitiesRequest, MembershipProbabilitiesResponse, MergeGroupsRequest,
-    PatchDescriptiveValuesRequest, PcaRequest, PcaResponse, PutPreferenceRequest, RatioSpecDto,
-    SaveTransformationResponse, StagedFile, TransactionResponse, TransferUnitsRequest,
-    TransformationDefinition, TransformationListResponse, UmapRequest, UmapResponse,
+    AnalysisJobSnapshot, AppInfo, AppliedTransformation, ApplyTransformationRequest,
+    BatchRatioRequest, BatchTransferUnitsRequest, ClusterDiagnosticsRequest,
+    ClusterDiagnosticsResponse, ClusterFitRequest, ClusterFitResponse, DeleteGroupRequest,
+    DuplicateGroupRequest, EuclideanMatchesRequest, EuclideanMatchesResponse,
+    ExploreCompositionalProfileRequest, ExploreCompositionalProfileResponse,
+    ExploreCrosstabRequest, ExploreCrosstabResponse, ExploreHistogramRequest,
+    ExploreHistogramResponse, ExploreMissingProfileRequest, ExploreMissingProfileResponse,
+    ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult, ExportTransformedRequest,
+    FileDownload, FileUploadRequest, GetPreferencesResponse, GroupCandidate, GroupRowsResponse,
+    GroupSummary, ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest,
+    ImportPreviewResponse, LdaRequest, LdaResponse, MembershipProbabilitiesRequest,
+    MembershipProbabilitiesResponse, MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest,
+    PcaResponse, PutPreferenceRequest, RatioSpecDto, SaveTransformationResponse, StagedFile,
+    SubmitAnalysisJobRequest, TransactionResponse, TransferUnitsRequest, TransformationDefinition,
+    TransformationListResponse, UmapRequest, UmapResponse,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_domain::DomainError;
@@ -459,6 +460,7 @@ impl Default for DesktopOrdination {
 /// Section 5 storage invariant).
 pub struct DesktopClustering {
     service: Mutex<Option<ClusterService>>,
+    jobs: Mutex<Option<AnalysisJobs>>,
 }
 
 impl DesktopClustering {
@@ -466,14 +468,52 @@ impl DesktopClustering {
     pub fn new() -> Self {
         Self {
             service: Mutex::new(None),
+            jobs: Mutex::new(None),
         }
     }
 
     /// Opens (or re-opens) the project root for cluster use cases.
     pub fn open_project(&self, root: impl Into<PathBuf>) -> Result<(), String> {
-        let service = ClusterService::new(root).map_err(|e| e.to_string())?;
+        let root = root.into();
+        let service = ClusterService::new(root.clone()).map_err(|e| e.to_string())?;
         *self.service.lock().map_err(|e| e.to_string())? = Some(service);
+        let mut jobs = self.jobs.lock().map_err(|e| e.to_string())?;
+        if let Some(previous) = jobs.as_ref() {
+            previous.cancel_all();
+        }
+        *jobs = Some(AnalysisJobs::new(root));
         Ok(())
+    }
+
+    pub fn submit_analysis_job(
+        &self,
+        request: SubmitAnalysisJobRequest,
+    ) -> Result<AnalysisJobSnapshot, String> {
+        let guard = self.jobs.lock().map_err(|e| e.to_string())?;
+        guard
+            .as_ref()
+            .ok_or("no project open")?
+            .submit(request)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn get_analysis_job(&self, id: &str) -> Result<AnalysisJobSnapshot, String> {
+        let guard = self.jobs.lock().map_err(|e| e.to_string())?;
+        guard
+            .as_ref()
+            .ok_or("no project open")?
+            .get(id)
+            .ok_or_else(|| "Analysis job not found or expired".into())
+    }
+
+    pub fn cancel_analysis_job(&self, id: &str) -> Result<AnalysisJobSnapshot, String> {
+        let guard = self.jobs.lock().map_err(|e| e.to_string())?;
+        guard
+            .as_ref()
+            .ok_or("no project open")?
+            .cancel(id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Analysis job not found or expired".into())
     }
 
     fn with_service<T>(
@@ -684,6 +724,15 @@ mod tests {
                 transformation: None,
                 max_k: 3,
                 seed: 42,
+
+                source: Default::default(),
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                metric: Default::default(),
+                minkowski_p: 2.0,
+                linkage: Default::default(),
+                diagnostic_method: Default::default(),
             })
             .expect_err("no project open");
         assert!(no_project.contains("no project open"));
@@ -695,6 +744,13 @@ mod tests {
                 id_column: "anid".into(),
                 limit: 2,
                 within_group: false,
+
+                source: Default::default(),
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                transformation: None,
+                projection_groups: None,
             })
             .expect_err("no project open")
             .contains("no project open"));
@@ -737,6 +793,15 @@ mod tests {
                 transformation: None,
                 max_k: 3,
                 seed: 42,
+
+                source: Default::default(),
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                metric: Default::default(),
+                minkowski_p: 2.0,
+                linkage: Default::default(),
+                diagnostic_method: Default::default(),
             })
             .expect("diagnostics");
         assert_eq!(diagnostics.n_rows, 8);
@@ -745,6 +810,7 @@ mod tests {
 
         let fit = clustering
             .cluster_fit(ClusterFitRequest {
+                plot_group_column: None,
                 path: imported.groups[0].path.clone(),
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
@@ -753,6 +819,14 @@ mod tests {
                 iter_max: 50,
                 nstart: 5,
                 seed: Some(42),
+
+                source: Default::default(),
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                metric: Default::default(),
+                minkowski_p: 2.0,
+                linkage: Default::default(),
             })
             .expect("cluster fit");
         assert_eq!(fit.method, ClusterMethod::Kmeans);
@@ -772,6 +846,7 @@ mod tests {
         let path = merged.outputs[0].path.clone();
         let merged_fit = clustering
             .cluster_fit(ClusterFitRequest {
+                plot_group_column: None,
                 path: path.clone(),
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
@@ -780,6 +855,14 @@ mod tests {
                 iter_max: 50,
                 nstart: 5,
                 seed: Some(42),
+
+                source: Default::default(),
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                metric: Default::default(),
+                minkowski_p: 2.0,
+                linkage: Default::default(),
             })
             .expect("fit merged group");
         let before_transfer = groups.rows(&path).expect("read merged group rows");
@@ -798,6 +881,13 @@ mod tests {
                 group_column: "Site".into(),
                 id_column: "anid".into(),
                 method: MembershipMethodDto::Mahalanobis,
+
+                source: Default::default(),
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                transformation: None,
+                projection_groups: None,
             })
             .expect("membership probabilities");
         assert_eq!(membership.ids.len(), 24);
@@ -813,6 +903,13 @@ mod tests {
                 id_column: "anid".into(),
                 limit: 2,
                 within_group: false,
+
+                source: Default::default(),
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                transformation: None,
+                projection_groups: None,
             })
             .expect("euclidean matches");
         assert!(!matches.rows.is_empty());
@@ -931,6 +1028,13 @@ mod tests {
                 id_column: "anid".into(),
                 limit: 0,
                 within_group: false,
+
+                source: Default::default(),
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                transformation: None,
+                projection_groups: None,
             })
             .expect_err("invalid limit");
         assert!(err.contains("limit"));
@@ -1666,3 +1770,7 @@ mod preference_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+#[path = "analysis_jobs_tests.rs"]
+mod analysis_jobs_tests;

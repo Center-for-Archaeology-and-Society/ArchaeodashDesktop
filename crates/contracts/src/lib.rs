@@ -5,6 +5,11 @@
 
 use serde::{Deserialize, Serialize};
 
+mod analysis_jobs;
+pub use analysis_jobs::*;
+mod analysis_job_events;
+pub use analysis_job_events::*;
+
 /// Smoke/health payload returned by `GET /healthz` and the Tauri `app_info`
 /// command. Proves one use case flows through both adapters (Phase 1 exit).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -814,8 +819,42 @@ pub enum ClusterMethod {
     Pam,
     /// `stats::hclust(method = "ward.D2")`.
     HclustWardD2,
+    /// General agglomerative linkage chosen in `linkage`.
+    Hclust,
     /// `cluster::diana`.
     Diana,
+}
+
+/// Ephemeral analysis matrix used by Phase 6 operations. `pca`, `umap`, and
+/// `lda` are recomputed from the request's measured/transformed columns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalysisSourceDto {
+    #[default]
+    Elements,
+    Pca,
+    Umap,
+    Lda,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClusterDistanceMetricDto {
+    #[default]
+    Euclidean,
+    Manhattan,
+    Minkowski,
+    Maximum,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClusterLinkageDto {
+    Average,
+    Complete,
+    WardD,
+    #[default]
+    WardD2,
 }
 
 /// `POST /cluster/diagnostics` request: the WSS elbow series and mean
@@ -830,12 +869,40 @@ pub struct ClusterDiagnosticsRequest {
     pub columns: Vec<String>,
     /// Optional transformation applied to the group matrix first.
     pub transformation: Option<TransformationDefinition>,
+    #[serde(default)]
+    pub source: AnalysisSourceDto,
+    #[serde(default)]
+    pub pc_count: Option<u32>,
+    #[serde(default)]
+    pub source_group_column: Option<String>,
+    #[serde(default)]
+    pub umap_seed: Option<u64>,
+    #[serde(default)]
+    pub metric: ClusterDistanceMetricDto,
+    #[serde(default = "default_minkowski_p")]
+    pub minkowski_p: f64,
+    #[serde(default)]
+    pub linkage: ClusterLinkageDto,
+    #[serde(default)]
+    pub diagnostic_method: ClusterDiagnosticMethodDto,
     /// Largest k in the series; the server clamps to `2..=min(n-1, 20)`
     /// (the client always sends an explicit value).
     pub max_k: u32,
     /// Base RNG seed; series entry k runs `set.seed(seed + k)` (the golden
     /// capture convention).
     pub seed: i64,
+}
+
+fn default_minkowski_p() -> f64 {
+    2.0
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClusterDiagnosticMethodDto {
+    #[default]
+    Kmeans,
+    Pam,
 }
 
 /// `POST /cluster/diagnostics` response: `wss[k]` for `k = 1..=max_k` and
@@ -847,6 +914,14 @@ pub struct ClusterDiagnosticsResponse {
     pub revision_id: String,
     /// Input column names, in request order.
     pub column_names: Vec<String>,
+    #[serde(default)]
+    pub source: AnalysisSourceDto,
+    #[serde(default)]
+    pub metric: ClusterDistanceMetricDto,
+    #[serde(default)]
+    pub linkage: ClusterLinkageDto,
+    #[serde(default)]
+    pub diagnostic_method: ClusterDiagnosticMethodDto,
     /// Row count of the clustered matrix.
     pub n_rows: u64,
     /// Total within-cluster sum of squares per k, `k = 1..=max_k` (index 0
@@ -866,6 +941,23 @@ pub struct ClusterFitRequest {
     pub columns: Vec<String>,
     /// Optional transformation applied to the group matrix first.
     pub transformation: Option<TransformationDefinition>,
+    #[serde(default)]
+    pub source: AnalysisSourceDto,
+    #[serde(default)]
+    pub pc_count: Option<u32>,
+    #[serde(default)]
+    pub source_group_column: Option<String>,
+    #[serde(default)]
+    pub umap_seed: Option<u64>,
+    #[serde(default)]
+    pub metric: ClusterDistanceMetricDto,
+    #[serde(default = "default_minkowski_p")]
+    pub minkowski_p: f64,
+    #[serde(default)]
+    pub linkage: ClusterLinkageDto,
+    /// Optional descriptive grouping for existing-group plot coloring.
+    #[serde(default)]
+    pub plot_group_column: Option<String>,
     /// Algorithm selector.
     pub method: ClusterMethod,
     /// Cluster count; required for `kmeans` and `pam`, ignored for
@@ -902,6 +994,31 @@ pub struct ClusterFitResponse {
     pub revision_id: String,
     /// Echo of the requested method.
     pub method: ClusterMethod,
+    #[serde(default)]
+    pub source: AnalysisSourceDto,
+    #[serde(default)]
+    pub column_names: Vec<String>,
+    #[serde(default)]
+    pub metric: ClusterDistanceMetricDto,
+    #[serde(default)]
+    pub linkage: ClusterLinkageDto,
+    /// First two selected analysis dimensions for the ephemeral cluster plot.
+    #[serde(default)]
+    pub plot_coordinates: Vec<[f64; 2]>,
+    #[serde(default)]
+    pub plot_column_names: Vec<String>,
+    /// Existing-group labels when `plot_group_column` was supplied.
+    #[serde(default)]
+    pub plot_groups: Vec<String>,
+    /// Standardized PCA projection for cluster coloring when more than two
+    /// analysis dimensions are present; raw first dimensions otherwise.
+    #[serde(default)]
+    pub cluster_plot_coordinates: Vec<[f64; 2]>,
+    #[serde(default)]
+    pub cluster_plot_column_names: Vec<String>,
+    /// Visible explanation when cluster-only plotting falls back to raw axes.
+    #[serde(default)]
+    pub plot_warning: Option<String>,
     /// Row count of the clustered matrix.
     pub n_rows: u64,
     /// 1-based cluster labels per row (kmeans, pam).
@@ -927,11 +1044,12 @@ pub struct ClusterFitResponse {
 }
 
 /// Membership probability method selector (`Group_probs.R`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MembershipMethodDto {
     /// `ICSNP::HotellingsT2` per (row, group) pair; falls back to
     /// Mahalanobis whole-table on any failure (legacy `tryCatch`).
+    #[default]
     Hotellings,
     /// `getMahalanobis` whole-table distances.
     Mahalanobis,
@@ -948,6 +1066,19 @@ pub struct MembershipProbabilitiesRequest {
     /// column switches to every `PC*` column (legacy principal-components
     /// branch).
     pub columns: Vec<String>,
+    #[serde(default)]
+    pub transformation: Option<TransformationDefinition>,
+    #[serde(default)]
+    pub source: AnalysisSourceDto,
+    #[serde(default)]
+    pub pc_count: Option<u32>,
+    #[serde(default)]
+    pub source_group_column: Option<String>,
+    #[serde(default)]
+    pub umap_seed: Option<u64>,
+    /// Optional subset of groups to compare; absent preserves all eligible groups.
+    #[serde(default)]
+    pub projection_groups: Option<Vec<String>>,
     /// Descriptive column holding the grouping factor.
     pub group_column: String,
     /// Sample ID column for the result table.
@@ -963,6 +1094,10 @@ pub struct MembershipProbabilitiesRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MembershipProbabilitiesResponse {
     pub path: String,
+    #[serde(default)]
+    pub source: AnalysisSourceDto,
+    #[serde(default)]
+    pub column_names: Vec<String>,
     /// Immutable analytical identities in input row order.
     pub analytical_uuids: Vec<String>,
     /// Revision the group file was at when computed.
@@ -970,6 +1105,12 @@ pub struct MembershipProbabilitiesResponse {
     /// Method that actually produced the table (Hotellings requests may
     /// fall back to Mahalanobis).
     pub effective_method: MembershipMethodDto,
+    #[serde(default)]
+    pub requested_method: MembershipMethodDto,
+    #[serde(default)]
+    pub fallback_reason: Option<String>,
+    #[serde(default)]
+    pub projection_included: Vec<bool>,
     /// Eligible group labels (n > max(n_features, n_groups) + 1), sorted.
     pub eligible_groups: Vec<String>,
     /// Per-row ID values (`as.character(data[[ID]])`).
@@ -996,6 +1137,18 @@ pub struct EuclideanMatchesRequest {
     pub path: String,
     /// Measured elemental (or post-transform) analysis columns.
     pub columns: Vec<String>,
+    #[serde(default)]
+    pub transformation: Option<TransformationDefinition>,
+    #[serde(default)]
+    pub source: AnalysisSourceDto,
+    #[serde(default)]
+    pub pc_count: Option<u32>,
+    #[serde(default)]
+    pub source_group_column: Option<String>,
+    #[serde(default)]
+    pub umap_seed: Option<u64>,
+    #[serde(default)]
+    pub projection_groups: Option<Vec<String>>,
     /// Descriptive column holding the grouping factor.
     pub group_column: String,
     /// Sample ID column for the result table.
@@ -1035,6 +1188,10 @@ pub struct EuclideanMatchDto {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EuclideanMatchesResponse {
     pub path: String,
+    #[serde(default)]
+    pub source: AnalysisSourceDto,
+    #[serde(default)]
+    pub column_names: Vec<String>,
     /// Revision the group file was at when computed.
     pub revision_id: String,
     pub rows: Vec<EuclideanMatchDto>,
@@ -1519,6 +1676,14 @@ mod cluster_membership_dto_tests {
             path: "groups/Baca.parquet".into(),
             columns: vec!["as".into(), "fe".into()],
             transformation: None,
+            source: AnalysisSourceDto::Elements,
+            pc_count: None,
+            source_group_column: None,
+            umap_seed: None,
+            metric: ClusterDistanceMetricDto::Euclidean,
+            minkowski_p: 2.0,
+            linkage: ClusterLinkageDto::WardD2,
+            diagnostic_method: ClusterDiagnosticMethodDto::Kmeans,
             max_k: 10,
             seed: 20260914,
         };
@@ -1532,6 +1697,10 @@ mod cluster_membership_dto_tests {
             path: "groups/Baca.parquet".into(),
             revision_id: "rev-1".into(),
             column_names: vec!["as".into(), "fe".into()],
+            source: AnalysisSourceDto::Elements,
+            metric: ClusterDistanceMetricDto::Euclidean,
+            linkage: ClusterLinkageDto::WardD2,
+            diagnostic_method: ClusterDiagnosticMethodDto::Kmeans,
             n_rows: 6,
             wss: vec![40.0, 12.5, 6.0],
             silhouette: vec![Some(0.42), None],
@@ -1549,18 +1718,33 @@ mod cluster_membership_dto_tests {
         )
         .unwrap();
         assert_eq!(fit.seed, None);
+        assert_eq!(fit.source, AnalysisSourceDto::Elements);
+        assert_eq!(fit.pc_count, None);
+        assert_eq!(fit.metric, ClusterDistanceMetricDto::Euclidean);
+        assert_eq!(fit.linkage, ClusterLinkageDto::WardD2);
         let omitted: ClusterFitRequest = serde_json::from_str(
             r#"{"path":"groups/Baca.parquet","columns":["as"],"method":"pam","k":3}"#,
         )
         .unwrap();
         assert_eq!(omitted.iter_max, 100);
         assert_eq!(omitted.nstart, 25);
+        assert_eq!(omitted.source, AnalysisSourceDto::Elements);
 
         let fit_response = ClusterFitResponse {
             path: "groups/Baca.parquet".into(),
             analytical_uuids: vec!["uuid-1".into(), "uuid-2".into(), "uuid-3".into()],
             revision_id: "rev-1".into(),
             method: ClusterMethod::Pam,
+            source: AnalysisSourceDto::Elements,
+            column_names: vec!["as".into()],
+            metric: ClusterDistanceMetricDto::Euclidean,
+            linkage: ClusterLinkageDto::WardD2,
+            plot_coordinates: vec![[0.0, 1.0]; 3],
+            plot_column_names: vec!["as".into(), "fe".into()],
+            plot_groups: Vec::new(),
+            cluster_plot_coordinates: vec![[0.0, 1.0]; 3],
+            cluster_plot_column_names: vec!["as".into(), "fe".into()],
+            plot_warning: None,
             n_rows: 3,
             cluster: Some(vec![1, 2, 2]),
             size: None,
@@ -1584,6 +1768,12 @@ mod cluster_membership_dto_tests {
         let request = MembershipProbabilitiesRequest {
             path: "groups/Baca.parquet".into(),
             columns: vec!["as".into(), "fe".into()],
+            transformation: None,
+            source: AnalysisSourceDto::Elements,
+            pc_count: None,
+            source_group_column: None,
+            umap_seed: None,
+            projection_groups: None,
             group_column: "Site".into(),
             id_column: "anid".into(),
             method: MembershipMethodDto::Hotellings,
@@ -1596,9 +1786,14 @@ mod cluster_membership_dto_tests {
 
         let response = MembershipProbabilitiesResponse {
             path: "groups/Baca.parquet".into(),
+            source: AnalysisSourceDto::Elements,
+            column_names: vec!["as".into(), "fe".into()],
             analytical_uuids: vec!["uuid-1".into()],
             revision_id: "rev-1".into(),
             effective_method: MembershipMethodDto::Mahalanobis,
+            requested_method: MembershipMethodDto::Hotellings,
+            fallback_reason: Some("hotellings_computation_failed".into()),
+            projection_included: vec![true],
             eligible_groups: vec!["Baca".into()],
             ids: vec!["A1".into()],
             groups: vec!["A".into()],
@@ -1617,6 +1812,12 @@ mod cluster_membership_dto_tests {
         let matches = EuclideanMatchesRequest {
             path: "groups/Baca.parquet".into(),
             columns: vec!["as".into(), "fe".into()],
+            transformation: None,
+            source: AnalysisSourceDto::Elements,
+            pc_count: None,
+            source_group_column: None,
+            umap_seed: None,
+            projection_groups: None,
             group_column: "Site".into(),
             id_column: "anid".into(),
             limit: 10,
@@ -1630,6 +1831,8 @@ mod cluster_membership_dto_tests {
 
         let response = EuclideanMatchesResponse {
             path: "groups/Baca.parquet".into(),
+            source: AnalysisSourceDto::Elements,
+            column_names: vec!["as".into(), "fe".into()],
             revision_id: "rev-1".into(),
             rows: vec![EuclideanMatchDto {
                 rowid: "1".into(),

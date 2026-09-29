@@ -524,6 +524,51 @@ fn scalar_at(array: &Float64Array, i: usize) -> Option<f64> {
 
 use arrow::array::ArrayRef;
 
+/// Rejects oversized analytical files from footer dimensions before decoding
+/// row data. This is a resource preflight, not full profile validation.
+/// Callers must still validate the file; external writers must coordinate
+/// with the project store to avoid replacing it between preflight and read.
+pub fn check_group_read_limits(
+    path: &Path,
+    max_rows: u64,
+    max_cells: u64,
+    max_uncompressed_bytes: u64,
+) -> Result<(), ImportError> {
+    let file = File::open(path).map_err(|e| ImportError::Io(e.to_string()))?;
+    if file
+        .metadata()
+        .map_err(|e| ImportError::Io(e.to_string()))?
+        .len()
+        > max_uncompressed_bytes
+    {
+        return Err(ImportError::Limit(
+            "analysis file exceeds the byte limit".into(),
+        ));
+    }
+    let reader = SerializedFileReader::new(file)
+        .map_err(|e| ImportError::Parse(format!("parquet open: {e}")))?;
+    let metadata = reader.metadata();
+    let rows = u64::try_from(metadata.file_metadata().num_rows())
+        .map_err(|_| ImportError::Parse("negative Parquet row count".into()))?;
+    let columns = metadata.file_metadata().schema_descr().num_columns() as u64;
+    let bytes = metadata
+        .row_groups()
+        .iter()
+        .try_fold(0u64, |sum, group| {
+            u64::try_from(group.total_byte_size())
+                .ok()
+                .and_then(|size| sum.checked_add(size))
+        })
+        .ok_or_else(|| ImportError::Limit("invalid or overflowing Parquet decoded size".into()))?;
+    if rows > max_rows || rows.saturating_mul(columns) > max_cells || bytes > max_uncompressed_bytes
+    {
+        return Err(ImportError::Limit(
+            "analysis file exceeds row, cell, or decoded-byte limits".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Reads raw `archaeodash.profile.v1` metadata from a Parquet footer without
 /// decoding row data (metadata-only readiness check). Checks the file-level
 /// KV entries first, then the embedded Arrow schema metadata that arrow-rs
@@ -809,5 +854,42 @@ mod tests {
         assert_eq!(a, b);
         let swapped = vec![vec![Some(2.0), Some(1.0)], vec![None, Some(3.5)]];
         assert_ne!(a, measured_elemental_checksum(&uuids, &cols, &swapped));
+    }
+}
+
+#[cfg(test)]
+mod read_limit_tests {
+    use super::*;
+
+    #[test]
+    fn footer_preflight_rejects_rows_cells_and_bytes_without_requiring_profile() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("limits.parquet");
+        let schema =
+            std::sync::Arc::new(Schema::new(vec![Field::new("x", DataType::Float64, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![std::sync::Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0]))],
+        )
+        .expect("batch");
+        let mut writer =
+            ArrowWriter::try_new(File::create(&path).expect("file"), schema, None).expect("writer");
+        writer.write(&batch).expect("write");
+        writer.close().expect("close");
+        check_group_read_limits(&path, 3, 3, 1024 * 1024).expect("within limits");
+        assert!(matches!(
+            check_group_read_limits(&path, 2, 3, 1024 * 1024),
+            Err(ImportError::Limit(_))
+        ));
+        assert!(matches!(
+            check_group_read_limits(&path, 3, 2, 1024 * 1024),
+            Err(ImportError::Limit(_))
+        ));
+        assert!(matches!(
+            check_group_read_limits(&path, 3, 3, 1),
+            Err(ImportError::Limit(_))
+        ));
+        // Passing a resource preflight cannot make an invalid group file valid.
+        assert!(read_group_file(&path).is_err());
     }
 }

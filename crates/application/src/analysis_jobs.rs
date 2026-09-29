@@ -110,6 +110,7 @@ impl AnalysisJobs {
 pub struct AnalysisJobRegistry {
     owner: Arc<RegistryOwner>,
     sender: SyncSender<WorkItem>,
+    workers: usize,
 }
 
 struct RegistryOwner {
@@ -205,9 +206,10 @@ impl AnalysisJobRegistry {
         let (sender, receiver) = mpsc::sync_channel::<WorkItem>(queue_capacity);
         let receiver = Arc::new(Mutex::new(receiver));
         let records = Arc::new(Mutex::new(HashMap::new()));
+        let mut started_workers = 0;
         for _ in 0..workers {
             let receiver = Arc::clone(&receiver);
-            let _ = thread::Builder::new()
+            match thread::Builder::new()
                 .name("analysis-job-worker".into())
                 .spawn(move || loop {
                     let item = match receiver.lock().ok().and_then(|r| r.recv().ok()) {
@@ -215,11 +217,15 @@ impl AnalysisJobRegistry {
                         None => break,
                     };
                     run_item(item);
-                });
+                }) {
+                Ok(_) => started_workers += 1,
+                Err(_) => break,
+            }
         }
         Self {
             owner: Arc::new(RegistryOwner { records }),
             sender,
+            workers: started_workers,
         }
     }
 
@@ -233,6 +239,9 @@ impl AnalysisJobRegistry {
     where
         F: FnOnce(JobContext) -> Result<AnalysisJobResult, DomainError> + Send + 'static,
     {
+        if self.workers == 0 {
+            return Err(internal("analysis workers are unavailable"));
+        }
         let timeout = timeout.unwrap_or(DEFAULT_TIMEOUT);
         if timeout.is_zero() || timeout > MAX_TIMEOUT {
             return Err(DomainError::validation(
@@ -549,6 +558,9 @@ mod tests {
             plot_column_names: vec![],
             plot_coordinates: vec![],
             plot_groups: vec![],
+            cluster_plot_coordinates: vec![],
+            cluster_plot_column_names: vec![],
+            plot_warning: None,
             metric: Default::default(),
             linkage: Default::default(),
             n_rows: 0,
@@ -669,5 +681,27 @@ mod tests {
             wait_terminal(&jobs, &first.id).state,
             AnalysisJobState::Succeeded
         );
+    }
+
+    #[test]
+    fn dropping_project_registry_cancels_running_work() {
+        let jobs = AnalysisJobRegistry::with_limits(1, 1);
+        let (stopped_tx, stopped_rx) = mpsc::channel();
+        let submitted = jobs
+            .submit(None, move |ctx| loop {
+                if ctx.checkpoint().is_err() {
+                    let _ = stopped_tx.send(());
+                    return Err(DomainError::validation("analysis_cancelled", "cancelled"));
+                }
+                thread::yield_now();
+            })
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(1);
+        while jobs.get(&submitted.id).unwrap().state != AnalysisJobState::Running {
+            assert!(Instant::now() < until);
+            sleep(Duration::from_millis(1));
+        }
+        drop(jobs);
+        stopped_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     }
 }

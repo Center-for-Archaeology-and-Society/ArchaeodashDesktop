@@ -17,14 +17,14 @@
 use std::sync::Arc;
 
 use archaeodash_application::{
-    app_info, ClusterService, ExploreService, ExportService, GroupService, ImportService,
-    OrdinationService, PreferenceService, SourceFileService, TransformService,
+    app_info, AnalysisJobs, ClusterService, ExploreService, ExportService, GroupService,
+    ImportService, OrdinationService, PreferenceService, SourceFileService, TransformService,
 };
 use archaeodash_contracts::{
-    AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
-    BatchTransferUnitsRequest, ClusterDiagnosticsRequest, ClusterDiagnosticsResponse,
-    ClusterFitRequest, ClusterFitResponse, DeleteGroupRequest, DuplicateGroupRequest,
-    ErrorEnvelope, EuclideanMatchesRequest, EuclideanMatchesResponse,
+    AnalysisJobSnapshot, AppInfo, AppliedTransformation, ApplyTransformationRequest,
+    BatchRatioRequest, BatchTransferUnitsRequest, ClusterDiagnosticsRequest,
+    ClusterDiagnosticsResponse, ClusterFitRequest, ClusterFitResponse, DeleteGroupRequest,
+    DuplicateGroupRequest, ErrorEnvelope, EuclideanMatchesRequest, EuclideanMatchesResponse,
     ExploreCompositionalProfileRequest, ExploreCompositionalProfileResponse,
     ExploreCrosstabRequest, ExploreCrosstabResponse, ExploreHistogramRequest,
     ExploreHistogramResponse, ExploreMissingProfileRequest, ExploreMissingProfileResponse,
@@ -33,9 +33,9 @@ use archaeodash_contracts::{
     ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse, LdaRequest, LdaResponse,
     MembershipProbabilitiesRequest, MembershipProbabilitiesResponse, MergeGroupsRequest,
     PatchDescriptiveValuesRequest, PcaRequest, PcaResponse, PutPreferenceRequest,
-    SaveTransformationRequest, SaveTransformationResponse, StagedFile, TransactionResponse,
-    TransferUnitsRequest, TransformationDefinition, TransformationListResponse, UmapRequest,
-    UmapResponse,
+    SaveTransformationRequest, SaveTransformationResponse, StagedFile, SubmitAnalysisJobRequest,
+    TransactionResponse, TransferUnitsRequest, TransformationDefinition,
+    TransformationListResponse, UmapRequest, UmapResponse,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_domain::DomainError;
@@ -47,6 +47,8 @@ use axum::response::IntoResponse;
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 
+pub mod job_events;
+
 /// Shared adapter state: one project-scoped import, group, source-file,
 /// transformation, ordination, cluster, and export service.
 #[derive(Clone)]
@@ -57,9 +59,50 @@ pub struct AppState {
     pub transforms: Arc<TransformService>,
     pub ordination: Arc<OrdinationService>,
     pub clustering: Arc<ClusterService>,
+    pub jobs: Arc<AnalysisJobs>,
     pub explore: Arc<ExploreService>,
     pub exports: Arc<ExportService>,
     pub preferences: Arc<PreferenceService>,
+}
+
+fn missing_job() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorEnvelope {
+            code: "job_not_found".into(),
+            message: "Analysis job not found or expired".into(),
+        }),
+    )
+}
+
+async fn jobs_submit(
+    State(state): State<AppState>,
+    Json(req): Json<SubmitAnalysisJobRequest>,
+) -> Result<(StatusCode, Json<AnalysisJobSnapshot>), (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .jobs
+        .submit(req)
+        .map(|job| (StatusCode::ACCEPTED, Json(job)))
+        .map_err(domain_error_response)
+}
+
+async fn jobs_get(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<AnalysisJobSnapshot>, (StatusCode, Json<ErrorEnvelope>)> {
+    state.jobs.get(&id).map(Json).ok_or_else(missing_job)
+}
+
+async fn jobs_cancel(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<AnalysisJobSnapshot>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .jobs
+        .cancel(&id)
+        .map_err(domain_error_response)?
+        .map(Json)
+        .ok_or_else(missing_job)
 }
 
 async fn healthz() -> Json<AppInfo> {
@@ -646,6 +689,10 @@ async fn preferences_set(
 pub fn root_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/api/v1/jobs", post(jobs_submit))
+        .route("/api/v1/jobs/{id}", get(jobs_get))
+        .route("/api/v1/jobs/{id}/cancel", post(jobs_cancel))
+        .route("/api/v1/jobs/{id}/events", get(job_events::jobs_events))
         .route("/api/v1/imports/preview", post(imports_preview))
         .route("/api/v1/imports/commit", post(imports_commit))
         .route("/api/v1/files", post(files_upload))
@@ -741,6 +788,7 @@ mod tests {
             transforms: Arc::new(TransformService::new(dir.path()).expect("transform service")),
             ordination: Arc::new(OrdinationService::new(dir.path()).expect("ordination service")),
             clustering: Arc::new(ClusterService::new(dir.path()).expect("cluster service")),
+            jobs: Arc::new(AnalysisJobs::new(dir.path())),
             explore: Arc::new(ExploreService::new(dir.path()).expect("explore service")),
             exports: Arc::new(ExportService::new(dir.path()).expect("export service")),
             preferences: Arc::new(PreferenceService::new(dir.path()).expect("preference service")),
@@ -950,6 +998,15 @@ mod tests {
                         transformation: None,
                         max_k: 3,
                         seed: 42,
+
+                        source: Default::default(),
+                        pc_count: None,
+                        source_group_column: None,
+                        umap_seed: None,
+                        metric: Default::default(),
+                        minkowski_p: 2.0,
+                        linkage: Default::default(),
+                        diagnostic_method: Default::default(),
                     }))
                     .unwrap(),
             )
@@ -969,6 +1026,7 @@ mod tests {
                 axum::http::Request::post("/api/v1/cluster/fit")
                     .header("content-type", "application/json")
                     .body(json_body(&ClusterFitRequest {
+                        plot_group_column: None,
                         path: imported.groups[0].path.clone(),
                         columns: vec!["as".into(), "fe".into()],
                         transformation: None,
@@ -977,6 +1035,14 @@ mod tests {
                         iter_max: 50,
                         nstart: 5,
                         seed: Some(42),
+
+                        source: Default::default(),
+                        pc_count: None,
+                        source_group_column: None,
+                        umap_seed: None,
+                        metric: Default::default(),
+                        minkowski_p: 2.0,
+                        linkage: Default::default(),
                     }))
                     .unwrap(),
             )
@@ -1016,6 +1082,7 @@ mod tests {
                 axum::http::Request::post("/api/v1/cluster/fit")
                     .header("content-type", "application/json")
                     .body(json_body(&ClusterFitRequest {
+                        plot_group_column: None,
                         path: all_path.clone(),
                         columns: vec!["as".into(), "fe".into()],
                         transformation: None,
@@ -1024,6 +1091,14 @@ mod tests {
                         iter_max: 50,
                         nstart: 5,
                         seed: Some(42),
+
+                        source: Default::default(),
+                        pc_count: None,
+                        source_group_column: None,
+                        umap_seed: None,
+                        metric: Default::default(),
+                        minkowski_p: 2.0,
+                        linkage: Default::default(),
                     }))
                     .unwrap(),
             )
@@ -1069,6 +1144,13 @@ mod tests {
                         group_column: "Site".into(),
                         id_column: "anid".into(),
                         method: MembershipMethodDto::Mahalanobis,
+
+                        source: Default::default(),
+                        pc_count: None,
+                        source_group_column: None,
+                        umap_seed: None,
+                        transformation: None,
+                        projection_groups: None,
                     }))
                     .unwrap(),
             )
@@ -1094,6 +1176,13 @@ mod tests {
                         id_column: "anid".into(),
                         limit: 2,
                         within_group: false,
+
+                        source: Default::default(),
+                        pc_count: None,
+                        source_group_column: None,
+                        umap_seed: None,
+                        transformation: None,
+                        projection_groups: None,
                     }))
                     .unwrap(),
             )
@@ -1310,6 +1399,13 @@ mod tests {
                         id_column: "anid".into(),
                         limit: 0,
                         within_group: false,
+
+                        source: Default::default(),
+                        pc_count: None,
+                        source_group_column: None,
+                        umap_seed: None,
+                        transformation: None,
+                        projection_groups: None,
                     }))
                     .unwrap(),
             )
@@ -2809,5 +2905,9 @@ mod tests {
             response.status(),
             axum::http::StatusCode::UNPROCESSABLE_ENTITY
         );
+    }
+
+    mod analysis_jobs_tests {
+        include!("analysis_jobs_tests.rs");
     }
 }

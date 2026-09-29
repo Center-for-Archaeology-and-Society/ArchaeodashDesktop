@@ -10,11 +10,12 @@ use std::path::PathBuf;
 use std::path::{Component, Path};
 
 use archaeodash_analysis::{
-    calc_e_distance, dense_euclidean, diana, get_eligible, group_mem_probs_tracked, hclust_ward_d2,
-    kmeans, pam, silhouette_widths, EuclideanMatch, MembershipMethod,
+    get_eligible, lda, pca, CancellationToken, ColumnMatrix, DistanceMetric, EuclideanMatch,
+    LinkageMethod, MembershipMethod,
 };
 use archaeodash_contracts::{
-    ClusterDiagnosticsRequest, ClusterDiagnosticsResponse, ClusterFitRequest, ClusterFitResponse,
+    AnalysisSourceDto, ClusterDiagnosticsRequest, ClusterDiagnosticsResponse,
+    ClusterDistanceMetricDto, ClusterFitRequest, ClusterFitResponse, ClusterLinkageDto,
     ClusterMethod, EuclideanMatchDto, EuclideanMatchesRequest, EuclideanMatchesResponse,
     MembershipMethodDto, MembershipProbabilitiesRequest, MembershipProbabilitiesResponse,
     TransformationDefinition,
@@ -31,6 +32,7 @@ const DEFAULT_KMEANS_SEED: i64 = 20260914;
 /// alone uses 8 bytes per cell, with several temporary matrices in PAM).
 const MAX_DISTANCE_CELLS: usize = 1_000_000;
 const MAX_INPUT_CELLS: usize = 4_000_000;
+const MAX_ORDINATION_FEATURES: usize = 512;
 
 fn checked_seed(seed: i64, context: &str) -> Result<i32, DomainError> {
     i32::try_from(seed).map_err(|_| {
@@ -95,7 +97,20 @@ impl ClusterService {
     }
 
     fn read_group(&self, rel: &str) -> Result<GroupFileData, DomainError> {
-        read_group_file(&self.group_path(rel)?).map_err(import_err)
+        let path = self.group_path(rel)?;
+        archaeodash_data_io::check_group_read_limits(
+            &path,
+            1_000_000,
+            MAX_INPUT_CELLS as u64,
+            128 * 1024 * 1024,
+        )
+        .map_err(|error| match error {
+            archaeodash_data_io::ImportError::Limit(message) => {
+                validation("cluster_resource_limit", message)
+            }
+            other => import_err(other),
+        })?;
+        read_group_file(&path).map_err(import_err)
     }
 
     fn validate_dimensions(
@@ -147,6 +162,279 @@ impl ClusterService {
                 }
                 Ok(archaeodash_analysis::ColumnMatrix { names, cols })
             }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn source_matrix(
+        data: &GroupFileData,
+        columns: &[String],
+        transformation: Option<&TransformationDefinition>,
+        source: AnalysisSourceDto,
+        pc_count: Option<u32>,
+        source_group_column: Option<&str>,
+        umap_seed: Option<u64>,
+        context: &str,
+        cancel: &CancellationToken,
+    ) -> Result<ColumnMatrix, DomainError> {
+        cancel.check()?;
+        if pc_count == Some(0) {
+            return Err(validation(
+                "cluster_pc_count",
+                "component count must be at least 1",
+            ));
+        }
+        let estimated_features = transformation.map_or(columns.len(), |definition| {
+            definition
+                .elemental_columns
+                .len()
+                .saturating_add(definition.ratios.len().saturating_mul(3))
+                .max(columns.len())
+        });
+        let cells = data.rows.len().saturating_mul(estimated_features);
+        if cells > MAX_INPUT_CELLS {
+            return Err(validation(
+                "cluster_resource_limit",
+                format!("{context}: analysis input has {cells} cells; limit is {MAX_INPUT_CELLS}"),
+            ));
+        }
+        if source != AnalysisSourceDto::Elements && estimated_features > MAX_ORDINATION_FEATURES {
+            return Err(validation("cluster_source_resource_limit", format!(
+                "{context}: ordination input has {estimated_features} features; limit is {MAX_ORDINATION_FEATURES}"
+            )));
+        }
+        if source == AnalysisSourceDto::Umap
+            && data.rows.len().saturating_mul(data.rows.len()) > MAX_DISTANCE_CELLS
+        {
+            return Err(validation(
+                "cluster_resource_limit",
+                format!(
+                "{context}: UMAP input exceeds the pairwise limit of {MAX_DISTANCE_CELLS} cells"
+            ),
+            ));
+        }
+        match (source, pc_count) {
+            (AnalysisSourceDto::Pca, Some(count))
+                if count as usize > data.rows.len().min(estimated_features) =>
+            {
+                return Err(validation("cluster_pc_count", format!(
+                    "{context}: PCA component count exceeds the maximum supported input rank {}", data.rows.len().min(estimated_features)
+                )));
+            }
+            (AnalysisSourceDto::Umap, Some(count)) if count > 2 => {
+                return Err(validation(
+                    "cluster_pc_count",
+                    format!("{context}: UMAP provides at most 2 dimensions, got {count}"),
+                ));
+            }
+            _ => {}
+        }
+        let base = Self::input_matrix(data, columns, transformation, context)?;
+        let (names, values) = match source {
+            AnalysisSourceDto::Elements => return Ok(base),
+            AnalysisSourceDto::Pca => {
+                let fitted = pca(&base, false)?;
+                cancel.check()?;
+                ("PC".to_string(), fitted.scores)
+            }
+            AnalysisSourceDto::Umap => {
+                let fitted = archaeodash_analysis::umap_cancellable(
+                    &base,
+                    umap_seed.unwrap_or(20260914),
+                    cancel,
+                )?;
+                ("V".to_string(), fitted.layout)
+            }
+            AnalysisSourceDto::Lda => {
+                let group_column = source_group_column.ok_or_else(|| {
+                    validation(
+                        "cluster_source_group_required",
+                        "LDA source requires source_group_column",
+                    )
+                })?;
+                let groups = Self::group_labels(data, group_column, context)?;
+                if let Some(count) = pc_count {
+                    let levels: std::collections::HashSet<&str> =
+                        groups.iter().map(String::as_str).collect();
+                    let max_components = base.cols.len().min(levels.len().saturating_sub(1));
+                    if count as usize > max_components {
+                        return Err(validation(
+                            "cluster_pc_count",
+                            format!("{context}: LDA component count exceeds available rank {max_components}"),
+                        ));
+                    }
+                }
+                let fitted = lda(&base, &groups, 3)?;
+                cancel.check()?;
+                ("LD".to_string(), fitted.scores)
+            }
+        };
+        let available = values.first().map_or(0, Vec::len);
+        let count = pc_count.map(|n| n as usize).unwrap_or(available);
+        if count == 0 || count > available {
+            return Err(validation(
+                "cluster_pc_count",
+                format!("{context}: component count must be in 1..={available}, got {count}"),
+            ));
+        }
+        Ok(ColumnMatrix {
+            names: (1..=count).map(|i| format!("{names}{i}")).collect(),
+            cols: (0..count)
+                .map(|j| values.iter().map(|row| row[j]).collect())
+                .collect(),
+        })
+    }
+
+    fn distance_metric(
+        metric: ClusterDistanceMetricDto,
+        p: f64,
+    ) -> Result<DistanceMetric, DomainError> {
+        match metric {
+            ClusterDistanceMetricDto::Euclidean => Ok(DistanceMetric::Euclidean),
+            ClusterDistanceMetricDto::Manhattan => Ok(DistanceMetric::Manhattan),
+            ClusterDistanceMetricDto::Maximum => Ok(DistanceMetric::Maximum),
+            ClusterDistanceMetricDto::Minkowski if p.is_finite() && p >= 1.0 => {
+                Ok(DistanceMetric::Minkowski { p })
+            }
+            ClusterDistanceMetricDto::Minkowski => Err(validation(
+                "cluster_metric_parameter",
+                "Minkowski p must be finite and >= 1",
+            )),
+        }
+    }
+
+    fn linkage_method(linkage: ClusterLinkageDto) -> LinkageMethod {
+        match linkage {
+            ClusterLinkageDto::Average => LinkageMethod::Average,
+            ClusterLinkageDto::Complete => LinkageMethod::Complete,
+            ClusterLinkageDto::WardD => LinkageMethod::WardD,
+            ClusterLinkageDto::WardD2 => LinkageMethod::WardD2,
+        }
+    }
+
+    fn metric_distances(
+        rows: &[Vec<f64>],
+        metric: DistanceMetric,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<Vec<f64>>, DomainError> {
+        let n = rows.len();
+        let mut distances = vec![vec![0.0; n]; n];
+        for i in 0..n {
+            cancel.check()?;
+            for j in (i + 1)..n {
+                let d = match metric {
+                    DistanceMetric::Euclidean => rows[i]
+                        .iter()
+                        .zip(&rows[j])
+                        .map(|(a, b)| (a - b) * (a - b))
+                        .sum::<f64>()
+                        .sqrt(),
+                    DistanceMetric::Manhattan => rows[i]
+                        .iter()
+                        .zip(&rows[j])
+                        .map(|(a, b)| (a - b).abs())
+                        .sum(),
+                    DistanceMetric::Maximum => rows[i]
+                        .iter()
+                        .zip(&rows[j])
+                        .map(|(a, b)| (a - b).abs())
+                        .fold(0.0, f64::max),
+                    DistanceMetric::Minkowski { p } => rows[i]
+                        .iter()
+                        .zip(&rows[j])
+                        .map(|(a, b)| (a - b).abs().powf(p))
+                        .sum::<f64>()
+                        .powf(1.0 / p),
+                };
+                distances[i][j] = d;
+                distances[j][i] = d;
+            }
+        }
+        Ok(distances)
+    }
+
+    /// factoextra `.get_withinSS`: sum each cluster's lower-triangle squared
+    /// pairwise distances and divide by cluster size. For Euclidean data this
+    /// equals the centroid WSS and also matches `fviz_nbclust(..., pam)`.
+    fn within_pair_ss(dist: &[Vec<f64>], labels: &[i32], k: usize) -> f64 {
+        (1..=k)
+            .map(|cluster| {
+                let members: Vec<usize> = labels
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, &label)| (label as usize == cluster).then_some(i))
+                    .collect();
+                if members.is_empty() {
+                    return 0.0;
+                }
+                let mut pair_sum = 0.0;
+                for i in 0..members.len() {
+                    for j in 0..i {
+                        pair_sum += dist[members[i]][members[j]].powi(2);
+                    }
+                }
+                pair_sum / members.len() as f64
+            })
+            .sum()
+    }
+
+    fn cluster_plot(matrix: &ColumnMatrix) -> (Vec<[f64; 2]>, Vec<String>, Option<String>) {
+        let n = matrix.n_rows();
+        if matrix.cols.len() > 2 && matrix.cols.len() <= MAX_ORDINATION_FEATURES {
+            if let Ok(result) = pca(matrix, true) {
+                if result.scores.first().is_some_and(|row| row.len() >= 2) {
+                    return (
+                        result.scores.iter().map(|row| [row[0], row[1]]).collect(),
+                        vec!["PC1".into(), "PC2".into()],
+                        None,
+                    );
+                }
+            }
+        }
+        let raw: Vec<[f64; 2]> = (0..n)
+            .map(|i| {
+                [
+                    matrix.cols.first().map_or(0.0, |column| column[i]),
+                    matrix.cols.get(1).map_or(0.0, |column| column[i]),
+                ]
+            })
+            .collect();
+        if matrix.cols.len() > MAX_ORDINATION_FEATURES {
+            return (
+                raw,
+                matrix.names.iter().take(2).cloned().collect(),
+                Some(
+                    "Cluster plot PCA skipped because the input exceeds the 512-feature plot limit"
+                        .into(),
+                ),
+            );
+        }
+        if n < 2 {
+            return (raw, matrix.names.iter().take(2).cloned().collect(), Some("Cluster plot used raw axes because at least two rows are required for standardization".into()));
+        }
+        let standardized: Option<Vec<[f64; 2]>> = (0..matrix.cols.len().min(2))
+            .map(|j| {
+                let col = &matrix.cols[j];
+                let mean = col.iter().sum::<f64>() / n as f64;
+                let sd =
+                    (col.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1) as f64).sqrt();
+                (sd.is_finite() && sd > 0.0)
+                    .then(|| col.iter().map(|v| (v - mean) / sd).collect::<Vec<_>>())
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(|cols| {
+                (0..n)
+                    .map(|i| {
+                        [
+                            cols.first().map_or(0.0, |col| col[i]),
+                            cols.get(1).map_or(0.0, |col| col[i]),
+                        ]
+                    })
+                    .collect()
+            });
+        match standardized {
+            Some(coords) => (coords, matrix.names.iter().take(2).cloned().collect(), None),
+            None => (raw, matrix.names.iter().take(2).cloned().collect(), Some("Cluster plot used raw axes because one or more plot dimensions have zero variance".into())),
         }
     }
 
@@ -220,11 +508,12 @@ impl ClusterService {
             return Ok(data
                 .rows
                 .iter()
-                .map(|r| {
+                .enumerate()
+                .map(|(index, r)| {
                     r.legacy_rowid
                         .clone()
                         .filter(|v| !v.is_empty())
-                        .unwrap_or_else(|| r.uuid.to_string())
+                        .unwrap_or_else(|| (index + 1).to_string())
                 })
                 .collect());
         }
@@ -278,6 +567,15 @@ impl ClusterService {
         &self,
         req: &ClusterDiagnosticsRequest,
     ) -> Result<ClusterDiagnosticsResponse, DomainError> {
+        self.cluster_diagnostics_cancellable(req, &CancellationToken::default())
+    }
+
+    pub fn cluster_diagnostics_cancellable(
+        &self,
+        req: &ClusterDiagnosticsRequest,
+        cancel: &CancellationToken,
+    ) -> Result<ClusterDiagnosticsResponse, DomainError> {
+        cancel.check()?;
         if req.columns.is_empty() {
             return Err(validation(
                 "cluster_empty",
@@ -286,8 +584,17 @@ impl ClusterService {
         }
         let data = self.read_group(&req.path)?;
         Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, true)?;
-        let matrix =
-            Self::input_matrix(&data, &req.columns, req.transformation.as_ref(), &req.path)?;
+        let matrix = Self::source_matrix(
+            &data,
+            &req.columns,
+            req.transformation.as_ref(),
+            req.source,
+            req.pc_count,
+            req.source_group_column.as_deref(),
+            req.umap_seed,
+            &req.path,
+            cancel,
+        )?;
         Self::require_complete(&matrix, &req.path)?;
         let n = matrix.n_rows();
         Self::validate_dimensions(n, matrix.cols.len(), &req.path, true)?;
@@ -312,21 +619,53 @@ impl ClusterService {
             ));
         }
         let rows = Self::rows(&matrix);
-        let dist = dense_euclidean(&rows, n, rows.first().map_or(0, Vec::len));
+        let metric = Self::distance_metric(req.metric, req.minkowski_p)?;
+        let dist = Self::metric_distances(&rows, metric, cancel)?;
         let mut wss = Vec::with_capacity(max_k);
         let mut silhouette = Vec::with_capacity(max_k.saturating_sub(1));
         for k in 1..=max_k {
-            let fit = kmeans(&matrix, k, 100, 25, seed.saturating_add(k as i32))?;
-            wss.push(fit.tot_withinss);
+            cancel.check()?;
+            let (labels, total) = match req.diagnostic_method {
+                archaeodash_contracts::ClusterDiagnosticMethodDto::Kmeans => {
+                    if metric != DistanceMetric::Euclidean {
+                        return Err(validation(
+                            "cluster_metric_method",
+                            "k-means diagnostics use Euclidean distance",
+                        ));
+                    }
+                    let fit = archaeodash_analysis::kmeans_cancellable(
+                        &matrix,
+                        k,
+                        100,
+                        25,
+                        seed.saturating_add(k as i32),
+                        cancel,
+                    )?;
+                    (fit.cluster, fit.tot_withinss)
+                }
+                archaeodash_contracts::ClusterDiagnosticMethodDto::Pam => {
+                    let fit = archaeodash_analysis::pam_with_metric_cancellable(
+                        &matrix, k, metric, cancel,
+                    )?;
+                    let total = Self::within_pair_ss(&dist, &fit.clustering, k);
+                    (fit.clustering, total)
+                }
+            };
+            wss.push(total);
             if k >= 2 {
-                let mean = diagnostics_mean(&dist, &fit.cluster, k);
+                let mean =
+                    archaeodash_analysis::silhouette_mean_cancellable(&dist, &labels, k, cancel)?;
                 silhouette.push(if mean.is_nan() { None } else { Some(mean) });
             }
         }
         Ok(ClusterDiagnosticsResponse {
             path: req.path.clone(),
             revision_id: data.profile.revision_id.clone(),
-            column_names: req.columns.clone(),
+            column_names: matrix.names.clone(),
+            source: req.source,
+            metric: req.metric,
+            linkage: req.linkage,
+            diagnostic_method: req.diagnostic_method,
             n_rows: n as u64,
             wss,
             silhouette,
@@ -337,6 +676,24 @@ impl ClusterService {
     /// over one group file, with per-row silhouette widths for the
     /// partitioning families.
     pub fn cluster_fit(&self, req: &ClusterFitRequest) -> Result<ClusterFitResponse, DomainError> {
+        self.cluster_fit_cancellable(req, &CancellationToken::default())
+    }
+
+    pub fn cluster_fit_cancellable(
+        &self,
+        req: &ClusterFitRequest,
+        cancel: &CancellationToken,
+    ) -> Result<ClusterFitResponse, DomainError> {
+        cancel.check()?;
+        if req.method == ClusterMethod::HclustWardD2
+            && (req.metric != ClusterDistanceMetricDto::Euclidean
+                || req.linkage != ClusterLinkageDto::WardD2)
+        {
+            return Err(validation(
+                "cluster_metric_method",
+                "hclust_ward_d2 requires Euclidean distance and Ward.D2 linkage",
+            ));
+        }
         if req.columns.is_empty() {
             return Err(validation(
                 "cluster_empty",
@@ -345,17 +702,52 @@ impl ClusterService {
         }
         let data = self.read_group(&req.path)?;
         Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, true)?;
-        let matrix =
-            Self::input_matrix(&data, &req.columns, req.transformation.as_ref(), &req.path)?;
+        let matrix = Self::source_matrix(
+            &data,
+            &req.columns,
+            req.transformation.as_ref(),
+            req.source,
+            req.pc_count,
+            req.source_group_column.as_deref(),
+            req.umap_seed,
+            &req.path,
+            cancel,
+        )?;
         Self::require_complete(&matrix, &req.path)?;
         let n = matrix.n_rows();
         Self::validate_dimensions(n, matrix.cols.len(), &req.path, true)?;
 
+        let plot_coordinates: Vec<[f64; 2]> = (0..n)
+            .map(|i| {
+                [
+                    matrix.cols.first().map_or(0.0, |column| column[i]),
+                    matrix.cols.get(1).map_or(0.0, |column| column[i]),
+                ]
+            })
+            .collect();
+        let plot_column_names = matrix.names.iter().take(2).cloned().collect();
+        let (cluster_plot_coordinates, cluster_plot_column_names, plot_warning) = match req.method {
+            ClusterMethod::Kmeans | ClusterMethod::Pam => Self::cluster_plot(&matrix),
+            _ => (Vec::new(), Vec::new(), None),
+        };
         let mut response = ClusterFitResponse {
             path: req.path.clone(),
             analytical_uuids: data.rows.iter().map(|r| r.uuid.to_string()).collect(),
             revision_id: data.profile.revision_id.clone(),
             method: req.method,
+            source: req.source,
+            column_names: matrix.names.clone(),
+            metric: req.metric,
+            linkage: req.linkage,
+            plot_coordinates,
+            plot_column_names,
+            plot_groups: match req.plot_group_column.as_deref() {
+                Some(column) => Self::group_labels(&data, column, &req.path)?,
+                None => Vec::new(),
+            },
+            cluster_plot_coordinates,
+            cluster_plot_column_names,
+            plot_warning,
             n_rows: n as u64,
             cluster: None,
             size: None,
@@ -369,6 +761,12 @@ impl ClusterService {
         };
         match req.method {
             ClusterMethod::Kmeans => {
+                if req.metric != ClusterDistanceMetricDto::Euclidean {
+                    return Err(validation(
+                        "cluster_metric_method",
+                        "k-means uses Euclidean distance",
+                    ));
+                }
                 let k = Self::required_k(req.k, "kmeans")?;
                 let seed = checked_seed(req.seed.unwrap_or(DEFAULT_KMEANS_SEED), &req.path)?;
                 if req.iter_max == 0 || req.iter_max > 1_000 || req.nstart == 0 || req.nstart > 100
@@ -378,28 +776,67 @@ impl ClusterService {
                         "iter_max must be 1..=1000 and nstart must be 1..=100",
                     ));
                 }
-                let fit = kmeans(&matrix, k, req.iter_max as usize, req.nstart as usize, seed)?;
+                let fit = archaeodash_analysis::kmeans_cancellable(
+                    &matrix,
+                    k,
+                    req.iter_max as usize,
+                    req.nstart as usize,
+                    seed,
+                    cancel,
+                )?;
                 response.cluster = Some(fit.cluster.iter().map(|&c| c as u32).collect());
                 response.size = Some(fit.size.iter().map(|&s| s as u32).collect());
                 response.tot_withinss = Some(fit.tot_withinss);
                 response.centers = Some(fit.centers);
-                response.silhouette = Some(Self::row_silhouettes(&matrix, &fit.cluster, k));
+                response.silhouette = Some(Self::row_silhouettes(
+                    &matrix,
+                    &fit.cluster,
+                    k,
+                    DistanceMetric::Euclidean,
+                    cancel,
+                )?);
             }
             ClusterMethod::Pam => {
                 let k = Self::required_k(req.k, "pam")?;
-                let fit = pam(&matrix, k)?;
+                let fit = archaeodash_analysis::pam_with_metric_cancellable(
+                    &matrix,
+                    k,
+                    Self::distance_metric(req.metric, req.minkowski_p)?,
+                    cancel,
+                )?;
                 response.cluster = Some(fit.clustering.iter().map(|&c| c as u32).collect());
                 response.medoids = Some(fit.medoids.iter().map(|&m| m as u32).collect());
-                response.silhouette = Some(Self::row_silhouettes(&matrix, &fit.clustering, k));
+                response.silhouette = Some(Self::row_silhouettes(
+                    &matrix,
+                    &fit.clustering,
+                    k,
+                    Self::distance_metric(req.metric, req.minkowski_p)?,
+                    cancel,
+                )?);
             }
             ClusterMethod::HclustWardD2 => {
-                let fit = hclust_ward_d2(&matrix)?;
+                let fit = archaeodash_analysis::hclust_ward_d2_cancellable(&matrix, cancel)?;
+                response.merge = Some(fit.merge);
+                response.height = Some(fit.height);
+                response.order = Some(fit.order.iter().map(|&o| o as u32).collect());
+            }
+            ClusterMethod::Hclust => {
+                let fit = archaeodash_analysis::hclust_cancellable(
+                    &matrix,
+                    Self::distance_metric(req.metric, req.minkowski_p)?,
+                    Self::linkage_method(req.linkage),
+                    cancel,
+                )?;
                 response.merge = Some(fit.merge);
                 response.height = Some(fit.height);
                 response.order = Some(fit.order.iter().map(|&o| o as u32).collect());
             }
             ClusterMethod::Diana => {
-                let fit = diana(&matrix)?;
+                let fit = archaeodash_analysis::diana_with_metric_cancellable(
+                    &matrix,
+                    Self::distance_metric(req.metric, req.minkowski_p)?,
+                    cancel,
+                )?;
                 response.merge = Some(fit.merge);
                 response.height = Some(fit.height);
                 response.order = Some(fit.order.iter().map(|&o| o as u32).collect());
@@ -424,14 +861,17 @@ impl ClusterService {
         matrix: &archaeodash_analysis::ColumnMatrix,
         clustering: &[i32],
         k: usize,
-    ) -> Vec<Option<f64>> {
-        let n = matrix.n_rows();
+        metric: DistanceMetric,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<Option<f64>>, DomainError> {
         let rows = Self::rows(matrix);
-        let dist = dense_euclidean(&rows, n, matrix.cols.len());
-        silhouette_widths(&dist, clustering, k)
-            .into_iter()
-            .map(|w| if w.is_nan() { None } else { Some(w) })
-            .collect()
+        let dist = Self::metric_distances(&rows, metric, cancel)?;
+        Ok(
+            archaeodash_analysis::silhouette_widths_cancellable(&dist, clustering, k, cancel)?
+                .into_iter()
+                .map(|w| if w.is_nan() { None } else { Some(w) })
+                .collect(),
+        )
     }
 
     /// `group.mem.probs` over one group file: eligibility via `getEligible`
@@ -442,12 +882,49 @@ impl ClusterService {
         &self,
         req: &MembershipProbabilitiesRequest,
     ) -> Result<MembershipProbabilitiesResponse, DomainError> {
+        self.membership_probabilities_cancellable(req, &CancellationToken::default())
+    }
+
+    pub fn membership_probabilities_cancellable(
+        &self,
+        req: &MembershipProbabilitiesRequest,
+        cancel: &CancellationToken,
+    ) -> Result<MembershipProbabilitiesResponse, DomainError> {
+        cancel.check()?;
         let data = self.read_group(&req.path)?;
         Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, false)?;
-        let matrix = Self::input_matrix(&data, &req.columns, None, &req.path)?;
+        let matrix = Self::source_matrix(
+            &data,
+            &req.columns,
+            req.transformation.as_ref(),
+            req.source,
+            req.pc_count,
+            req.source_group_column.as_deref(),
+            req.umap_seed,
+            &req.path,
+            cancel,
+        )?;
+        if matrix.cols.len() > MAX_ORDINATION_FEATURES {
+            return Err(validation(
+                "cluster_source_resource_limit",
+                format!(
+                    "{}: membership supports at most {MAX_ORDINATION_FEATURES} analysis columns",
+                    req.path
+                ),
+            ));
+        }
         let ids = Self::id_values(&data, &req.id_column, &req.path)?;
         let groups = Self::group_labels(&data, &req.group_column, &req.path)?;
-        let eligible = get_eligible(&groups, matrix.cols.len());
+        let mut eligible = get_eligible(&groups, matrix.cols.len());
+        if let Some(selected) = &req.projection_groups {
+            if selected.iter().any(|group| !groups.contains(group)) {
+                return Err(validation(
+                    "membership_projection_group",
+                    "projection_groups contains an unknown group",
+                ));
+            }
+            eligible.retain(|group| selected.contains(group));
+        }
         if data.rows.len().saturating_mul(eligible.len()) > MAX_DISTANCE_CELLS {
             return Err(validation(
                 "cluster_resource_limit",
@@ -458,24 +935,39 @@ impl ClusterService {
             MembershipMethodDto::Hotellings => MembershipMethod::Hotellings,
             MembershipMethodDto::Mahalanobis => MembershipMethod::Mahalanobis,
         };
-        let (table, effective) = group_mem_probs_tracked(
+        let (table, effective) = archaeodash_analysis::group_mem_probs_tracked_cancellable(
             &ids,
             &groups,
             &req.group_column,
             &matrix,
-            &req.columns,
+            &matrix.names,
             &eligible,
             method,
+            cancel,
         )?;
         let non_finite_null = |v: f64| if v.is_finite() { Some(v) } else { None };
         Ok(MembershipProbabilitiesResponse {
             path: req.path.clone(),
+            source: req.source,
+            column_names: matrix.names.clone(),
             analytical_uuids: data.rows.iter().map(|r| r.uuid.to_string()).collect(),
             revision_id: data.profile.revision_id.clone(),
             effective_method: match effective {
                 MembershipMethod::Hotellings => MembershipMethodDto::Hotellings,
                 MembershipMethod::Mahalanobis => MembershipMethodDto::Mahalanobis,
             },
+            requested_method: req.method,
+            fallback_reason: (req.method == MembershipMethodDto::Hotellings
+                && effective == MembershipMethod::Mahalanobis)
+                .then(|| "hotellings_computation_failed".to_string()),
+            projection_included: groups
+                .iter()
+                .map(|group| {
+                    req.projection_groups
+                        .as_ref()
+                        .is_none_or(|selected| selected.contains(group))
+                })
+                .collect(),
             eligible_groups: table.eligible,
             ids: table.rows.iter().map(|r| r.id.clone()).collect(),
             groups: table.rows.iter().map(|r| r.group_val.clone()).collect(),
@@ -507,6 +999,15 @@ impl ClusterService {
         &self,
         req: &EuclideanMatchesRequest,
     ) -> Result<EuclideanMatchesResponse, DomainError> {
+        self.euclidean_matches_cancellable(req, &CancellationToken::default())
+    }
+
+    pub fn euclidean_matches_cancellable(
+        &self,
+        req: &EuclideanMatchesRequest,
+        cancel: &CancellationToken,
+    ) -> Result<EuclideanMatchesResponse, DomainError> {
+        cancel.check()?;
         if !(1..=100).contains(&req.limit) {
             return Err(validation(
                 "euclidean_limit_range",
@@ -514,8 +1015,27 @@ impl ClusterService {
             ));
         }
         let data = self.read_group(&req.path)?;
-        Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, true)?;
-        let matrix = Self::input_matrix(&data, &req.columns, None, &req.path)?;
+        Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, false)?;
+        if data.rows.len().saturating_mul(data.rows.len()) > MAX_DISTANCE_CELLS {
+            return Err(validation(
+                "cluster_resource_limit",
+                format!(
+                    "{}: Euclidean matching exceeds the pair-comparison quota",
+                    req.path
+                ),
+            ));
+        }
+        let matrix = Self::source_matrix(
+            &data,
+            &req.columns,
+            req.transformation.as_ref(),
+            req.source,
+            req.pc_count,
+            req.source_group_column.as_deref(),
+            req.umap_seed,
+            &req.path,
+            cancel,
+        )?;
         // Hidden analytical UUIDs uniquely identify observations even when
         // user-visible legacy rowid values are duplicated. Use them for the
         // distance helper's self-exclusion/grouping, then restore output keys.
@@ -529,11 +1049,19 @@ impl ClusterService {
             .collect();
         let ids = Self::id_values(&data, &req.id_column, &req.path)?;
         let groups = Self::group_labels(&data, &req.group_column, &req.path)?;
-        let mut projection: Vec<String> =
-            groups.iter().filter(|g| !g.is_empty()).cloned().collect();
+        let mut projection: Vec<String> = match &req.projection_groups {
+            Some(selected) => selected.iter().filter(|g| !g.is_empty()).cloned().collect(),
+            None => groups.iter().filter(|g| !g.is_empty()).cloned().collect(),
+        };
         projection.sort();
         projection.dedup();
-        let matches: Vec<EuclideanMatch> = calc_e_distance(
+        if projection.iter().any(|group| !groups.contains(group)) {
+            return Err(validation(
+                "euclidean_projection_group",
+                "projection_groups contains an unknown group",
+            ));
+        }
+        let matches: Vec<EuclideanMatch> = archaeodash_analysis::calc_e_distance_cancellable(
             &internal_rowids,
             &ids,
             &groups,
@@ -541,9 +1069,12 @@ impl ClusterService {
             &projection,
             req.limit as usize,
             req.within_group,
+            cancel,
         )?;
         Ok(EuclideanMatchesResponse {
             path: req.path.clone(),
+            source: req.source,
+            column_names: matrix.names.clone(),
             revision_id: data.profile.revision_id.clone(),
             rows: matches
                 .into_iter()
@@ -563,17 +1094,6 @@ impl ClusterService {
                 .collect(),
         })
     }
-}
-
-/// Mean silhouette width (the diagnostics-series aggregate over
-/// [`silhouette_widths`], NaN preserved for trivial `k`).
-fn diagnostics_mean(dist: &[Vec<f64>], clustering: &[i32], k: usize) -> f64 {
-    let widths = silhouette_widths(dist, clustering, k);
-    let total: f64 = widths
-        .iter()
-        .map(|w| if w.is_nan() { 0.0 } else { *w })
-        .sum();
-    total / clustering.len() as f64
 }
 
 #[cfg(test)]
@@ -644,6 +1164,14 @@ mod tests {
         let before = std::fs::read(dir.join(&path)).expect("read group");
         let response = service
             .cluster_diagnostics(&ClusterDiagnosticsRequest {
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                metric: ClusterDistanceMetricDto::Euclidean,
+                minkowski_p: 2.0,
+                linkage: ClusterLinkageDto::WardD2,
+                diagnostic_method: archaeodash_contracts::ClusterDiagnosticMethodDto::Kmeans,
                 path: path.clone(),
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
@@ -664,6 +1192,14 @@ mod tests {
         // Deterministic in the seed.
         let again = service
             .cluster_diagnostics(&ClusterDiagnosticsRequest {
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                metric: ClusterDistanceMetricDto::Euclidean,
+                minkowski_p: 2.0,
+                linkage: ClusterLinkageDto::WardD2,
+                diagnostic_method: archaeodash_contracts::ClusterDiagnosticMethodDto::Kmeans,
                 path: path.clone(),
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
@@ -678,6 +1214,14 @@ mod tests {
         // max_k above the n - 1 and 20 ceilings clamps instead of failing.
         let clamped = service
             .cluster_diagnostics(&ClusterDiagnosticsRequest {
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                metric: ClusterDistanceMetricDto::Euclidean,
+                minkowski_p: 2.0,
+                linkage: ClusterLinkageDto::WardD2,
+                diagnostic_method: archaeodash_contracts::ClusterDiagnosticMethodDto::Kmeans,
                 path,
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
@@ -692,6 +1236,13 @@ mod tests {
         let (service, dir, path) = service_with_merged_group();
         let err = service
             .cluster_fit(&ClusterFitRequest {
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                metric: ClusterDistanceMetricDto::Euclidean,
+                minkowski_p: 2.0,
+                linkage: ClusterLinkageDto::WardD2,
                 path,
                 columns: vec!["cu".into()],
                 transformation: None,
@@ -700,6 +1251,7 @@ mod tests {
                 iter_max: 100,
                 nstart: 25,
                 seed: None,
+                plot_group_column: None,
             })
             .expect_err("non-elemental column");
         assert!(matches!(
@@ -722,6 +1274,13 @@ mod tests {
         for request_path in ["../outside", "escape.parquet"] {
             let err = service
                 .cluster_fit(&ClusterFitRequest {
+                    source: AnalysisSourceDto::Elements,
+                    pc_count: None,
+                    source_group_column: None,
+                    umap_seed: None,
+                    metric: ClusterDistanceMetricDto::Euclidean,
+                    minkowski_p: 2.0,
+                    linkage: ClusterLinkageDto::WardD2,
                     path: request_path.into(),
                     columns: vec!["as".into()],
                     transformation: None,
@@ -730,6 +1289,7 @@ mod tests {
                     iter_max: 100,
                     nstart: 25,
                     seed: None,
+                    plot_group_column: None,
                 })
                 .expect_err("outside path rejected");
             assert!(
@@ -745,6 +1305,13 @@ mod tests {
     fn fit_kmeans_pam_hclust_diana_shapes() {
         let (service, _dir, path) = service_with_merged_group();
         let request = |method, k: Option<u32>| ClusterFitRequest {
+            source: AnalysisSourceDto::Elements,
+            pc_count: None,
+            source_group_column: None,
+            umap_seed: None,
+            metric: ClusterDistanceMetricDto::Euclidean,
+            minkowski_p: 2.0,
+            linkage: ClusterLinkageDto::WardD2,
             path: path.clone(),
             columns: vec!["as".into(), "fe".into()],
             transformation: None,
@@ -753,6 +1320,7 @@ mod tests {
             iter_max: 100,
             nstart: 25,
             seed: Some(20260914),
+            plot_group_column: None,
         };
         let kmeans_fit = service
             .cluster_fit(&request(ClusterMethod::Kmeans, Some(3)))
@@ -852,6 +1420,14 @@ mod tests {
         let service = ClusterService::new(&dir).expect("cluster service");
         let err = service
             .cluster_diagnostics(&ClusterDiagnosticsRequest {
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                metric: ClusterDistanceMetricDto::Euclidean,
+                minkowski_p: 2.0,
+                linkage: ClusterLinkageDto::WardD2,
+                diagnostic_method: archaeodash_contracts::ClusterDiagnosticMethodDto::Kmeans,
                 path: commit.groups[0].path.clone(),
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
@@ -863,6 +1439,137 @@ mod tests {
             err,
             DomainError::Validation { ref code, .. } if code == "cluster_k_range"
         ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pca_source_limits_components_and_preserves_row_identity_revision_and_storage() {
+        let (service, dir, path) = service_with_merged_group();
+        let before = std::fs::read(dir.join(&path)).expect("source bytes");
+        let data = read_group_file(&dir.join(&path)).expect("source rows");
+        let expected_ids: Vec<String> = data.rows.iter().map(|row| row.uuid.to_string()).collect();
+        let revision = data.profile.revision_id.clone();
+        let mut request = ClusterFitRequest {
+            path: path.clone(),
+            columns: vec!["as".into(), "fe".into()],
+            transformation: None,
+            source: AnalysisSourceDto::Pca,
+            pc_count: Some(1),
+            source_group_column: None,
+            umap_seed: None,
+            metric: ClusterDistanceMetricDto::Euclidean,
+            minkowski_p: 2.0,
+            linkage: ClusterLinkageDto::WardD2,
+            method: ClusterMethod::Kmeans,
+            k: Some(3),
+            iter_max: 100,
+            nstart: 25,
+            seed: Some(15),
+            plot_group_column: None,
+        };
+        let fit = service.cluster_fit(&request).expect("PCA fit");
+        assert_eq!(fit.analytical_uuids, expected_ids);
+        assert_eq!(fit.revision_id, revision);
+        assert_eq!(fit.column_names, vec!["PC1"]);
+        assert_eq!(fit.cluster.as_ref().expect("clusters").len(), 30);
+        assert_eq!(
+            std::fs::read(dir.join(&path)).expect("source bytes unchanged"),
+            before
+        );
+
+        request.pc_count = Some(3);
+        let err = service.cluster_fit(&request).expect_err("invalid PC count");
+        assert!(
+            matches!(err, DomainError::Validation { ref code, .. } if code == "cluster_pc_count")
+        );
+        assert_eq!(
+            std::fs::read(dir.join(&path)).expect("source remains unchanged"),
+            before
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn umap_and_lda_sources_recompute_ephemerally_and_euclidean_projects_groups() {
+        let (service, dir, path) = service_with_merged_group();
+        let before = std::fs::read(dir.join(&path)).expect("source bytes");
+        for (source, source_group_column, pc_count) in [
+            (AnalysisSourceDto::Umap, None, Some(1)),
+            (AnalysisSourceDto::Lda, Some("Site".to_string()), Some(1)),
+        ] {
+            let fit = service
+                .cluster_fit(&ClusterFitRequest {
+                    path: path.clone(),
+                    columns: vec!["as".into(), "fe".into()],
+                    transformation: None,
+                    source,
+                    pc_count,
+                    source_group_column,
+                    umap_seed: Some(20260914),
+                    metric: ClusterDistanceMetricDto::Euclidean,
+                    minkowski_p: 2.0,
+                    linkage: ClusterLinkageDto::WardD2,
+                    method: ClusterMethod::Kmeans,
+                    k: Some(3),
+                    iter_max: 100,
+                    nstart: 25,
+                    seed: Some(20260914),
+                    plot_group_column: None,
+                })
+                .expect("ephemeral derived-source clustering");
+            assert_eq!(fit.source, source);
+            assert_eq!(fit.column_names.len(), 1);
+            assert_eq!(fit.n_rows, 30);
+            assert_eq!(fit.analytical_uuids.len(), 30);
+        }
+        let err = service
+            .cluster_fit(&ClusterFitRequest {
+                path: path.clone(),
+                columns: vec!["as".into(), "fe".into()],
+                transformation: None,
+                source: AnalysisSourceDto::Lda,
+                pc_count: Some(1),
+                source_group_column: None,
+                umap_seed: None,
+                metric: ClusterDistanceMetricDto::Euclidean,
+                minkowski_p: 2.0,
+                linkage: ClusterLinkageDto::WardD2,
+                method: ClusterMethod::Kmeans,
+                k: Some(3),
+                iter_max: 100,
+                nstart: 25,
+                seed: None,
+                plot_group_column: None,
+            })
+            .expect_err("LDA requires group");
+        assert!(
+            matches!(err, DomainError::Validation { ref code, .. } if code == "cluster_source_group_required")
+        );
+
+        let response = service
+            .euclidean_matches(&EuclideanMatchesRequest {
+                path: path.clone(),
+                columns: vec!["as".into(), "fe".into()],
+                transformation: None,
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                projection_groups: Some(vec!["A".into(), "B".into()]),
+                group_column: "Site".into(),
+                id_column: "anid".into(),
+                limit: 3,
+                within_group: true,
+            })
+            .expect("projected Euclidean candidates");
+        assert!(response
+            .rows
+            .iter()
+            .all(|row| ["A", "B"].contains(&row.match_group.as_str())));
+        assert_eq!(
+            std::fs::read(dir.join(&path)).expect("source remains ephemeral"),
+            before
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -925,6 +1632,12 @@ mod tests {
         let (service, _dir, path) = membership_fixture();
         let response = service
             .membership_probabilities(&MembershipProbabilitiesRequest {
+                transformation: None,
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                projection_groups: None,
                 path: path.clone(),
                 columns: vec!["as".into(), "fe".into(), "co".into(), "zn".into()],
                 group_column: "Site".into(),
@@ -968,10 +1681,58 @@ mod tests {
     }
 
     #[test]
+    fn membership_pca_source_uses_requested_pc_count_and_validates_it() {
+        let (service, dir, path) = membership_fixture();
+        let before = std::fs::read(dir.join(&path)).expect("source bytes");
+        let mut request = MembershipProbabilitiesRequest {
+            path: path.clone(),
+            columns: vec!["as".into(), "fe".into(), "co".into(), "zn".into()],
+            transformation: None,
+            source: AnalysisSourceDto::Pca,
+            pc_count: Some(1),
+            source_group_column: None,
+            umap_seed: None,
+            projection_groups: None,
+            group_column: "Site".into(),
+            id_column: "anid".into(),
+            method: MembershipMethodDto::Mahalanobis,
+        };
+        let response = service
+            .membership_probabilities(&request)
+            .expect("PCA membership");
+        assert_eq!(response.source, AnalysisSourceDto::Pca);
+        assert_eq!(response.column_names, vec!["PC1"]);
+        assert_eq!(response.analytical_uuids.len(), 24);
+        assert_eq!(
+            std::fs::read(dir.join(&path)).expect("unchanged source"),
+            before
+        );
+
+        request.pc_count = Some(5);
+        let err = service
+            .membership_probabilities(&request)
+            .expect_err("excess component count");
+        assert!(
+            matches!(err, DomainError::Validation { ref code, .. } if code == "cluster_pc_count")
+        );
+        assert_eq!(
+            std::fs::read(dir.join(&path)).expect("still unchanged"),
+            before
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn membership_falls_back_to_mahalanobis_and_reports_effective_method() {
         let (service, _dir, path) = membership_fixture();
         let response = service
             .membership_probabilities(&MembershipProbabilitiesRequest {
+                transformation: None,
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                projection_groups: None,
                 path: path.clone(),
                 columns: vec!["as".into(), "fe".into(), "co".into(), "zn".into()],
                 group_column: "Site".into(),
@@ -993,6 +1754,12 @@ mod tests {
         let (service, dir, path) = service_with_merged_group();
         let err = service
             .membership_probabilities(&MembershipProbabilitiesRequest {
+                transformation: None,
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                projection_groups: None,
                 path,
                 columns: vec!["as".into(), "fe".into()],
                 group_column: "Site".into(),
@@ -1012,6 +1779,12 @@ mod tests {
         let (service, dir, path) = service_with_merged_group();
         let before = std::fs::read(dir.join(&path)).expect("read group");
         let request = |limit: u32, within_group: bool| EuclideanMatchesRequest {
+            transformation: None,
+            source: AnalysisSourceDto::Elements,
+            pc_count: None,
+            source_group_column: None,
+            umap_seed: None,
+            projection_groups: None,
             path: path.clone(),
             columns: vec!["as".into(), "fe".into()],
             group_column: "Site".into(),
@@ -1089,6 +1862,12 @@ mod tests {
 
         let response = service
             .euclidean_matches(&EuclideanMatchesRequest {
+                transformation: None,
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                projection_groups: None,
                 path,
                 columns: vec!["as".into(), "fe".into()],
                 group_column: "Site".into(),
@@ -1120,6 +1899,12 @@ mod tests {
 
         let response = service
             .euclidean_matches(&EuclideanMatchesRequest {
+                transformation: None,
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                projection_groups: None,
                 path,
                 columns: vec!["as".into(), "fe".into()],
                 group_column: "Site".into(),
@@ -1163,6 +1948,13 @@ mod tests {
         let (service, dir, path) = service_with_merged_group();
         let err = service
             .cluster_fit(&ClusterFitRequest {
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                metric: ClusterDistanceMetricDto::Euclidean,
+                minkowski_p: 2.0,
+                linkage: ClusterLinkageDto::WardD2,
                 path: path.clone(),
                 columns: vec!["as".into()],
                 transformation: None,
@@ -1171,6 +1963,7 @@ mod tests {
                 iter_max: 100,
                 nstart: 25,
                 seed: Some(i64::from(i32::MAX) + 1),
+                plot_group_column: None,
             })
             .expect_err("out of range seed");
         assert!(matches!(
@@ -1179,6 +1972,14 @@ mod tests {
         ));
         let err = service
             .cluster_diagnostics(&ClusterDiagnosticsRequest {
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                metric: ClusterDistanceMetricDto::Euclidean,
+                minkowski_p: 2.0,
+                linkage: ClusterLinkageDto::WardD2,
+                diagnostic_method: archaeodash_contracts::ClusterDiagnosticMethodDto::Kmeans,
                 path,
                 columns: vec!["as".into()],
                 transformation: None,

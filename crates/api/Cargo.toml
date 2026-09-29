@@ -19,6 +19,7 @@ tower = { workspace = true }
 tower-http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+futures-util = "0.3"
 
 [dev-dependencies]
 http-body-util = "0.1"

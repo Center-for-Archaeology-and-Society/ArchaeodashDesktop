@@ -17,18 +17,56 @@ use archaeodash_desktop::{
 };
 use std::sync::Mutex;
 
+mod job_events;
+
 /// Project-scoped state shared by the import, group, file, transformation,
 /// explore, ordination, export, and preference commands.
-struct DesktopState {
+pub(crate) struct DesktopState {
     import: DesktopImport,
     groups: DesktopGroups,
     files: DesktopFiles,
     transforms: DesktopTransforms,
     explore: DesktopExplore,
     ordination: DesktopOrdination,
-    clustering: DesktopClustering,
+    pub(crate) clustering: DesktopClustering,
     exports: DesktopExports,
     preferences: DesktopPreferences,
+}
+
+#[tauri::command]
+fn submit_analysis_job(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: archaeodash_contracts::SubmitAnalysisJobRequest,
+) -> Result<archaeodash_contracts::AnalysisJobSnapshot, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clustering
+        .submit_analysis_job(request)
+}
+
+#[tauri::command]
+fn get_analysis_job(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    id: String,
+) -> Result<archaeodash_contracts::AnalysisJobSnapshot, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clustering
+        .get_analysis_job(&id)
+}
+
+#[tauri::command]
+fn cancel_analysis_job(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    id: String,
+) -> Result<archaeodash_contracts::AnalysisJobSnapshot, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clustering
+        .cancel_analysis_job(&id)
 }
 
 /// Smoke command exposed to the React client over Tauri IPC.
@@ -552,6 +590,11 @@ pub fn run() {
         }))
         .invoke_handler(tauri::generate_handler![
             app_info,
+            submit_analysis_job,
+            get_analysis_job,
+            cancel_analysis_job,
+            job_events::watch_analysis_job,
+            job_events::stop_analysis_job_watch,
             open_import_preview,
             commit_group_import,
             scan_group_candidates,

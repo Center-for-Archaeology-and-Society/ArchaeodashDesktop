@@ -21,3 +21,13 @@ Generic HCA now follows R's nearest-neighbor agglomeration and merge recoding, i
 The project-local job pool admits at most two workers and sixteen queued operations, retains at most 32 snapshots, caps each result at 8 MiB, defaults to a ten-minute deadline, and rejects deadlines above thirty minutes. Dropping the last pool owner requests cancellation. Lifecycle, queue, cancellation, timeout, numerical, and production clippy checks pass. Hosted per-user quotas remain a Phase 7 concern.
 
 A real Chromium browser run against Vite and the Rust loopback API passed PCA/HCA Manhattan Average, cut/expanded dendrogram controls, PAM Manhattan diagnostics, UMAP cancellation, unchanged source rows, and hidden UUID checks. Further membership, recording, and source checks are in progress.
+
+## Integrated controls, plots, and resource guards
+
+All four analysis operations accept ephemeral PCA/UMAP/LDA sources, transformations, and source controls. Membership exposes requested/effective method, fallback reason, and projection inclusion; matching accepts projection candidates. PAM diagnostics use factoextra's pairwise within-cluster sum of squares. Partition plots provide cluster colors on standardized coordinates and existing-group colors on the original selected dimensions, with explicit projection fallback warnings. Legacy Ward.D2 rejects contradictory metadata options.
+
+A footer-only file preflight checks actual Parquet rows, full-schema cells, and encoded/decoded byte limits before loading analytical data. Source preparation also bounds transformation expansion, UMAP pairwise allocation, and ordination feature counts. Eigenvalue decompositions remain non-preemptible inside their bounded linear-algebra calls; cancellation checks occur before and after them.
+
+The expanded browser run passed ten cases in 3.26 seconds locally, including LDA membership, UMAP matches, projection groups, partition color controls, and confirmed two-group recording. Recorded rows exactly matched the original UUID/visible/descriptive/measured rows. Rust adapter/application/parity suites, 87 web tests, typechecks, and the production build pass. HTTP SSE and Tauri progress watchers are bounded and expose lifecycle updates; client polling remains the authoritative recovery path.
+
+Benchmark and parity evidence is recorded in [Phase 6 validation](../docs/operations/phase-6-validation-2026-09-28.md). It distinguishes local measured timings from unaccepted cross-platform/desktop UI performance gates.
