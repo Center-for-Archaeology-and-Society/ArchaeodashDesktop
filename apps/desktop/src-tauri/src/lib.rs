@@ -18,6 +18,7 @@ use archaeodash_desktop::{
 use std::sync::Mutex;
 
 mod job_events;
+mod projects;
 
 /// Project-scoped state shared by the import, group, file, transformation,
 /// explore, ordination, export, and preference commands.
@@ -31,6 +32,56 @@ pub(crate) struct DesktopState {
     pub(crate) clustering: DesktopClustering,
     exports: DesktopExports,
     preferences: DesktopPreferences,
+    project: Option<archaeodash_contracts::ProjectInfo>,
+    project_generation: u64,
+}
+
+impl DesktopState {
+    fn empty() -> Self {
+        Self {
+            import: DesktopImport::new(),
+            groups: DesktopGroups::new(),
+            files: DesktopFiles::new(),
+            transforms: DesktopTransforms::new(),
+            explore: DesktopExplore::new(),
+            ordination: DesktopOrdination::new(),
+            clustering: DesktopClustering::new(),
+            exports: DesktopExports::new(),
+            preferences: DesktopPreferences::new(),
+            project: None,
+            project_generation: 0,
+        }
+    }
+
+    pub(crate) fn for_project(path: &std::path::Path) -> Result<Self, String> {
+        let root = path
+            .canonicalize()
+            .map_err(|e| format!("could not open project directory: {e}"))?;
+        if !root.is_dir() {
+            return Err("selected project path is not a directory".into());
+        }
+        let mut state = Self::empty();
+        state.import.open_project(root.clone())?;
+        state.groups.open_project(root.clone())?;
+        state.files.open_project(root.clone())?;
+        state.transforms.open_project(root.clone())?;
+        state.explore.open_project(root.clone())?;
+        state.ordination.open_project(root.clone())?;
+        state.clustering.open_project(root.clone())?;
+        state.exports.open_project(root.clone())?;
+        state.preferences.open_project(root.clone())?;
+        let name = root
+            .file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or("Project")
+            .to_owned();
+        state.project = Some(archaeodash_contracts::ProjectInfo {
+            path: root.to_string_lossy().into_owned(),
+            name,
+            generation: 0,
+        });
+        Ok(state)
+    }
 }
 
 #[tauri::command]
@@ -577,19 +628,12 @@ fn preferences_set(
 #[allow(clippy::expect_used)] // app entry point: a failed runtime start must abort startup
 pub fn run() {
     tauri::Builder::default()
-        .manage(Mutex::new(DesktopState {
-            import: DesktopImport::new(),
-            groups: DesktopGroups::new(),
-            files: DesktopFiles::new(),
-            transforms: DesktopTransforms::new(),
-            explore: DesktopExplore::new(),
-            ordination: DesktopOrdination::new(),
-            clustering: DesktopClustering::new(),
-            exports: DesktopExports::new(),
-            preferences: DesktopPreferences::new(),
-        }))
+        .plugin(tauri_plugin_dialog::init())
+        .manage(Mutex::new(DesktopState::empty()))
         .invoke_handler(tauri::generate_handler![
             app_info,
+            projects::open_project,
+            projects::current_project,
             submit_analysis_job,
             get_analysis_job,
             cancel_analysis_job,
@@ -635,4 +679,49 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod project_state_tests {
+    use super::DesktopState;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("archaeodash-{name}-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn project_services_are_constructed_together_and_failed_candidate_preserves_current() {
+        let first = temp_dir("project-one");
+        let second = temp_dir("project-two");
+        let current = DesktopState::for_project(&first).unwrap();
+        assert_eq!(
+            current.project.as_ref().unwrap().name,
+            first.file_name().unwrap().to_string_lossy()
+        );
+
+        let replacement = DesktopState::for_project(&second).unwrap();
+        assert_eq!(
+            replacement.project.as_ref().unwrap().path,
+            second.canonicalize().unwrap().to_string_lossy()
+        );
+
+        // The native command only assigns after candidate construction succeeds.
+        let invalid = first.join("missing");
+        assert!(DesktopState::for_project(&invalid).is_err());
+        assert_eq!(
+            current.project.as_ref().unwrap().path,
+            first.canonicalize().unwrap().to_string_lossy()
+        );
+
+        let _ = std::fs::remove_dir_all(first);
+        let _ = std::fs::remove_dir_all(second);
+    }
 }

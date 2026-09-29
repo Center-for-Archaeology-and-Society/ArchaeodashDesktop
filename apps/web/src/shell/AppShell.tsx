@@ -3,20 +3,55 @@
  * Data Manager sidebar on wide screens, drawer/below-content on narrow
  * screens, and the theme selector. Semantic nav with accessible names.
  */
-import { useState, type ReactElement } from 'react';
+import { useRef, useState, type ReactElement } from 'react';
 import { NavLink, Outlet } from 'react-router';
 import { navRoutes } from './nav.ts';
+import type { ProjectInfo } from '@archaeodash/contracts';
+import type { ProjectsService } from '@archaeodash/client';
 
 export interface AppShellProps {
   readonly theme: string;
   readonly onThemeChange: (theme: string) => void;
   /** App metadata from the transport, rendered in the sidebar footer. */
   readonly appInfo?: { app: string; version: string; ready: boolean };
+  readonly projects?: ProjectsService;
+  readonly projectPath?: string;
+  readonly projectName?: string;
+  readonly projectGeneration?: number;
+  readonly onProjectOpened?: (project: ProjectInfo) => void;
 }
 
-export function AppShell({ theme, onThemeChange, appInfo }: AppShellProps): ReactElement {
+export function AppShell({
+  theme,
+  onThemeChange,
+  appInfo,
+  projects,
+  projectPath = '',
+  projectName = '',
+  projectGeneration = 0,
+  onProjectOpened,
+}: AppShellProps): ReactElement {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [infoOpen, setInfoOpen] = useState(false);
+  const [projectError, setProjectError] = useState('');
+  const [openingProject, setOpeningProject] = useState(false);
+  const openingProjectRef = useRef(false);
+
+  const openProject = async () => {
+    if (!projects || openingProjectRef.current) return;
+    openingProjectRef.current = true;
+    setOpeningProject(true);
+    setProjectError('');
+    try {
+      const project = await projects.open();
+      if (project) onProjectOpened?.(project);
+    } catch (error) {
+      setProjectError(error instanceof Error ? error.message : String(error));
+    } finally {
+      openingProjectRef.current = false;
+      setOpeningProject(false);
+    }
+  };
 
   return (
     <div className="app-shell" data-sidebar-open={sidebarOpen ? 'true' : 'false'}>
@@ -32,6 +67,11 @@ export function AppShell({ theme, onThemeChange, appInfo }: AppShellProps): Reac
           {sidebarOpen ? '◀' : '▶'}
         </button>
         <span className="brand">ArchaeoDash</span>
+        {projects && (
+          <button type="button" onClick={() => void openProject()} disabled={openingProject}>
+            {openingProject ? 'Opening…' : projectPath ? 'Switch Project' : 'Open Project'}
+          </button>
+        )}
         <ul className="nav-list">
           {navRoutes.map((route) =>
             route.children === undefined ? (
@@ -96,6 +136,7 @@ export function AppShell({ theme, onThemeChange, appInfo }: AppShellProps): Reac
           hidden={!sidebarOpen}
         >
           <h2>Data Manager</h2>
+          {projectName && <p aria-label="Current project">Project: {projectName}</p>}
           <p className="sidebar-note">Dataset import and group management arrive with the Data Manager slice.</p>
           {appInfo && (
             <p className="sidebar-footer">
@@ -105,7 +146,14 @@ export function AppShell({ theme, onThemeChange, appInfo }: AppShellProps): Reac
           )}
         </aside>
         <main className="main-panel" id="main-panel">
-          <Outlet />
+          {projectError && <p role="alert">Could not open project: {projectError}</p>}
+          {projects && !projectPath ? (
+            <p>Open a project folder to browse groups and run analyses.</p>
+          ) : (
+            <div key={`${projectGeneration}:${projectPath}`}>
+              <Outlet />
+            </div>
+          )}
         </main>
       </div>
     </div>

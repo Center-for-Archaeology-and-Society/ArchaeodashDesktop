@@ -79,6 +79,18 @@ test('sidebar collapses via aria-wired toggle button', () => {
   assert.ok(open.includes('data-sidebar-open="true"'));
 });
 
+test('native project picker is shown only for transports that support it', () => {
+  const browser = renderShell();
+  assert.ok(!browser.includes('Open Project'));
+  const html = renderToString(
+    <MemoryRouter initialEntries={['/']}>
+      <AppShell theme="light" onThemeChange={() => {}} projects={{ open: async () => null, current: async () => null }} />
+    </MemoryRouter>,
+  );
+  assert.ok(html.includes('Open Project'));
+  assert.ok(html.includes('Open a project folder to browse groups and run analyses.'));
+});
+
 test('info routes render the legacy markdown content in-app (no iframe)', () => {
   const help = renderAt(<HelpPage />);
   assert.ok(help.includes('<h1'), 'help renders as HTML');

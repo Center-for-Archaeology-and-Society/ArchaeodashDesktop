@@ -21,6 +21,12 @@ export interface ErrorEnvelope {
   message: string;
 }
 
+export interface ProjectInfo {
+  path: string;
+  name: string;
+  generation: number;
+}
+
 export type JobState =
   | 'idle'
   | 'validating'

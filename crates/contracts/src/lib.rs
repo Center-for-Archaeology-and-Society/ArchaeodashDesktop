@@ -9,6 +9,8 @@ mod analysis_jobs;
 pub use analysis_jobs::*;
 mod analysis_job_events;
 pub use analysis_job_events::*;
+mod projects;
+pub use projects::*;
 
 /// Smoke/health payload returned by `GET /healthz` and the Tauri `app_info`
 /// command. Proves one use case flows through both adapters (Phase 1 exit).

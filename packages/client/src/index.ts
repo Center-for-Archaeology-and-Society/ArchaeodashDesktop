@@ -15,6 +15,7 @@ export type {
   ExploreService,
   ExportsService,
   PreferencesService,
+  ProjectsService,
 } from './transport.ts';
 export {
   themes,

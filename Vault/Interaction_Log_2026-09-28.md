@@ -9,3 +9,4 @@
 - Requested continued implementation; implemented automatic best/matched-group assignment and cluster recording with three Luna agents, reviewed destination mappings, one revision-checked batch transaction, and storage publication/recovery safeguards; Rust/client tests, typechecks, build, clippy, and Tauri compilation pass. Phase 6 acceptance and concurrency limits remain documented. See [[Phase_6_Automatic_Assignment_2026-09-28]].
 
 - Requested the remainder of Phase 6; began parallel implementation of source/metric controls and cancellable jobs, with transport/UI integration and acceptance checks. See [[Phase_6_Remaining_Controls_Jobs_2026-09-28]].
+- Added native Tauri project-folder selection with atomic desktop service replacement and a desktop-only open/switch project control. See [[Phase_6_Desktop_Project_Selection_2026-09-28]].

@@ -30,6 +30,18 @@ test('Tauri jobs use equivalent command payloads', async () => {
   assert.deepEqual(calls, [['submit_analysis_job', { request }], ['get_analysis_job', { id: 'uuid' }], ['cancel_analysis_job', { id: 'uuid' }]]);
 });
 
+test('Tauri project commands return selected project or cancellation without sending a path', async () => {
+  const calls: unknown[] = [];
+  const project = { path: '/project', name: 'project', generation: 2 };
+  const transport = new TauriTransport(async <T>(command: string, args?: Record<string, unknown>) => {
+    calls.push([command, args]);
+    return (command === 'open_project' ? project : null) as T;
+  });
+  assert.deepEqual(await transport.projects.open(), project);
+  assert.equal(await transport.projects.current(), null);
+  assert.deepEqual(calls, [['open_project', undefined], ['current_project', undefined]]);
+});
+
 const event: AnalysisJobEvent = {
   id: 'uuid', state: 'running', stage: 'computing', progress: 25,
   updated_at_ms: 123, error: null,

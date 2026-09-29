@@ -54,6 +54,7 @@ import type {
   PcaResponse,
   PatchDescriptiveValuesRequest,
   PreferenceKey,
+  ProjectInfo,
   RatioSpecDto,
   SaveTransformationRequest,
   SaveTransformationResponse,
@@ -76,6 +77,7 @@ import {
   type ClusteringService,
   type AnalysisJobsService,
   type PreferencesService,
+  type ProjectsService,
   type TransformationsService,
   type Transport,
 } from './transport.ts';
@@ -97,6 +99,7 @@ export class TauriTransport implements Transport {
   readonly ordination: OrdinationService;
   readonly clustering: ClusteringService;
   readonly jobs: AnalysisJobsService;
+  readonly projects: ProjectsService;
   readonly explore: ExploreService;
   readonly exports: ExportsService;
   readonly preferences: PreferencesService;
@@ -111,6 +114,10 @@ export class TauriTransport implements Transport {
     this.ordination = this.makeOrdination();
     this.clustering = this.makeClustering();
     this.jobs = this.makeJobs();
+    this.projects = {
+      open: () => this.call<ProjectInfo | null>('open_project'),
+      current: () => this.call<ProjectInfo | null>('current_project'),
+    };
     this.explore = this.makeExplore();
     this.exports = this.makeExports();
     this.preferences = this.makePreferences();

@@ -52,6 +52,7 @@ import type {
   PcaResponse,
   PreferenceEntry,
   PreferenceKey,
+  ProjectInfo,
   PatchDescriptiveValuesRequest,
   RatioSpecDto,
   SaveTransformationRequest,
@@ -125,6 +126,12 @@ export interface AnalysisJobsService {
   subscribe?(id: string, onEvent: (event: AnalysisJobEvent) => void): () => void;
 }
 
+export interface ProjectsService {
+  /** Opens the platform-native picker; null means the user cancelled. */
+  open(): Promise<ProjectInfo | null>;
+  current(): Promise<ProjectInfo | null>;
+}
+
 export interface ClusteringService {
   diagnostics(request: ClusterDiagnosticsRequest): Promise<ClusterDiagnosticsResponse>;
   fit(request: ClusterFitRequest): Promise<ClusterFitResponse>;
@@ -162,6 +169,7 @@ export interface Transport {
   readonly ordination: OrdinationService;
   readonly clustering: ClusteringService;
   readonly jobs: AnalysisJobsService;
+  readonly projects?: ProjectsService;
   readonly explore: ExploreService;
   readonly exports: ExportsService;
   readonly preferences: PreferencesService;

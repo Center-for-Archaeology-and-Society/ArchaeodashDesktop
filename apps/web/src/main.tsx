@@ -4,7 +4,7 @@
  * async resolves, then hydrate the persisted theme preference without the
  * legacy startup race.
  */
-import { StrictMode, useEffect, useMemo, useState, type ReactElement } from 'react';
+import { StrictMode, useEffect, useRef, useState, type ReactElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createBrowserRouter, Outlet, RouterProvider, type RouteObject } from 'react-router';
 import type { AppInfo, Transport } from '@archaeodash/client';
@@ -25,6 +25,10 @@ import { createTransport } from './transport.ts';
 function AppRoot({ transport }: { transport: Transport }): ReactElement {
   const [theme, setTheme] = useState<string>(() => readStoredTheme());
   const [appInfo, setAppInfo] = useState<AppInfo | undefined>(undefined);
+  const [projectPath, setProjectPath] = useState('');
+  const [projectName, setProjectName] = useState('');
+  const [projectGeneration, setProjectGeneration] = useState(0);
+  const projectGenerationRef = useRef(0);
   useEffect(() => {
     let cancelled = false;
     transport
@@ -43,6 +47,19 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
     };
   }, [transport]);
 
+  useEffect(() => {
+    let cancelled = false;
+    void transport.projects?.current().then((project) => {
+      if (!cancelled && (project?.generation ?? 0) >= projectGenerationRef.current) {
+        projectGenerationRef.current = project?.generation ?? 0;
+        setProjectPath(project?.path ?? '');
+        setProjectName(project?.name ?? '');
+        setProjectGeneration(project?.generation ?? 0);
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [transport]);
+
   return (
     <AppShell
       theme={theme}
@@ -56,6 +73,16 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
         });
       }}
       appInfo={appInfo}
+      projects={transport.projects}
+      projectPath={projectPath}
+      projectName={projectName}
+      projectGeneration={projectGeneration}
+      onProjectOpened={(project) => {
+        projectGenerationRef.current = project.generation;
+        setProjectPath(project.path);
+        setProjectName(project.name);
+        setProjectGeneration(project.generation);
+      }}
     />
   );
 }

@@ -19,6 +19,7 @@ tauri-build = "2"
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "=2.6.0"
 archaeodash-application = { workspace = true }
 archaeodash-contracts = { workspace = true }
 archaeodash-desktop = { workspace = true }
