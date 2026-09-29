@@ -17,6 +17,7 @@ use archaeodash_desktop::{
 };
 use std::sync::Mutex;
 
+mod export_files;
 mod job_events;
 mod projects;
 
@@ -674,6 +675,7 @@ pub fn run() {
             export_measured_data,
             export_transformed,
             export_pca_scores,
+            export_files::save_export_file,
             preferences_get,
             preferences_set
         ])

@@ -115,7 +115,7 @@ export function DataTable({
           </tr>
         </thead>
         <tbody>
-          {data.rows.map((row) => (
+          {data.rows.map((row, rowIndex) => (
             <tr key={row.analytical_uuid}>
               <td>{row.visible_id ?? ''}</td>
               <td>{row.legacy_rowid ?? ''}</td>
@@ -127,7 +127,7 @@ export function DataTable({
                   <td key={column}>
                     <input
                       value={draft ?? value ?? ''}
-                      aria-label={`${column} for ${row.visible_id ?? row.analytical_uuid}`}
+                      aria-label={`${column} for ${row.visible_id ?? `row ${rowIndex + 1}`}`}
                       onChange={(e) => setDrafts((prev) => new Map(prev).set(key, e.target.value))}
                     />
                   </td>

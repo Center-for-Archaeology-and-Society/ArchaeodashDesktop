@@ -125,6 +125,10 @@ test('explore renders the legacy view tabs; table hides hidden identity', async 
   assert.ok(tableHtml.includes('A1'), 'visible id cell');
   assert.ok(!tableHtml.includes('0197aaaa'), 'analytical_uuid never rendered');
   assert.ok(tableHtml.includes('locked-col'), 'elemental columns marked read-only');
+  const missingId = { ...rows, rows: rows.rows.map(row => ({ ...row, visible_id: null })) };
+  const accessible = renderToString(<DataTable data={missingId} deps={deps} onSaved={() => {}} />);
+  assert.ok(!accessible.includes('0197aaaa'), 'missing visible IDs never expose internal UUIDs in accessible labels');
+  assert.ok(accessible.includes('for row 1'));
 });
 
 test('explore missing view renders band table rows', async () => {
