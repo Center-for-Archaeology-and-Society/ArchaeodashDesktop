@@ -11,7 +11,8 @@
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
-    "test:e2e:phase6": "node scripts/e2e/phase6.mjs"
+    "test:e2e:phase6": "node scripts/e2e/phase6.mjs",
+    "test:e2e:import": "node scripts/e2e/import.mjs"
   },
   "devDependencies": {
     "amaro": "^1.2.1",

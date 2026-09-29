@@ -105,15 +105,14 @@ PHASE6_BASE_URL=http://127.0.0.1:4173 pnpm test:e2e:phase6
 ```
 
 The API binds loopback port 8787; preview proxies API requests there. Stop both
-processes after the run. The native picker is compile-checked and its service
-construction is tested; no actual native dialog/webview run is claimed.
+processes after the run. A later [desktop test-drive checkpoint](desktop-test-drive.md) exercised the actual native folder picker, import, clustering, cancellation, CSV save dialog, and reopen workflow. Broader native assignment/performance acceptance is still open.
 
 ## Remaining gates
 
 - This re-run covers the currently registered Section 15.4 procedure 9–11
   goldens and the available procedure 13 model/component tests. It does not run
   the entire 14-procedure suite through one production-like end-to-end path.
-- Native desktop end-to-end acceptance and the 100,000-point browser render performance test remain open. Cross-platform timing and peak-memory budgets remain unmeasured.
+- Broader native workflow/assignment acceptance and the 100,000-point browser render performance test remain open; the initial native smoke workflow passed in the linked test-drive checkpoint. Cross-platform timing and peak-memory budgets remain unmeasured.
 - Reader snapshot isolation and uncoordinated external-writer acceptance remain unresolved storage gates from the earlier batch-assignment checkpoint. Footer resource preflight does not remove the race between a file check and an external replacement.
 - Service limits are fixed at 1,000 rows for pairwise clustering workloads;
   the wider backend probe does not change or validate that service policy.

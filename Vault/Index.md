@@ -78,3 +78,4 @@ Up: [[../../Vault/Index]]
 - [[Phase_6_Desktop_Project_Selection_2026-09-28]]
 
 - [[Initial_Desktop_Test_Drive_2026-09-28]]
+- [[Desktop_Import_Playwright_Smoke_2026-09-28]]

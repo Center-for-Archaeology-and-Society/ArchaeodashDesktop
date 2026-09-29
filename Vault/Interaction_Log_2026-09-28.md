@@ -10,4 +10,4 @@
 
 - Requested the remainder of Phase 6; used three Luna agents to implement source/metric controls, bounded cancellable jobs and progress, partition plots, native project opening, and direct R sampling parity. Committed incremental checkpoints; Rust/workspace checks and eleven real browser cases pass. Remaining native/performance/storage gates are recorded in [[Phase_6_Remaining_Controls_Jobs_2026-09-28]] and [[Phase_6_Desktop_Project_Selection_2026-09-28]].
 
-- Requested a desktop app ready for a simple test; began import UI, sample/launcher preparation, and native runtime verification using Luna agents. See [[Initial_Desktop_Test_Drive_2026-09-28]].
+- Requested a desktop app ready for a simple test; used Luna agents to complete basic import UI, named-group imports, a safe sample generator, launcher, and native CSV saving. Actual desktop import/clustering/cancellation/export/reopen checks and Rust/client/browser checks pass; initial readiness and wider limits are documented in [[Initial_Desktop_Test_Drive_2026-09-28]] and [[Desktop_Import_Playwright_Smoke_2026-09-28]].

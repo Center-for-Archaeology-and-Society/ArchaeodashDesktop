@@ -29,18 +29,23 @@ Run the app from any directory:
 
 In the app:
 
-1. Choose **Open project** and select the prepared test project folder.
-2. Open **Data Manager** from the navigation, choose `INAA_test.csv`, and review the preview. The
-   prepared project already contains group files; you can still test a fresh
-   import by selecting the fixture and committing to the suggested `groups`
-   destination (existing group files are retained and new imports receive
-   unused names).
-3. Open the available groups and inspect their rows and elemental columns.
-4. Open the analysis page, choose a small supported analysis such as PCA or
-   hierarchical clustering, and review its plot/results.
-5. Export measured data or an analysis result to a new file in the project.
-6. Close and relaunch the app, reopen the same folder, and confirm that the
-   groups and exported file remain available.
+1. Choose **Open Project** and select the prepared test project folder.
+2. Choose **Import and manage data** in the Data Manager sidebar. The five
+   prepared groups should show as valid. To test importing, choose the copied
+   `INAA_test.csv`, select `CORE` as **Group column**, review the measured columns
+   and five partitions, then choose **Import groups**. Existing files are retained;
+   subsequent imports use unused filenames. For a file without a group column,
+   choose **Put every row in one named group**, enter a name, preview, then import.
+3. Choose **Explore**, select `groups/D1.parquet`, and inspect the rows. Original
+   measured columns are read-only; descriptive fields have explicit save controls.
+4. Choose **Cluster**, select `groups/D1.parquet`, keep **k-means** and two clusters,
+   then choose **Run analysis**. A partition plot and 104 result rows should appear.
+5. Return to **Explore** and choose **Export measured data (CSV)**. In the native
+   save dialog, save `D1.csv` into the test project. Cancelling the dialog writes
+   nothing. Inspect the CSV in a spreadsheet or text editor.
+6. Close and relaunch the app, reopen the same folder, and confirm the group list
+   and saved CSV are still present. The app requires you to choose the folder
+   again; it does not yet reopen the last project automatically.
 
 The scripts resolve paths relative to themselves, so the current shell
 directory does not need to be the repository. The launcher checks for a
@@ -52,9 +57,41 @@ project folder.
 
 ## Initial test limits
 
+Use a disposable copy of data and keep other programs from editing its group files
+during this initial test; external-writer/snapshot concurrency work remains open.
+
 This walkthrough checks basic project opening, import, analysis, export, and
 reopen behavior on the current machine. It does not establish cross-platform
 performance, large-dataset limits, packaging/installer behavior, or full
 statistical parity. The initial desktop release still uses the native folder
-picker for project selection. Native webview acceptance and performance gates
+picker for project selection. Broader native workflow acceptance and performance gates
 remain open in the [Phase 6 validation report](phase-6-validation-2026-09-28.md).
+
+## Verified checkpoint — 2026-09-28
+
+The launcher completed locked dependency installation, the production web build,
+and actual native Tauri launch on Linux. The sample generator produced five valid
+groups totaling 307 rows and refused an existing destination.
+
+Using the real GTK/WebKit desktop window on an isolated X11 display, the test
+opened the sample folder, validated its groups, ran k-means on D1 (104 result
+rows), cancelled a UMAP analysis, imported an eight-row CSV through the native
+file picker, and preserved the project when folder selection was cancelled.
+Native CSV saving produced eight rows with measured values exactly equal to the
+synthetic source; cancelling a subsequent save preserved the saved file hash.
+After a normal window-close request and relaunch, the original and imported
+groups were rediscovered and the CSV hash remained unchanged. A normal pointer
+and keyboard dataset switch was also exercised.
+
+![Native Data Manager after reopening](images/desktop-test-drive.png)
+
+Workspace verification passed 223 Rust tests, 93 web tests, 38 client tests,
+typechecks, Rust formatting, and affected-library Clippy including Tauri. The
+new `scripts/e2e/import.mjs` passed eight browser import checks. The web build
+retains its existing large Plotly chunk warning.
+
+One exploratory accessibility-automation attempt that directly invoked a native
+select-popup item terminated a WebKit content process. The subsequent ordinary
+pointer/keyboard selection and the save/reopen walkthrough passed without that
+failure. This initial smoke result is not a native stability or accessibility
+certification; wider native and cross-platform testing remains necessary.
