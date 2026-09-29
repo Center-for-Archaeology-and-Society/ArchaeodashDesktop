@@ -213,7 +213,27 @@ impl GroupService {
         }
         let source_key = Self::normalized_path(&req.source_path)?;
         self.reject_symlink_path(&req.source_path)?;
-        let original_source = self.store.read_group(&req.source_path)?;
+        let mut snapshot_paths = vec![req.source_path.clone()];
+        let mut checked_paths = std::collections::HashSet::new();
+        for target in &req.targets {
+            let key = Self::normalized_path(&target.destination_path)?;
+            if key == source_key || !checked_paths.insert(key) {
+                return Err(StoreError::Invariant(
+                    "batch transfer destinations must be distinct from each other and the source"
+                        .into(),
+                ));
+            }
+            self.reject_symlink_path(&target.destination_path)?;
+            snapshot_paths.push(target.destination_path.clone());
+        }
+        let mut snapshot = self
+            .store
+            .read_groups_snapshot(&snapshot_paths)?
+            .into_iter();
+        let original_source = snapshot
+            .next()
+            .flatten()
+            .ok_or_else(|| StoreError::Io(format!("group not found: {}", req.source_path)))?;
         let source_abs = self.store.resolve(&req.source_path)?;
         if original_source.profile.revision_id != req.expected_source_revision {
             return Err(StoreError::RevisionConflict {
@@ -262,12 +282,8 @@ impl GroupService {
             selected_all.extend(selected.iter().copied());
 
             let abs = self.store.resolve(&target.destination_path)?;
-            let exists = abs.exists();
-            let data = if exists {
-                Some(self.store.read_group(&target.destination_path)?)
-            } else {
-                None
-            };
+            let data = snapshot.next().flatten();
+            let exists = data.is_some();
             if exists {
                 let aliases_source = same_file::is_same_file(&source_abs, &abs).unwrap_or(false);
                 let aliases_destination = destinations.iter().any(|prior| {
@@ -428,7 +444,16 @@ impl GroupService {
         };
         let selected = Self::parse_uuids(&req.selected_uuids)?;
 
-        let source = self.store.read_group(&req.source_path)?;
+        let dest_path = req.destination_path.as_str();
+        let snapshot_paths = vec![req.source_path.clone(), req.destination_path.clone()];
+        let mut snapshot = self
+            .store
+            .read_groups_snapshot(&snapshot_paths)?
+            .into_iter();
+        let source = snapshot
+            .next()
+            .flatten()
+            .ok_or_else(|| StoreError::Io(format!("group not found: {}", req.source_path)))?;
         if source.profile.revision_id != req.expected_source_revision {
             return Err(StoreError::RevisionConflict {
                 path: req.source_path.clone(),
@@ -437,18 +462,12 @@ impl GroupService {
             });
         }
 
-        let dest_path = req.destination_path.as_str();
         if req.action == TransferAction::Copy && dest_path == req.source_path {
             return Err(StoreError::Invariant(
                 "copy destination must differ from the source".to_string(),
             ));
         }
-        let dest_abs = self.store.resolve(dest_path)?;
-        let dest_data = if dest_abs.exists() {
-            Some(self.store.read_group(dest_path)?)
-        } else {
-            None
-        };
+        let dest_data = snapshot.next().flatten();
 
         let (destination_group_id, destination_group_name, dest_revision) = match &dest_data {
             Some(data) => (
@@ -567,8 +586,9 @@ impl GroupService {
         }
         let mut sources: Vec<(String, GroupFileData)> = Vec::new();
         let mut inputs = Vec::new();
-        for path in &req.sources {
-            let data = self.store.read_group(path)?;
+        let snapshot = self.store.read_groups_snapshot(&req.sources)?;
+        for (path, data) in req.sources.iter().zip(snapshot) {
+            let data = data.ok_or_else(|| StoreError::Io(format!("group not found: {path}")))?;
             inputs.push(Self::input_of(path, &data));
             sources.push((path.clone(), data));
         }

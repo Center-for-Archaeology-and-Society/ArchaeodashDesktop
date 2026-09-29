@@ -120,6 +120,27 @@ impl FsGroupFileStore {
         Ok(read_group_file(&self.resolve(path)?)?)
     }
 
+    /// Reads an ordered set of group paths while holding one shared project
+    /// lock. Missing paths are represented as `None`, so callers can plan
+    /// create-only outputs from the same filesystem view as their inputs.
+    pub fn read_groups_snapshot(
+        &self,
+        paths: &[String],
+    ) -> Result<Vec<Option<GroupFileData>>, StoreError> {
+        let _project_lock = self.project_read_lock()?;
+        paths
+            .iter()
+            .map(|path| {
+                let absolute = self.resolve(path)?;
+                match fs::metadata(&absolute) {
+                    Ok(_) => self.read_group_unlocked(path).map(Some),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                    Err(error) => Err(io_err(error)),
+                }
+            })
+            .collect()
+    }
+
     fn rollback_transaction(
         &self,
         tx_dir: &Path,
@@ -652,20 +673,31 @@ mod tests {
         let writer_guard = first.project_lock().expect("exclusive lock");
         let (started_tx, started_rx) = mpsc::channel();
         let (read_tx, read_rx) = mpsc::channel();
-        let reader = std::thread::spawn(move || {
-            started_tx.send(()).expect("signal started");
-            read_tx
-                .send(second.read_group(rel))
-                .expect("send read result");
-        });
+        let reader =
+            std::thread::spawn(move || {
+                started_tx.send(()).expect("signal started");
+                read_tx
+                    .send(second.read_groups_snapshot(&[
+                        rel.to_string(),
+                        "groups/missing.parquet".to_string(),
+                    ]))
+                    .expect("send read result");
+            });
         started_rx.recv().expect("reader started");
         assert!(read_rx.recv_timeout(Duration::from_millis(100)).is_err());
         drop(writer_guard);
         let data = read_rx
             .recv_timeout(Duration::from_secs(3))
             .expect("read completes after writer releases")
-            .expect("group remains valid");
-        assert_eq!(data.profile.group_id, "read-lock");
+            .expect("groups remain readable");
+        assert_eq!(
+            data[0].as_ref().expect("present group").profile.group_id,
+            "read-lock"
+        );
+        assert!(
+            data[1].is_none(),
+            "missing path is represented in the snapshot"
+        );
         reader.join().expect("reader joins");
 
         let reader_guard = first.project_read_lock().expect("shared lock");
