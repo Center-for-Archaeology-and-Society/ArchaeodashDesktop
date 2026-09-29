@@ -216,6 +216,24 @@ pub struct TransferUnitsRequest {
     pub expected_source_revision: String,
 }
 
+/// One destination in an atomic multi-group move.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchTransferTarget {
+    pub destination_path: String,
+    pub destination_group_name: Option<String>,
+    pub expected_destination_revision: Option<String>,
+    pub selected_uuids: Vec<String>,
+}
+
+/// Moves selected analytical units from one source to several destinations
+/// in one journaled transaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchTransferUnitsRequest {
+    pub source_path: String,
+    pub expected_source_revision: String,
+    pub targets: Vec<BatchTransferTarget>,
+}
+
 /// Request to merge whole groups into one target; sources after the target
 /// are removed (Section 10.2 `POST /groups/merge`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

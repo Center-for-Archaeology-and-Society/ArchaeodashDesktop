@@ -34,6 +34,11 @@ const STAGED_PREFIX: &str = "staged-";
 /// Bounded prior-revision archive per group path (Section 6.8).
 const MAX_HISTORY_PER_GROUP: usize = 3;
 
+#[cfg(test)]
+thread_local! { static FAIL_PUBLISH_INDEX: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) }; }
+#[cfg(test)]
+thread_local! { static OUTSIDER_BEFORE_PUBLISH: std::cell::RefCell<Option<(usize, PathBuf)>> = const { std::cell::RefCell::new(None) }; }
+
 fn io_err(e: std::io::Error) -> StoreError {
     StoreError::Io(e.to_string())
 }
@@ -47,6 +52,7 @@ impl FsGroupFileStore {
     pub fn new(root: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let root = root.into();
         fs::create_dir_all(&root).map_err(io_err)?;
+        let root = fs::canonicalize(root).map_err(io_err)?;
         Ok(Self { root })
     }
 
@@ -75,6 +81,58 @@ impl FsGroupFileStore {
 
     fn history_root(&self) -> PathBuf {
         self.root.join(HISTORY_DIR)
+    }
+
+    fn project_lock(&self) -> Result<fs::File, StoreError> {
+        let dir = self.root.join(ARCHAEODASH_DIR);
+        fs::create_dir_all(&dir).map_err(io_err)?;
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join("project.lock"))
+            .map_err(io_err)?;
+        lock.lock().map_err(io_err)?;
+        Ok(lock)
+    }
+
+    fn rollback_transaction(
+        &self,
+        tx_dir: &Path,
+        backups: &[BackupRecord],
+        created: &[String],
+    ) -> Result<(), StoreError> {
+        for rel in created {
+            let path = self.resolve(rel)?;
+            if path.exists() {
+                fs::remove_file(path).map_err(io_err)?;
+            }
+        }
+        for record in backups {
+            let target = self.resolve(&record.path)?;
+            let backup = tx_dir.join(ORIGINALS_DIR).join(&record.backup_file);
+            if backup.exists() {
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent).map_err(io_err)?;
+                }
+                #[cfg(unix)]
+                fs::rename(backup, target).map_err(io_err)?;
+                #[cfg(not(unix))]
+                {
+                    if target.exists() {
+                        fs::remove_file(&target).map_err(io_err)?;
+                    }
+                    fs::rename(backup, target).map_err(io_err)?;
+                }
+            }
+        }
+        sync_dir(&self.root);
+        Ok(())
+    }
+
+    fn same_file(left: &Path, right: &Path) -> bool {
+        same_file::is_same_file(left, right).unwrap_or(false)
     }
 
     /// Stable per-relative-path key for history/originals naming.
@@ -168,6 +226,15 @@ impl GroupFileStore for FsGroupFileStore {
     }
 
     fn execute(&self, tx: &Transaction) -> Result<String, StoreError> {
+        let _project_lock = self.project_lock()?;
+        let input_paths: std::collections::HashSet<&str> =
+            tx.inputs.iter().map(|i| i.path.as_str()).collect();
+        let create_only: std::collections::HashSet<&str> = tx
+            .outputs
+            .iter()
+            .map(|o| o.path.as_str())
+            .filter(|p| !input_paths.contains(p))
+            .collect();
         // 1. Preconditions: every input must still be at its expected
         //    revision with an unchanged measured checksum (Section 6.8
         //    `expected_revision`).
@@ -188,6 +255,15 @@ impl GroupFileStore for FsGroupFileStore {
                 });
             }
         }
+        // New outputs must remain absent through preflight; publishing them
+        // later uses a no-clobber hard link to close the race with other writers.
+        for path in &create_only {
+            if self.resolve(path)?.exists() {
+                return Err(StoreError::Invariant(format!(
+                    "new destination already exists: {path}"
+                )));
+            }
+        }
 
         // 2. Journal the intent before touching any data file.
         let txid = Uuid::now_v7().simple().to_string();
@@ -205,7 +281,10 @@ impl GroupFileStore for FsGroupFileStore {
                 .outputs
                 .iter()
                 .map(|out| {
-                    let created = !self.resolve(&out.path)?.exists();
+                    // This is the caller's planned create-vs-replace intent.
+                    // Do not infer it from disk here: a new file may have
+                    // appeared since planning and must remain a no-clobber path.
+                    let created = create_only.contains(out.path.as_str());
                     Ok(archaeodash_storage::FileOutput {
                         path: out.path.clone(),
                         group_id: out.group_id.clone(),
@@ -219,9 +298,14 @@ impl GroupFileStore for FsGroupFileStore {
         };
         Self::write_json_atomic(&tx_dir.join(INTENT_FILE), &intent)?;
 
-        // Rollback closure: drop the whole transaction directory.
-        let abort = |tx_dir: &Path| {
-            let _ = fs::remove_dir_all(tx_dir);
+        let mut backups: Vec<BackupRecord> = Vec::new();
+        let mut created_by_tx: Vec<String> = Vec::new();
+        let abort = |tx_dir: &Path,
+                     backups: &[BackupRecord],
+                     created: &[String]|
+         -> Result<(), StoreError> {
+            self.rollback_transaction(tx_dir, backups, created)?;
+            fs::remove_dir_all(tx_dir).map_err(io_err)
         };
 
         // 3. Stage every successor file and validate it in full before any
@@ -246,7 +330,7 @@ impl GroupFileStore for FsGroupFileStore {
             if let Err(e) = write_group_rows(&staged_path, profile, &out.rows)
                 .and_then(|_| validate_group_file(&staged_path).map(|_| ()))
             {
-                abort(&tx_dir);
+                abort(&tx_dir, &backups, &created_by_tx)?;
                 return Err(e.into());
             }
             staged.push((staged_path, out));
@@ -254,14 +338,26 @@ impl GroupFileStore for FsGroupFileStore {
 
         // 4. Backup originals of every overwritten or deleted path, then
         //    record the backup mapping so recovery can restore exactly.
-        let mut backups: Vec<BackupRecord> = Vec::new();
         let mut publish_paths: Vec<(PathBuf, String)> = Vec::new();
         for (staged_path, out) in &staged {
             let destination = self.resolve(&out.path)?;
             if let Some(parent) = destination.parent() {
                 fs::create_dir_all(parent).map_err(io_err)?;
             }
-            let record = self.backup_original(&tx_dir, &out.path, &out.revision_id)?;
+            if create_only.contains(out.path.as_str()) {
+                publish_paths.push((
+                    staged_path.clone(),
+                    destination.to_string_lossy().to_string(),
+                ));
+                continue;
+            }
+            let record = match self.backup_original(&tx_dir, &out.path, &out.revision_id) {
+                Ok(record) => record,
+                Err(e) => {
+                    abort(&tx_dir, &backups, &created_by_tx)?;
+                    return Err(e);
+                }
+            };
             if record.is_some() {
                 backups.extend(record);
             }
@@ -271,25 +367,68 @@ impl GroupFileStore for FsGroupFileStore {
             ));
         }
         for rel in &tx.delete_paths {
-            let record = self.backup_original(&tx_dir, rel, "deleted")?;
+            let record = match self.backup_original(&tx_dir, rel, "deleted") {
+                Ok(record) => record,
+                Err(e) => {
+                    abort(&tx_dir, &backups, &created_by_tx)?;
+                    return Err(e);
+                }
+            };
             if record.is_some() {
                 backups.extend(record);
             }
         }
-        Self::write_json_atomic(&tx_dir.join(BACKUPS_FILE), &backups)?;
+        if let Err(e) = Self::write_json_atomic(&tx_dir.join(BACKUPS_FILE), &backups) {
+            abort(&tx_dir, &backups, &created_by_tx)?;
+            return Err(e);
+        }
 
         // 5. Publish: atomic renames of validated staged files.
-        for (staged_path, destination) in &publish_paths {
-            if let Err(e) = fs::rename(staged_path, destination) {
-                abort(&tx_dir);
-                return Err(StoreError::Io(format!("publish rename failed: {e}")));
+        for (index, (staged_path, destination)) in publish_paths.iter().enumerate() {
+            #[cfg(test)]
+            let injection = OUTSIDER_BEFORE_PUBLISH.with(|hook| {
+                if let Some((at, path)) = hook.borrow().as_ref() {
+                    if *at == index {
+                        return Some(fs::write(path, b"outsider-created-after-preflight"));
+                    }
+                }
+                None
+            });
+            #[cfg(test)]
+            if let Some(Err(e)) = injection {
+                abort(&tx_dir, &backups, &created_by_tx)?;
+                return Err(io_err(e));
+            }
+            #[cfg(test)]
+            if FAIL_PUBLISH_INDEX.with(|fail| fail.get() == Some(index)) {
+                abort(&tx_dir, &backups, &created_by_tx)?;
+                return Err(StoreError::Io("injected publish failure".into()));
+            }
+            let rel = &tx.outputs[index].path;
+            let publish_result = if create_only.contains(rel.as_str()) {
+                match fs::hard_link(staged_path, destination) {
+                    Ok(()) => {
+                        created_by_tx.push(rel.clone());
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                fs::rename(staged_path, destination)
+            };
+            if let Err(e) = publish_result {
+                abort(&tx_dir, &backups, &created_by_tx)?;
+                return Err(StoreError::Io(format!("publish failed: {e}")));
             }
         }
         // 6. Delete vacated source files.
         for rel in &tx.delete_paths {
             let path = self.resolve(rel)?;
             if path.exists() {
-                fs::remove_file(&path).map_err(io_err)?;
+                if let Err(e) = fs::remove_file(&path) {
+                    abort(&tx_dir, &backups, &created_by_tx)?;
+                    return Err(io_err(e));
+                }
             }
         }
         for parent in [&self.transactions_root(), &self.root] {
@@ -297,13 +436,20 @@ impl GroupFileStore for FsGroupFileStore {
         }
 
         // 7. Commit marker, then cleanup: the transaction is durable.
-        fs::write(tx_dir.join(COMMIT_MARKER), b"committed").map_err(io_err)?;
+        if let Err(e) = fs::write(tx_dir.join(COMMIT_MARKER), b"committed") {
+            abort(&tx_dir, &backups, &created_by_tx)?;
+            return Err(io_err(e));
+        }
         sync_dir(&tx_dir);
-        fs::remove_dir_all(&tx_dir).map_err(io_err)?;
+        // The commit marker makes this transaction durable. A cleanup failure
+        // is recovered by startup and must not report an already-published move
+        // as failed to its caller.
+        let _ = fs::remove_dir_all(&tx_dir);
         Ok(txid)
     }
 
     fn recover_interrupted(&self) -> Result<usize, StoreError> {
+        let _project_lock = self.project_lock()?;
         let transactions_root = self.transactions_root();
         if !transactions_root.exists() {
             return Ok(0);
@@ -355,11 +501,17 @@ impl GroupFileStore for FsGroupFileStore {
             if let Some(intent) = &intent {
                 let backed: std::collections::HashSet<&str> =
                     backups.iter().map(|b| b.path.as_str()).collect();
-                for out in &intent.outputs {
+                for (index, out) in intent.outputs.iter().enumerate() {
                     if out.created && !backed.contains(&out.path.as_str()) {
                         let path = self.resolve(&out.path)?;
-                        if path.exists() {
+                        let staged = tx_dir.join(format!("{STAGED_PREFIX}{index}.parquet"));
+                        if Self::same_file(&path, &staged) {
                             fs::remove_file(&path).map_err(io_err)?;
+                        } else if path.exists() {
+                            return Err(StoreError::Invariant(format!(
+                                "cannot safely recover created destination {}; journal preserved",
+                                out.path
+                            )));
                         }
                     }
                 }
@@ -595,6 +747,202 @@ mod tests {
     }
 
     #[test]
+    fn publish_failure_restores_prior_outputs_and_preserves_outsider_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let store = FsGroupFileStore::new(root).expect("store");
+        let source_rel = "groups/source.parquet";
+        let existing_rel = "groups/existing.parquet";
+        let new_rel = "groups/new.parquet";
+        let u1 = Uuid::now_v7();
+        let u2 = Uuid::now_v7();
+        write_initial(&root.join(source_rel), "source", &[row(u1, 1.0, None)]);
+        write_initial(&root.join(existing_rel), "existing", &[row(u2, 2.0, None)]);
+        let source = read_group_file(&root.join(source_rel)).expect("source read");
+        let existing = read_group_file(&root.join(existing_rel)).expect("existing read");
+        let original = fs::read(root.join(existing_rel)).expect("existing bytes");
+        let outsider = root.join(new_rel);
+        let dest_rows = vec![existing.rows[0].clone(), source.rows[0].clone()];
+        let tx = Transaction {
+            action: archaeodash_storage::TransactionAction::MoveUnits,
+            inputs: vec![
+                input_of(source_rel, &source),
+                input_of(existing_rel, &existing),
+            ],
+            outputs: vec![
+                planned(
+                    existing_rel,
+                    "existing",
+                    "rev-2",
+                    dest_rows.clone(),
+                    &existing.profile.roles,
+                ),
+                planned(new_rel, "new", "rev-1", dest_rows, &source.profile.roles),
+            ],
+            delete_paths: vec![],
+            selected_uuids: vec![u1],
+        };
+        FAIL_PUBLISH_INDEX.with(|fail| fail.set(Some(1)));
+        let result = store.execute(&tx);
+        FAIL_PUBLISH_INDEX.with(|fail| fail.set(None));
+        assert!(matches!(result, Err(StoreError::Io(_))));
+        assert_eq!(
+            fs::read(root.join(existing_rel)).expect("restored existing"),
+            original
+        );
+        assert!(
+            !outsider.exists(),
+            "transaction-created output is removed on rollback"
+        );
+        assert_eq!(
+            root.join(TRANSACTIONS_DIR)
+                .read_dir()
+                .expect("transactions")
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn create_only_output_that_appeared_after_planning_is_preserved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let store = FsGroupFileStore::new(root).expect("store");
+        let source_rel = "groups/source.parquet";
+        let new_rel = "groups/new.parquet";
+        let u = Uuid::now_v7();
+        write_initial(&root.join(source_rel), "source", &[row(u, 1.0, None)]);
+        let source = read_group_file(&root.join(source_rel)).expect("source");
+        let new_path = root.join(new_rel);
+        fs::write(&new_path, b"outsider").expect("outside file appears");
+        let err = store
+            .execute(&Transaction {
+                action: archaeodash_storage::TransactionAction::MoveUnits,
+                inputs: vec![input_of(source_rel, &source)],
+                outputs: vec![planned(
+                    new_rel,
+                    "new",
+                    "rev-1",
+                    source.rows.clone(),
+                    &source.profile.roles,
+                )],
+                delete_paths: vec![],
+                selected_uuids: vec![u],
+            })
+            .expect_err("create-only collision rejected");
+        assert!(matches!(err, StoreError::Invariant(_)));
+        assert_eq!(fs::read(new_path).expect("outsider intact"), b"outsider");
+    }
+
+    #[test]
+    fn create_only_collision_during_publish_restores_prior_outputs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let store = FsGroupFileStore::new(root).expect("store");
+        let source_rel = "groups/source.parquet";
+        let existing_rel = "groups/existing.parquet";
+        let new_rel = "groups/new.parquet";
+        let u1 = Uuid::now_v7();
+        let u2 = Uuid::now_v7();
+        write_initial(&root.join(source_rel), "source", &[row(u1, 1.0, None)]);
+        write_initial(&root.join(existing_rel), "existing", &[row(u2, 2.0, None)]);
+        let source = read_group_file(&root.join(source_rel)).expect("source");
+        let existing = read_group_file(&root.join(existing_rel)).expect("existing");
+        let original = fs::read(root.join(existing_rel)).expect("existing bytes");
+        let outsider = root.join(new_rel);
+        let tx = Transaction {
+            action: archaeodash_storage::TransactionAction::MoveUnits,
+            inputs: vec![
+                input_of(source_rel, &source),
+                input_of(existing_rel, &existing),
+            ],
+            outputs: vec![
+                planned(
+                    existing_rel,
+                    "existing",
+                    "rev-2",
+                    vec![existing.rows[0].clone(), source.rows[0].clone()],
+                    &existing.profile.roles,
+                ),
+                planned(
+                    new_rel,
+                    "new",
+                    "rev-1",
+                    source.rows.clone(),
+                    &source.profile.roles,
+                ),
+            ],
+            delete_paths: vec![],
+            selected_uuids: vec![u1],
+        };
+        OUTSIDER_BEFORE_PUBLISH.with(|hook| *hook.borrow_mut() = Some((1, outsider.clone())));
+        let result = store.execute(&tx);
+        OUTSIDER_BEFORE_PUBLISH.with(|hook| *hook.borrow_mut() = None);
+        assert!(matches!(result, Err(StoreError::Io(_))));
+        assert_eq!(
+            fs::read(root.join(existing_rel)).expect("restored existing"),
+            original
+        );
+        assert_eq!(
+            fs::read(&outsider).expect("outsider preserved"),
+            b"outsider-created-after-preflight"
+        );
+        assert_eq!(
+            root.join(TRANSACTIONS_DIR)
+                .read_dir()
+                .expect("transactions")
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn recovery_preserves_unowned_collision_and_its_journal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let store = FsGroupFileStore::new(root).expect("store");
+        let rel = "groups/new.parquet";
+        let destination = root.join(rel);
+        fs::create_dir_all(destination.parent().expect("parent")).expect("dirs");
+        fs::write(&destination, b"outsider").expect("outsider");
+        let tx_dir = root.join(TRANSACTIONS_DIR).join("tx-ambiguous");
+        fs::create_dir_all(tx_dir.join(ORIGINALS_DIR)).expect("tx dir");
+        fs::write(
+            tx_dir.join(format!("{STAGED_PREFIX}0.parquet")),
+            b"transaction output",
+        )
+        .expect("staged");
+        let intent = TransactionIntent {
+            transaction_id: "tx-ambiguous".into(),
+            action: archaeodash_storage::TransactionAction::MoveUnits,
+            inputs: vec![],
+            outputs: vec![archaeodash_storage::FileOutput {
+                path: rel.into(),
+                group_id: "new".into(),
+                group_name: "new".into(),
+                created: true,
+            }],
+            selected_uuids: vec![],
+            started_at_unix_secs: 0,
+        };
+        FsGroupFileStore::write_json_atomic(&tx_dir.join(INTENT_FILE), &intent).expect("intent");
+        FsGroupFileStore::write_json_atomic(
+            &tx_dir.join(BACKUPS_FILE),
+            &Vec::<BackupRecord>::new(),
+        )
+        .expect("backups");
+        assert!(matches!(
+            store.recover_interrupted(),
+            Err(StoreError::Invariant(_))
+        ));
+        assert_eq!(fs::read(destination).expect("outsider intact"), b"outsider");
+        assert!(
+            tx_dir.exists(),
+            "ambiguous journal remains for safe recovery"
+        );
+    }
+
+    #[test]
     fn interrupted_transaction_recovers_originals() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
@@ -655,12 +1003,14 @@ mod tests {
         let created_rel = "groups/new-group.parquet";
         let created_path = root.join(created_rel);
         std::fs::create_dir_all(created_path.parent().expect("parent")).expect("dirs");
-        std::fs::write(&created_path, b"half-published successor").expect("partial publish");
 
         // Crash between publish and commit of a transaction whose output was
         // newly created (no backup record exists for it).
         let tx_dir = root.join(TRANSACTIONS_DIR).join("tx-created");
         std::fs::create_dir_all(tx_dir.join(ORIGINALS_DIR)).expect("tx dir");
+        let staged_path = tx_dir.join(format!("{STAGED_PREFIX}0.parquet"));
+        std::fs::write(&staged_path, b"half-published successor").expect("staged output");
+        std::fs::hard_link(&staged_path, &created_path).expect("published output");
         let intent = TransactionIntent {
             transaction_id: "tx-created".to_string(),
             action: archaeodash_storage::TransactionAction::MoveUnits,

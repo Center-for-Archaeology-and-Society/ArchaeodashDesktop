@@ -22,19 +22,20 @@ use archaeodash_application::{
 };
 use archaeodash_contracts::{
     AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
-    ClusterDiagnosticsRequest, ClusterDiagnosticsResponse, ClusterFitRequest, ClusterFitResponse,
-    DeleteGroupRequest, DuplicateGroupRequest, ErrorEnvelope, EuclideanMatchesRequest,
-    EuclideanMatchesResponse, ExploreCompositionalProfileRequest,
-    ExploreCompositionalProfileResponse, ExploreCrosstabRequest, ExploreCrosstabResponse,
-    ExploreHistogramRequest, ExploreHistogramResponse, ExploreMissingProfileRequest,
-    ExploreMissingProfileResponse, ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult,
-    ExportTransformedRequest, GetPreferencesResponse, GroupCandidate, GroupRowsResponse,
-    GroupSummary, ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest,
-    ImportPreviewResponse, LdaRequest, LdaResponse, MembershipProbabilitiesRequest,
-    MembershipProbabilitiesResponse, MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest,
-    PcaResponse, PutPreferenceRequest, SaveTransformationRequest, SaveTransformationResponse,
-    StagedFile, TransactionResponse, TransferUnitsRequest, TransformationDefinition,
-    TransformationListResponse, UmapRequest, UmapResponse,
+    BatchTransferUnitsRequest, ClusterDiagnosticsRequest, ClusterDiagnosticsResponse,
+    ClusterFitRequest, ClusterFitResponse, DeleteGroupRequest, DuplicateGroupRequest,
+    ErrorEnvelope, EuclideanMatchesRequest, EuclideanMatchesResponse,
+    ExploreCompositionalProfileRequest, ExploreCompositionalProfileResponse,
+    ExploreCrosstabRequest, ExploreCrosstabResponse, ExploreHistogramRequest,
+    ExploreHistogramResponse, ExploreMissingProfileRequest, ExploreMissingProfileResponse,
+    ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult, ExportTransformedRequest,
+    GetPreferencesResponse, GroupCandidate, GroupRowsResponse, GroupSummary, ImportCommitRequest,
+    ImportCommitResponse, ImportPreviewRequest, ImportPreviewResponse, LdaRequest, LdaResponse,
+    MembershipProbabilitiesRequest, MembershipProbabilitiesResponse, MergeGroupsRequest,
+    PatchDescriptiveValuesRequest, PcaRequest, PcaResponse, PutPreferenceRequest,
+    SaveTransformationRequest, SaveTransformationResponse, StagedFile, TransactionResponse,
+    TransferUnitsRequest, TransformationDefinition, TransformationListResponse, UmapRequest,
+    UmapResponse,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_domain::DomainError;
@@ -168,6 +169,24 @@ async fn groups_transfer_units(
         .transfer_units(&req)
         .map(Json)
         .map_err(store_error_response)
+}
+
+async fn groups_batch_transfer_units(
+    State(state): State<AppState>,
+    Json(req): Json<BatchTransferUnitsRequest>,
+) -> Result<Json<TransactionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let result = tokio::task::spawn_blocking(move || state.groups.batch_transfer_units(&req))
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorEnvelope {
+                    code: "internal_error".into(),
+                    message: "internal error".into(),
+                }),
+            )
+        })?;
+    result.map(Json).map_err(store_error_response)
 }
 
 async fn groups_merge(
@@ -639,6 +658,10 @@ pub fn root_router(state: AppState) -> Router {
         .route("/api/v1/groups/validate", post(groups_validate))
         .route("/api/v1/groups/rows", get(groups_rows))
         .route("/api/v1/groups/transfer-units", post(groups_transfer_units))
+        .route(
+            "/api/v1/groups/batch-transfer-units",
+            post(groups_batch_transfer_units),
+        )
         .route("/api/v1/groups/merge", post(groups_merge))
         .route(
             "/api/v1/groups/descriptive-values",
@@ -695,10 +718,10 @@ mod tests {
 
     use super::*;
     use archaeodash_contracts::{
-        BatchRatioMode, ClusterMethod, CrosstabRows, DescriptiveEdit, DuplicateGroupRequest,
-        EuclideanMatchesRequest, GroupRowsResponse, ImputationMethod, MembershipMethodDto,
-        MembershipProbabilitiesRequest, PatchDescriptiveValuesRequest, RatioMode, RatioSpecDto,
-        TransferAction, TransformMethod,
+        BatchRatioMode, BatchTransferTarget, BatchTransferUnitsRequest, ClusterMethod,
+        CrosstabRows, DescriptiveEdit, DuplicateGroupRequest, EuclideanMatchesRequest,
+        GroupRowsResponse, ImputationMethod, MembershipMethodDto, MembershipProbabilitiesRequest,
+        PatchDescriptiveValuesRequest, RatioMode, RatioSpecDto, TransferAction, TransformMethod,
     };
     use axum::body::Body;
     use http_body_util::BodyExt;
@@ -755,6 +778,103 @@ mod tests {
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn batch_transfer_over_http_supports_multiple_targets_and_rejects_stale_target() {
+        let (state, dir) = test_state();
+        let app = root_router(state.clone());
+        let imported = commit_fixture(app.clone(), &dir).await;
+        let source_path = imported
+            .groups
+            .iter()
+            .find(|g| g.group_name == "Baca")
+            .unwrap()
+            .path
+            .clone();
+        let existing_path = imported
+            .groups
+            .iter()
+            .find(|g| g.group_name == "Hooper")
+            .unwrap()
+            .path
+            .clone();
+        let source_before = state.groups.rows(&source_path).unwrap();
+        let existing_before = state.groups.rows(&existing_path).unwrap();
+        let request = BatchTransferUnitsRequest {
+            source_path: source_path.clone(),
+            expected_source_revision: source_before.revision_id.clone(),
+            targets: vec![
+                BatchTransferTarget {
+                    destination_path: existing_path.clone(),
+                    destination_group_name: None,
+                    expected_destination_revision: Some(existing_before.revision_id.clone()),
+                    selected_uuids: vec![source_before.rows[0].analytical_uuid.clone()],
+                },
+                BatchTransferTarget {
+                    destination_path: "groups/Other.parquet".into(),
+                    destination_group_name: Some("Other".into()),
+                    expected_destination_revision: None,
+                    selected_uuids: vec![source_before.rows[1].analytical_uuid.clone()],
+                },
+            ],
+        };
+        let stale = BatchTransferUnitsRequest {
+            source_path: source_path.clone(),
+            expected_source_revision: source_before.revision_id.clone(),
+            targets: vec![BatchTransferTarget {
+                destination_path: existing_path.clone(),
+                destination_group_name: None,
+                expected_destination_revision: Some("stale-revision".into()),
+                selected_uuids: vec![source_before.rows[0].analytical_uuid.clone()],
+            }],
+        };
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/groups/batch-transfer-units")
+                    .header("content-type", "application/json")
+                    .body(json_body(&stale))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            state.groups.rows(&source_path).unwrap().rows,
+            source_before.rows
+        );
+        assert_eq!(
+            state.groups.rows(&existing_path).unwrap().rows,
+            existing_before.rows
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/groups/batch-transfer-units")
+                    .header("content-type", "application/json")
+                    .body(json_body(&request))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let tx: TransactionResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(tx.outputs.len(), 2);
+        assert_eq!(tx.deleted_paths, vec![source_path.clone()]);
+        assert_eq!(state.groups.rows(&existing_path).unwrap().rows.len(), 2);
+        assert_eq!(
+            state
+                .groups
+                .rows("groups/Other.parquet")
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
+        assert!(!dir.path().join(&source_path).exists());
     }
 
     #[tokio::test]

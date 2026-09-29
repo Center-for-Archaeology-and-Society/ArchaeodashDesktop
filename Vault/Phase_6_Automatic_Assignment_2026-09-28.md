@@ -23,3 +23,17 @@ HTTP, desktop, and TypeScript batch surfaces are wired to one batch service. Foc
 Result selection now offers manual assignment or analysis-group assignment. Best/matched group labels and cluster-cut labels receive an explicit destination mapping, with existing groups, new group files, and Keep in current group options. A unique exact group-name match may prefill a choice; ambiguous names remain unselected. The review table shows outgoing group paths and counts plus retained-source counts before confirmation. Source and destination revisions are carried in the batch request; changing the cut is disabled during review.
 
 The batch refresh workflow calls the batch endpoint once and never loops individual transfers. A committed batch followed by a failed refresh is reported as committed rather than retried. Empty-source batches reopen the first destination. Recommendations and UI errors do not display hidden UUIDs. Client workspace tests (79 web tests), typechecks, and production build pass; the existing Plotly bundle warning remains. Storage hardening validation is pending final review.
+
+## Transaction integration and validation
+
+The shared batch service validates all UUID selections, source/destination revisions, destination schemas, and file aliases before executing one journaled MoveUnits transaction. Existing and new destination files retain original measured and descriptive row values; an emptied source is removed. HTTP and desktop adapters expose the same service.
+
+Filesystem execution and recovery hold a per-project advisory lock. New outputs publish through no-clobber hard links, partial publication rolls back, and failed rollback retains its journal. Recovery checks retained staged-file ownership before removing a created output, preserving ambiguous files and journals. Post-commit cleanup failure does not report a failed transaction that could invite retry.
+
+Application (58), contracts (11), filesystem-store (11), API (18), desktop (13), and storage (5) tests pass. Coverage includes stale final destinations, incompatible schemas, duplicate assignments, hard-link aliases, partial publication, and destination creation races. Rust library clippy with warnings denied, workspace formatting, Tauri compilation, and diff checks pass. Client workspace tests include 79 web tests; typechecks and production builds pass.
+
+## Remaining acceptance limits
+
+The project lock coordinates app transactions; unrelated external filesystem writers do not honor it. Preflight reads and multi-file readers are not snapshot-isolated. Ambiguous legacy creation journals without retained staged ownership evidence fail closed and remain for operator recovery. This increment does not establish full filesystem concurrency or cross-platform crash acceptance.
+
+Browser/desktop UI end-to-end acceptance and performance budgets remain open; the build retains its existing Plotly size warning. Phase 6 still needs PCA input controls, additional distance/linkage options, cancellable jobs, and full statistical/operational exit acceptance.

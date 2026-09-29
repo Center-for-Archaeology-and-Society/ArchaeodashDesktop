@@ -102,6 +102,7 @@ dependencies = [
  "archaeodash-domain",
  "archaeodash-file-store-fs",
  "archaeodash-storage",
+ "same-file",
  "serde",
  "serde_json",
  "sha2",
@@ -194,6 +195,7 @@ version = "0.1.0"
 dependencies = [
  "archaeodash-data-io",
  "archaeodash-storage",
+ "same-file",
  "serde",
  "serde_json",
  "sha2",

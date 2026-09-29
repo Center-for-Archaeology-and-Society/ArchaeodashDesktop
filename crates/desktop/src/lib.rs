@@ -9,19 +9,19 @@ use archaeodash_application::{
 };
 use archaeodash_contracts::{
     AppInfo, AppliedTransformation, ApplyTransformationRequest, BatchRatioRequest,
-    ClusterDiagnosticsRequest, ClusterDiagnosticsResponse, ClusterFitRequest, ClusterFitResponse,
-    DeleteGroupRequest, DuplicateGroupRequest, EuclideanMatchesRequest, EuclideanMatchesResponse,
-    ExploreCompositionalProfileRequest, ExploreCompositionalProfileResponse,
-    ExploreCrosstabRequest, ExploreCrosstabResponse, ExploreHistogramRequest,
-    ExploreHistogramResponse, ExploreMissingProfileRequest, ExploreMissingProfileResponse,
-    ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult, ExportTransformedRequest,
-    FileDownload, FileUploadRequest, GetPreferencesResponse, GroupCandidate, GroupRowsResponse,
-    GroupSummary, ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest,
-    ImportPreviewResponse, LdaRequest, LdaResponse, MembershipProbabilitiesRequest,
-    MembershipProbabilitiesResponse, MergeGroupsRequest, PatchDescriptiveValuesRequest, PcaRequest,
-    PcaResponse, PutPreferenceRequest, RatioSpecDto, SaveTransformationResponse, StagedFile,
-    TransactionResponse, TransferUnitsRequest, TransformationDefinition,
-    TransformationListResponse, UmapRequest, UmapResponse,
+    BatchTransferUnitsRequest, ClusterDiagnosticsRequest, ClusterDiagnosticsResponse,
+    ClusterFitRequest, ClusterFitResponse, DeleteGroupRequest, DuplicateGroupRequest,
+    EuclideanMatchesRequest, EuclideanMatchesResponse, ExploreCompositionalProfileRequest,
+    ExploreCompositionalProfileResponse, ExploreCrosstabRequest, ExploreCrosstabResponse,
+    ExploreHistogramRequest, ExploreHistogramResponse, ExploreMissingProfileRequest,
+    ExploreMissingProfileResponse, ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult,
+    ExportTransformedRequest, FileDownload, FileUploadRequest, GetPreferencesResponse,
+    GroupCandidate, GroupRowsResponse, GroupSummary, ImportCommitRequest, ImportCommitResponse,
+    ImportPreviewRequest, ImportPreviewResponse, LdaRequest, LdaResponse,
+    MembershipProbabilitiesRequest, MembershipProbabilitiesResponse, MergeGroupsRequest,
+    PatchDescriptiveValuesRequest, PcaRequest, PcaResponse, PutPreferenceRequest, RatioSpecDto,
+    SaveTransformationResponse, StagedFile, TransactionResponse, TransferUnitsRequest,
+    TransformationDefinition, TransformationListResponse, UmapRequest, UmapResponse,
 };
 use archaeodash_data_io::ImportError;
 use archaeodash_domain::DomainError;
@@ -84,6 +84,13 @@ impl DesktopGroups {
     /// Desktop `move_analytical_units` / `copy_analytical_units` command body.
     pub fn transfer_units(&self, req: TransferUnitsRequest) -> Result<TransactionResponse, String> {
         self.with_service(|svc| svc.transfer_units(&req))
+    }
+
+    pub fn batch_transfer_units(
+        &self,
+        req: BatchTransferUnitsRequest,
+    ) -> Result<TransactionResponse, String> {
+        self.with_service(|svc| svc.batch_transfer_units(&req))
     }
 
     /// Desktop `merge_groups` command body.
@@ -1017,6 +1024,98 @@ mod tests {
         let groups = DesktopGroups::new();
         let err = groups.scan_group_candidates().expect_err("no project open");
         assert!(err.contains("no project open"));
+    }
+
+    #[test]
+    fn batch_transfer_command_handles_multiple_targets_and_stale_destination() {
+        use archaeodash_contracts::{
+            BatchTransferTarget, BatchTransferUnitsRequest, ImportCommitRequest,
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "archaeodash-desktop-batch-move-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("project dir");
+        std::fs::write(
+            dir.join("mini.csv"),
+            "anid,Site,as,fe\nA1,Baca,1.5,3\nA2,Baca,2,4\nA3,Hooper,5,6\n",
+        )
+        .expect("fixture");
+        let import = DesktopImport::new();
+        import.open_project(&dir).expect("open import");
+        import
+            .commit_group_import(ImportCommitRequest {
+                source: "mini.csv".into(),
+                group_column: "Site".into(),
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+            })
+            .expect("import");
+        let groups = DesktopGroups::new();
+        groups.open_project(&dir).expect("open groups");
+        let source = groups
+            .group_rows("groups/Baca.parquet".into())
+            .expect("source");
+        let destination = groups
+            .group_rows("groups/Hooper.parquet".into())
+            .expect("destination");
+        let stale = groups
+            .batch_transfer_units(BatchTransferUnitsRequest {
+                source_path: source.path.clone(),
+                expected_source_revision: source.revision_id.clone(),
+                targets: vec![BatchTransferTarget {
+                    destination_path: destination.path.clone(),
+                    destination_group_name: None,
+                    expected_destination_revision: Some("old-revision".into()),
+                    selected_uuids: vec![source.rows[0].analytical_uuid.clone()],
+                }],
+            })
+            .expect_err("stale destination revision");
+        assert!(stale.contains("revision"));
+        assert_eq!(
+            groups.group_rows(source.path.clone()).unwrap().rows,
+            source.rows
+        );
+        assert_eq!(
+            groups.group_rows(destination.path.clone()).unwrap().rows,
+            destination.rows
+        );
+        let moved = groups
+            .batch_transfer_units(BatchTransferUnitsRequest {
+                source_path: source.path.clone(),
+                expected_source_revision: source.revision_id,
+                targets: vec![
+                    BatchTransferTarget {
+                        destination_path: destination.path.clone(),
+                        destination_group_name: None,
+                        expected_destination_revision: Some(destination.revision_id),
+                        selected_uuids: vec![source.rows[0].analytical_uuid.clone()],
+                    },
+                    BatchTransferTarget {
+                        destination_path: "groups/Other.parquet".into(),
+                        destination_group_name: Some("Other".into()),
+                        expected_destination_revision: None,
+                        selected_uuids: vec![source.rows[1].analytical_uuid.clone()],
+                    },
+                ],
+            })
+            .expect("batch move");
+        assert_eq!(moved.outputs.len(), 2);
+        assert_eq!(moved.deleted_paths, vec![source.path.clone()]);
+        assert_eq!(groups.group_rows(destination.path).unwrap().rows.len(), 2);
+        assert_eq!(
+            groups
+                .group_rows("groups/Other.parquet".into())
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
+        assert!(!dir.join(source.path).exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -2,13 +2,14 @@
 //! crate (crates/desktop), which calls the shared application use cases.
 
 use archaeodash_contracts::{
-    ApplyTransformationRequest, BatchRatioRequest, ClusterDiagnosticsRequest, ClusterFitRequest,
-    DeleteGroupRequest, DuplicateGroupRequest, EuclideanMatchesRequest,
-    ExploreCompositionalProfileRequest, ExploreCrosstabRequest, ExploreHistogramRequest,
-    ExploreMissingProfileRequest, ExportMeasuredDataRequest, ExportPcaScoresRequest,
-    ExportTransformedRequest, GetPreferencesResponse, ImportCommitRequest, ImportPreviewRequest,
-    LdaRequest, MembershipProbabilitiesRequest, MergeGroupsRequest, PatchDescriptiveValuesRequest,
-    PcaRequest, PutPreferenceRequest, TransferUnitsRequest, UmapRequest,
+    ApplyTransformationRequest, BatchRatioRequest, BatchTransferUnitsRequest,
+    ClusterDiagnosticsRequest, ClusterFitRequest, DeleteGroupRequest, DuplicateGroupRequest,
+    EuclideanMatchesRequest, ExploreCompositionalProfileRequest, ExploreCrosstabRequest,
+    ExploreHistogramRequest, ExploreMissingProfileRequest, ExportMeasuredDataRequest,
+    ExportPcaScoresRequest, ExportTransformedRequest, GetPreferencesResponse, ImportCommitRequest,
+    ImportPreviewRequest, LdaRequest, MembershipProbabilitiesRequest, MergeGroupsRequest,
+    PatchDescriptiveValuesRequest, PcaRequest, PutPreferenceRequest, TransferUnitsRequest,
+    UmapRequest,
 };
 use archaeodash_desktop::{
     DesktopAppInfo, DesktopClustering, DesktopExplore, DesktopExports, DesktopFiles, DesktopGroups,
@@ -113,6 +114,19 @@ fn transfer_units(
         .map_err(|e| e.to_string())?
         .groups
         .transfer_units(request)
+}
+
+/// Move selected analytical units to multiple existing groups atomically.
+#[tauri::command]
+fn batch_transfer_units(
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: BatchTransferUnitsRequest,
+) -> Result<archaeodash_contracts::TransactionResponse, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .groups
+        .batch_transfer_units(request)
 }
 
 /// Merge whole groups into one target (`merge_groups`).
@@ -543,6 +557,7 @@ pub fn run() {
             scan_group_candidates,
             validate_group_file,
             transfer_units,
+            batch_transfer_units,
             merge_groups,
             delete_group,
             patch_descriptive_values,

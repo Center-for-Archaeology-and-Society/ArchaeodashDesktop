@@ -5,9 +5,9 @@
 use std::path::PathBuf;
 
 use archaeodash_contracts::{
-    DeleteGroupRequest, DuplicateGroupRequest, GroupCandidate, GroupRowDto, GroupRowsResponse,
-    GroupSummary, MergeGroupsRequest, PatchDescriptiveValuesRequest, TransactionResponse,
-    TransferAction, TransferUnitsRequest,
+    BatchTransferUnitsRequest, DeleteGroupRequest, DuplicateGroupRequest, GroupCandidate,
+    GroupRowDto, GroupRowsResponse, GroupSummary, MergeGroupsRequest,
+    PatchDescriptiveValuesRequest, TransactionResponse, TransferAction, TransferUnitsRequest,
 };
 use archaeodash_data_io::{
     sanitize_group_name, scan_project, GroupFileData, GroupProfile, GroupRow,
@@ -24,6 +24,15 @@ use uuid::Uuid;
 pub struct GroupService {
     store: FsGroupFileStore,
     root: PathBuf,
+}
+
+struct BatchDestination {
+    path: String,
+    data: Option<GroupFileData>,
+    selected: Vec<Uuid>,
+    group_id: String,
+    group_name: String,
+    revision: String,
 }
 
 impl GroupService {
@@ -143,11 +152,268 @@ impl GroupService {
     fn parse_uuids(raw: &[String]) -> Result<Vec<Uuid>, StoreError> {
         raw.iter()
             .map(|s| {
-                Uuid::parse_str(s).map_err(|e| {
-                    StoreError::Invariant(format!("invalid analytical uuid {s:?}: {e}"))
-                })
+                Uuid::parse_str(s)
+                    .map_err(|e| StoreError::Invariant(format!("invalid analytical UUID: {e}")))
             })
             .collect()
+    }
+
+    fn normalized_path(path: &str) -> Result<String, StoreError> {
+        let resolved = PathBuf::from(path);
+        let mut parts = Vec::new();
+        for component in resolved.components() {
+            match component {
+                std::path::Component::Normal(part) => {
+                    parts.push(part.to_string_lossy().to_string())
+                }
+                std::path::Component::CurDir => {}
+                other => {
+                    return Err(StoreError::Invariant(format!(
+                        "invalid group path {path:?}: {other:?}"
+                    )))
+                }
+            }
+        }
+        if parts.is_empty() {
+            return Err(StoreError::Invariant("group path cannot be empty".into()));
+        }
+        Ok(parts.join("/"))
+    }
+
+    fn reject_symlink_path(&self, path: &str) -> Result<(), StoreError> {
+        let mut current = self.root.clone();
+        for component in PathBuf::from(path).components() {
+            if let std::path::Component::Normal(part) = component {
+                current.push(part);
+                match std::fs::symlink_metadata(&current) {
+                    Ok(meta) if meta.file_type().is_symlink() => {
+                        return Err(StoreError::Invariant(format!(
+                            "symlink paths are not supported for batch transfers: {path}"
+                        )))
+                    }
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+                    Err(e) => return Err(StoreError::Io(e.to_string())),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Moves one or more UUID selections to distinct destinations using one
+    /// journaled transaction, so validation failure leaves every group intact.
+    pub fn batch_transfer_units(
+        &self,
+        req: &BatchTransferUnitsRequest,
+    ) -> Result<TransactionResponse, StoreError> {
+        if req.targets.is_empty() || req.targets.len() > 1000 {
+            return Err(StoreError::Invariant(
+                "batch transfer requires between 1 and 1000 targets".into(),
+            ));
+        }
+        let source_key = Self::normalized_path(&req.source_path)?;
+        self.reject_symlink_path(&req.source_path)?;
+        let original_source = self.store.read_group(&req.source_path)?;
+        let source_abs = self.store.resolve(&req.source_path)?;
+        if original_source.profile.revision_id != req.expected_source_revision {
+            return Err(StoreError::RevisionConflict {
+                path: req.source_path.clone(),
+                expected: req.expected_source_revision.clone(),
+                found: original_source.profile.revision_id.clone(),
+            });
+        }
+
+        let mut seen_paths = std::collections::HashSet::new();
+        let mut seen_uuids = std::collections::HashSet::new();
+        let mut selected_all = Vec::new();
+        let mut destinations: Vec<BatchDestination> = Vec::with_capacity(req.targets.len());
+        let mut inputs = vec![Self::input_of(&req.source_path, &original_source)];
+        let source_ids: std::collections::HashSet<Uuid> =
+            original_source.rows.iter().map(|r| r.uuid).collect();
+        let mut create_only_paths = Vec::new();
+
+        for target in &req.targets {
+            let key = Self::normalized_path(&target.destination_path)?;
+            if key == source_key || !seen_paths.insert(key) {
+                return Err(StoreError::Invariant(
+                    "batch transfer destinations must be distinct from each other and the source"
+                        .into(),
+                ));
+            }
+            self.reject_symlink_path(&target.destination_path)?;
+            if target.selected_uuids.is_empty() {
+                return Err(StoreError::Invariant(
+                    "each batch transfer target needs at least one UUID".into(),
+                ));
+            }
+            let selected = Self::parse_uuids(&target.selected_uuids)?;
+            for uuid in &selected {
+                if !seen_uuids.insert(*uuid) {
+                    return Err(StoreError::Invariant(
+                        "an analytical UUID is assigned more than once".into(),
+                    ));
+                }
+                if !source_ids.contains(uuid) {
+                    return Err(StoreError::Invariant(
+                        "one or more analytical UUIDs are not present in the source".into(),
+                    ));
+                }
+            }
+            selected_all.extend(selected.iter().copied());
+
+            let abs = self.store.resolve(&target.destination_path)?;
+            let exists = abs.exists();
+            let data = if exists {
+                Some(self.store.read_group(&target.destination_path)?)
+            } else {
+                None
+            };
+            if exists {
+                let aliases_source = same_file::is_same_file(&source_abs, &abs).unwrap_or(false);
+                let aliases_destination = destinations.iter().any(|prior| {
+                    prior.data.as_ref().is_some_and(|_| {
+                        self.store
+                            .resolve(&prior.path)
+                            .ok()
+                            .is_some_and(|prior_abs| {
+                                same_file::is_same_file(&prior_abs, &abs).unwrap_or(false)
+                            })
+                    })
+                });
+                if aliases_source || aliases_destination {
+                    return Err(StoreError::Invariant(
+                        "batch transfer paths must refer to distinct files".into(),
+                    ));
+                }
+            }
+            let (id, name, revision) = match &data {
+                Some(data) => {
+                    let expected = target.expected_destination_revision.as_deref().ok_or_else(|| StoreError::Invariant(format!("expected_destination_revision is required for existing destination {}", target.destination_path)))?;
+                    if expected != data.profile.revision_id {
+                        return Err(StoreError::RevisionConflict {
+                            path: target.destination_path.clone(),
+                            expected: expected.to_string(),
+                            found: data.profile.revision_id.clone(),
+                        });
+                    }
+                    if target.destination_group_name.is_some() {
+                        return Err(StoreError::Invariant(
+                            "destination_group_name is only valid for a new destination".into(),
+                        ));
+                    }
+                    (
+                        data.profile.group_id.clone(),
+                        data.profile.group_name.clone(),
+                        Self::next_revision(&data.profile.revision_id),
+                    )
+                }
+                None => {
+                    if target.expected_destination_revision.is_some() {
+                        return Err(StoreError::Invariant(format!(
+                            "new destination {} must not specify a revision",
+                            target.destination_path
+                        )));
+                    }
+                    let name = target
+                        .destination_group_name
+                        .as_deref()
+                        .filter(|n| !n.trim().is_empty())
+                        .ok_or_else(|| {
+                            StoreError::Invariant(
+                                "new destination requires a nonempty destination_group_name".into(),
+                            )
+                        })?;
+                    create_only_paths.push(target.destination_path.clone());
+                    let id = sanitize_group_name(name);
+                    (id.clone(), name.to_string(), "rev-1".to_string())
+                }
+            };
+            if let Some(data) = &data {
+                inputs.push(Self::input_of(&target.destination_path, data));
+            }
+            destinations.push(BatchDestination {
+                path: target.destination_path.clone(),
+                data,
+                selected,
+                group_id: id,
+                group_name: name,
+                revision,
+            });
+        }
+
+        let mut current_source = original_source.clone();
+        let source_revision = Self::next_revision(&original_source.profile.revision_id);
+        let mut destination_outputs = Vec::new();
+        for destination in destinations {
+            let (source_out, dest_out) = plan_move(
+                &req.source_path,
+                &current_source,
+                Some((&destination.path, destination.data.as_ref())),
+                &destination.selected,
+                &source_revision,
+                &destination.group_id,
+                &destination.group_name,
+                &destination.revision,
+            )?;
+            current_source = match source_out {
+                Some(out) => GroupFileData {
+                    profile: original_source.profile.clone(),
+                    rows: out.rows,
+                },
+                None => GroupFileData {
+                    profile: original_source.profile.clone(),
+                    rows: Vec::new(),
+                },
+            };
+            if let Some(out) = dest_out {
+                destination_outputs.push(out);
+            }
+        }
+        let mut delete_paths = Vec::new();
+        let source_out = if current_source.rows.is_empty() {
+            delete_paths.push(req.source_path.clone());
+            None
+        } else {
+            Some(PlannedOutput {
+                path: req.source_path.clone(),
+                group_id: original_source.profile.group_id.clone(),
+                group_name: original_source.profile.group_name.clone(),
+                revision_id: source_revision,
+                rows: current_source.rows,
+                roles: original_source.profile.roles.clone(),
+                recipe: original_source.profile.import_recipe.clone(),
+                source_path: original_source.profile.source_path.clone(),
+                source_sha256: original_source.profile.source_sha256.clone(),
+            })
+        };
+        // Detect a newly appeared create-only path before handing off to the executor.
+        for path in &create_only_paths {
+            if self.store.resolve(path)?.exists() {
+                return Err(StoreError::Invariant(format!(
+                    "new destination appeared during planning: {path}"
+                )));
+            }
+        }
+        let mut outputs: Vec<PlannedOutput> = source_out.into_iter().collect();
+        outputs.extend(destination_outputs);
+        let tx = Transaction {
+            action: TransactionAction::MoveUnits,
+            inputs,
+            outputs,
+            delete_paths,
+            selected_uuids: selected_all,
+        };
+        let transaction_id = self.store.execute(&tx)?;
+        Ok(TransactionResponse {
+            transaction_id,
+            action: "move_units".into(),
+            outputs: tx
+                .outputs
+                .iter()
+                .map(|out| Self::summary_of_output(&out.path, out))
+                .collect(),
+            deleted_paths: tx.delete_paths.clone(),
+        })
     }
 
     /// Moves or copies selected analytical units between groups through one
@@ -563,9 +829,10 @@ mod tests {
     use super::*;
     use crate::import::ImportService;
     use archaeodash_contracts::{
-        DescriptiveEdit, DuplicateGroupRequest, ImportCommitRequest, PatchDescriptiveValuesRequest,
+        BatchTransferTarget, BatchTransferUnitsRequest, DescriptiveEdit, DuplicateGroupRequest,
+        ImportCommitRequest, PatchDescriptiveValuesRequest,
     };
-    use archaeodash_data_io::read_group_file;
+    use archaeodash_data_io::{read_group_file, write_group_rows};
 
     fn commit_two_groups(root: &std::path::Path) -> (GroupService, Vec<String>) {
         std::fs::write(
@@ -669,6 +936,201 @@ mod tests {
         assert!(
             !dir.path().join(&paths[0]).exists(),
             "emptied source deleted"
+        );
+    }
+
+    #[test]
+    fn batch_move_mixes_existing_and_new_destinations_atomically() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, paths) = commit_two_groups(dir.path());
+        let source = read_group_file(&dir.path().join(&paths[0])).expect("source");
+        let existing = read_group_file(&dir.path().join(&paths[1])).expect("existing");
+        let a = source.rows[0].uuid.to_string();
+        let b = source.rows[1].uuid.to_string();
+        let response = service
+            .batch_transfer_units(&BatchTransferUnitsRequest {
+                source_path: paths[0].clone(),
+                expected_source_revision: source.profile.revision_id,
+                targets: vec![
+                    BatchTransferTarget {
+                        destination_path: paths[1].clone(),
+                        destination_group_name: None,
+                        expected_destination_revision: Some(existing.profile.revision_id),
+                        selected_uuids: vec![a.clone()],
+                    },
+                    BatchTransferTarget {
+                        destination_path: "groups/New.parquet".into(),
+                        destination_group_name: Some("New".into()),
+                        expected_destination_revision: None,
+                        selected_uuids: vec![b.clone()],
+                    },
+                ],
+            })
+            .expect("atomic batch move");
+        assert_eq!(response.outputs.len(), 2);
+        assert!(!dir.path().join(&paths[0]).exists());
+        let moved_existing =
+            read_group_file(&dir.path().join(&paths[1])).expect("existing successor");
+        let moved_new =
+            read_group_file(&dir.path().join("groups/New.parquet")).expect("new successor");
+        assert!(moved_existing.rows.iter().any(|r| r.uuid.to_string() == a));
+        assert!(moved_new.rows.iter().any(|r| r.uuid.to_string() == b));
+    }
+
+    #[test]
+    fn batch_move_late_stale_destination_writes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, paths) = commit_two_groups(dir.path());
+        let source = read_group_file(&dir.path().join(&paths[0])).expect("source");
+        let existing = read_group_file(&dir.path().join(&paths[1])).expect("existing");
+        std::fs::copy(
+            dir.path().join(&paths[1]),
+            dir.path().join("groups/Third.parquet"),
+        )
+        .expect("copy third destination");
+        let before_source = std::fs::read(dir.path().join(&paths[0])).expect("source bytes");
+        let before_dest = std::fs::read(dir.path().join(&paths[1])).expect("dest bytes");
+        let before_third =
+            std::fs::read(dir.path().join("groups/Third.parquet")).expect("third bytes");
+        let err = service
+            .batch_transfer_units(&BatchTransferUnitsRequest {
+                source_path: paths[0].clone(),
+                expected_source_revision: source.profile.revision_id,
+                targets: vec![
+                    BatchTransferTarget {
+                        destination_path: paths[1].clone(),
+                        destination_group_name: None,
+                        expected_destination_revision: Some(existing.profile.revision_id),
+                        selected_uuids: vec![source.rows[0].uuid.to_string()],
+                    },
+                    BatchTransferTarget {
+                        destination_path: "groups/Third.parquet".into(),
+                        destination_group_name: None,
+                        expected_destination_revision: Some("stale".into()),
+                        selected_uuids: vec![source.rows[1].uuid.to_string()],
+                    },
+                ],
+            })
+            .expect_err("duplicate path must reject preflight");
+        assert!(matches!(err, StoreError::RevisionConflict { .. }));
+        assert_eq!(
+            std::fs::read(dir.path().join(&paths[0])).expect("source unchanged"),
+            before_source
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join(&paths[1])).expect("dest unchanged"),
+            before_dest
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("groups/Third.parquet")).expect("third unchanged"),
+            before_third
+        );
+    }
+
+    #[test]
+    fn batch_move_rejects_duplicate_and_unknown_uuids() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, paths) = commit_two_groups(dir.path());
+        let source = read_group_file(&dir.path().join(&paths[0])).expect("source");
+        let duplicate = source.rows[0].uuid.to_string();
+        let req = |one: String, two: String| BatchTransferUnitsRequest {
+            source_path: paths[0].clone(),
+            expected_source_revision: source.profile.revision_id.clone(),
+            targets: vec![
+                BatchTransferTarget {
+                    destination_path: "groups/One.parquet".into(),
+                    destination_group_name: Some("One".into()),
+                    expected_destination_revision: None,
+                    selected_uuids: vec![one],
+                },
+                BatchTransferTarget {
+                    destination_path: "groups/Two.parquet".into(),
+                    destination_group_name: Some("Two".into()),
+                    expected_destination_revision: None,
+                    selected_uuids: vec![two],
+                },
+            ],
+        };
+        assert!(matches!(
+            service.batch_transfer_units(&req(duplicate.clone(), duplicate)),
+            Err(StoreError::Invariant(_))
+        ));
+        assert!(matches!(
+            service.batch_transfer_units(&req(
+                Uuid::now_v7().to_string(),
+                source.rows[1].uuid.to_string()
+            )),
+            Err(StoreError::Invariant(_))
+        ));
+        assert!(!dir.path().join("groups/One.parquet").exists());
+        assert!(!dir.path().join("groups/Two.parquet").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn batch_move_rejects_hard_link_destination_aliases() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, paths) = commit_two_groups(dir.path());
+        let source = read_group_file(&dir.path().join(&paths[0])).expect("source");
+        std::fs::hard_link(
+            dir.path().join(&paths[0]),
+            dir.path().join("groups/SourceAlias.parquet"),
+        )
+        .expect("hard link alias");
+        let err = service
+            .batch_transfer_units(&BatchTransferUnitsRequest {
+                source_path: paths[0].clone(),
+                expected_source_revision: source.profile.revision_id,
+                targets: vec![BatchTransferTarget {
+                    destination_path: "groups/SourceAlias.parquet".into(),
+                    destination_group_name: None,
+                    expected_destination_revision: Some("rev-1".into()),
+                    selected_uuids: vec![source.rows[0].uuid.to_string()],
+                }],
+            })
+            .expect_err("hard link alias rejected");
+        assert!(matches!(err, StoreError::Invariant(_)));
+    }
+
+    #[test]
+    fn batch_move_rejects_schema_mismatch_before_any_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, paths) = commit_two_groups(dir.path());
+        let source = read_group_file(&dir.path().join(&paths[0])).expect("source");
+        let destination = read_group_file(&dir.path().join(&paths[1])).expect("destination");
+        let mut mismatched_profile = destination.profile.clone();
+        mismatched_profile.roles.elemental = vec!["zn".into()];
+        let mut rows = destination.rows.clone();
+        for row in &mut rows {
+            row.elemental = vec![Some(9.0)];
+        }
+        write_group_rows(&dir.path().join(&paths[1]), mismatched_profile, &rows)
+            .expect("rewrite schema");
+        let mismatch =
+            read_group_file(&dir.path().join(&paths[1])).expect("valid mismatched group");
+        let before_source = std::fs::read(dir.path().join(&paths[0])).expect("source bytes");
+        let before_destination =
+            std::fs::read(dir.path().join(&paths[1])).expect("destination bytes");
+        let err = service
+            .batch_transfer_units(&BatchTransferUnitsRequest {
+                source_path: paths[0].clone(),
+                expected_source_revision: source.profile.revision_id,
+                targets: vec![BatchTransferTarget {
+                    destination_path: paths[1].clone(),
+                    destination_group_name: None,
+                    expected_destination_revision: Some(mismatch.profile.revision_id),
+                    selected_uuids: vec![source.rows[0].uuid.to_string()],
+                }],
+            })
+            .expect_err("schema mismatch");
+        assert!(matches!(err, StoreError::SchemaMismatch { .. }));
+        assert_eq!(
+            std::fs::read(dir.path().join(&paths[0])).expect("source unchanged"),
+            before_source
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join(&paths[1])).expect("destination unchanged"),
+            before_destination
         );
     }
 
