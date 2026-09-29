@@ -354,6 +354,8 @@ export interface ClusterFitRequest extends OrdinationRequestBase {
   seed?: number | null;
 }
 export interface ClusterFitResponse {
+  /** Hidden immutable identities in input row order. */
+  analytical_uuids: string[];
   path: string;
   revision_id: string;
   method: ClusterMethod;
@@ -377,6 +379,8 @@ export interface MembershipProbabilitiesRequest {
   method: MembershipMethod;
 }
 export interface MembershipProbabilitiesResponse {
+  /** Hidden immutable identities aligned with ids and probability rows. */
+  analytical_uuids: string[];
   path: string;
   revision_id: string;
   effective_method: MembershipMethod;
@@ -397,6 +401,9 @@ export interface EuclideanMatchesRequest {
   within_group: boolean;
 }
 export interface EuclideanMatchDto {
+  /** Hidden identities; display IDs are not unique selection keys. */
+  analytical_uuid: string;
+  match_analytical_uuid: string;
   rowid: string;
   id: string;
   match_id: string;

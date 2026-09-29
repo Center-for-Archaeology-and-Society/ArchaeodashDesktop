@@ -353,6 +353,7 @@ impl ClusterService {
 
         let mut response = ClusterFitResponse {
             path: req.path.clone(),
+            analytical_uuids: data.rows.iter().map(|r| r.uuid.to_string()).collect(),
             revision_id: data.profile.revision_id.clone(),
             method: req.method,
             n_rows: n as u64,
@@ -469,6 +470,7 @@ impl ClusterService {
         let non_finite_null = |v: f64| if v.is_finite() { Some(v) } else { None };
         Ok(MembershipProbabilitiesResponse {
             path: req.path.clone(),
+            analytical_uuids: data.rows.iter().map(|r| r.uuid.to_string()).collect(),
             revision_id: data.profile.revision_id.clone(),
             effective_method: match effective {
                 MembershipMethod::Hotellings => MembershipMethodDto::Hotellings,
@@ -546,7 +548,12 @@ impl ClusterService {
             rows: matches
                 .into_iter()
                 .map(|m: EuclideanMatch| EuclideanMatchDto {
-                    rowid: visible_rowids.get(&m.rowid).cloned().unwrap_or(m.rowid),
+                    rowid: visible_rowids
+                        .get(&m.rowid)
+                        .cloned()
+                        .unwrap_or_else(|| m.rowid.clone()),
+                    analytical_uuid: m.rowid,
+                    match_analytical_uuid: m.match_rowid.clone(),
                     id: m.id,
                     match_id: m.match_id,
                     distance: m.distance.is_finite().then_some(m.distance),
@@ -751,6 +758,15 @@ mod tests {
             .cluster_fit(&request(ClusterMethod::Kmeans, Some(3)))
             .expect("kmeans");
         assert_eq!(kmeans_fit.n_rows, 30);
+        assert_eq!(kmeans_fit.analytical_uuids.len(), 30);
+        assert_eq!(
+            kmeans_fit
+                .analytical_uuids
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            30
+        );
         let cluster = kmeans_fit.cluster.expect("kmeans cluster");
         assert_eq!(cluster.len(), 30);
         assert!(cluster.iter().all(|&c| (1..=3).contains(&c)));
@@ -922,6 +938,15 @@ mod tests {
         // every 8-row group is eligible, sorted byte order.
         assert_eq!(response.eligible_groups, vec!["A", "B", "C"]);
         assert_eq!(response.ids.len(), 24);
+        assert_eq!(response.analytical_uuids.len(), 24);
+        assert_eq!(
+            response
+                .analytical_uuids
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            24
+        );
         assert_eq!(response.groups.len(), 24);
         assert_eq!(response.probabilities.len(), 24);
         assert_eq!(response.probabilities[0].len(), 3);
@@ -1057,6 +1082,9 @@ mod tests {
         let mut data = read_group_file(&file).expect("read group");
         data.rows[0].legacy_rowid = Some("duplicate".into());
         data.rows[1].legacy_rowid = Some("duplicate".into());
+        data.rows[0].visible = Some("duplicate".into());
+        data.rows[1].visible = Some("duplicate".into());
+        let uuids = [data.rows[0].uuid.to_string(), data.rows[1].uuid.to_string()];
         write_group_rows(&file, data.profile, &data.rows).expect("write duplicated rowids");
 
         let response = service
@@ -1069,11 +1097,16 @@ mod tests {
                 within_group: true,
             })
             .expect("matches");
-        assert!(response.rows.iter().any(|row| {
-            ((row.id == "X0" && row.match_id == "X1")
-                || (row.id == "X1" && row.match_id == "X0"))
-                && row.rowid == "duplicate"
-        }), "distinct UUID-backed observations remain match candidates despite duplicate legacy keys");
+        for uuid in &uuids {
+            assert!(response.rows.iter().any(|row| {
+                row.analytical_uuid == *uuid
+                    && row.match_analytical_uuid != *uuid
+                    && uuids.contains(&row.match_analytical_uuid)
+                    && row.id == "duplicate"
+                    && row.match_id == "duplicate"
+                    && row.rowid == "duplicate"
+            }), "each observation remains correlated with its UUID-backed match despite duplicate visible and legacy IDs");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

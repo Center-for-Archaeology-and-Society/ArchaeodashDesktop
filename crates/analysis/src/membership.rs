@@ -610,6 +610,8 @@ fn r_solve_inverse(a: &[Vec<f64>], tol: f64) -> Option<Vec<Vec<f64>>> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EuclideanMatch {
     pub rowid: String,
+    /// Stable key of the matched input row, aligned with the rowid input.
+    pub match_rowid: String,
     pub id: String,
     pub match_id: String,
     pub distance: f64,
@@ -702,6 +704,7 @@ pub fn calc_e_distance(
         .into_iter()
         .map(|(i, j, distance)| EuclideanMatch {
             rowid: rowids[i].clone(),
+            match_rowid: rowids[j].clone(),
             id: ids[i].clone(),
             match_id: ids[j].clone(),
             distance,

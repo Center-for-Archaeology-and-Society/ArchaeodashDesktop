@@ -878,6 +878,8 @@ fn default_cluster_nstart() -> u32 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClusterFitResponse {
     pub path: String,
+    /// Immutable analytical identities in input row order.
+    pub analytical_uuids: Vec<String>,
     /// Revision the group file was at when computed.
     pub revision_id: String,
     /// Echo of the requested method.
@@ -943,6 +945,8 @@ pub struct MembershipProbabilitiesRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MembershipProbabilitiesResponse {
     pub path: String,
+    /// Immutable analytical identities in input row order.
+    pub analytical_uuids: Vec<String>,
     /// Revision the group file was at when computed.
     pub revision_id: String,
     /// Method that actually produced the table (Hotellings requests may
@@ -991,6 +995,10 @@ pub struct EuclideanMatchesRequest {
 pub struct EuclideanMatchDto {
     /// Stable row key (`rowid`), self-exclusion key.
     pub rowid: String,
+    /// Immutable identity of the observation.
+    pub analytical_uuid: String,
+    /// Immutable identity of the matched row.
+    pub match_analytical_uuid: String,
     /// Observation ID value.
     pub id: String,
     /// Match ID value.
@@ -1532,6 +1540,7 @@ mod cluster_membership_dto_tests {
 
         let fit_response = ClusterFitResponse {
             path: "groups/Baca.parquet".into(),
+            analytical_uuids: vec!["uuid-1".into(), "uuid-2".into(), "uuid-3".into()],
             revision_id: "rev-1".into(),
             method: ClusterMethod::Pam,
             n_rows: 3,
@@ -1569,6 +1578,7 @@ mod cluster_membership_dto_tests {
 
         let response = MembershipProbabilitiesResponse {
             path: "groups/Baca.parquet".into(),
+            analytical_uuids: vec!["uuid-1".into()],
             revision_id: "rev-1".into(),
             effective_method: MembershipMethodDto::Mahalanobis,
             eligible_groups: vec!["Baca".into()],
@@ -1605,6 +1615,8 @@ mod cluster_membership_dto_tests {
             revision_id: "rev-1".into(),
             rows: vec![EuclideanMatchDto {
                 rowid: "1".into(),
+                analytical_uuid: "uuid-1".into(),
+                match_analytical_uuid: "uuid-2".into(),
                 id: "A1".into(),
                 match_id: "B1".into(),
                 distance: Some(2.5),

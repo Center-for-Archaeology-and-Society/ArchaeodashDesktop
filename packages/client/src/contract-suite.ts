@@ -205,6 +205,7 @@ export function registerTransportContractTests(
 
     const fitRequest = { path: clusterRequest.path, columns: ['Ti'], method: 'pam' as const, k: 2 };
     const fit: ClusterFitResponse = {
+      analytical_uuids: ['01970000-0000-7000-8000-000000000001', '01970000-0000-7000-8000-000000000002', '01970000-0000-7000-8000-000000000003'],
       path: fitRequest.path, revision_id: 'rev-1', method: 'pam', n_rows: 3,
       cluster: [1, 2, 1], size: null, tot_withinss: null, centers: null,
       medoids: [1, 2], merge: null, height: null, order: null, silhouette: [0.4, 0.5, 0.6],
@@ -214,6 +215,7 @@ export function registerTransportContractTests(
     assert.equal(h.calls[1]?.label, labels.clusterFit);
 
     const membership: MembershipProbabilitiesResponse = {
+      analytical_uuids: ['01970000-0000-7000-8000-000000000001'],
       path: clusterRequest.path, revision_id: 'rev-1', effective_method: 'mahalanobis',
       eligible_groups: ['A', 'B'], ids: ['s1'], groups: ['A'],
       probabilities: [[0.8, 0.2]], best_group: ['A'], best_value: [0.8], in_group: [true],
@@ -226,7 +228,7 @@ export function registerTransportContractTests(
 
     const euclidean: EuclideanMatchesResponse = {
       path: clusterRequest.path, revision_id: 'rev-1',
-      rows: [{ rowid: '1', id: 's1', match_id: 's2', distance: 0.5, group: 'A', match_group: 'B' }],
+      rows: [{ analytical_uuid: '01970000-0000-7000-8000-000000000001', match_analytical_uuid: '01970000-0000-7000-8000-000000000002', rowid: '1', id: 's1', match_id: 's2', distance: 0.5, group: 'A', match_group: 'B' }],
     };
     h.respond(euclidean);
     assert.deepEqual(await h.transport.clustering.euclideanMatches({
