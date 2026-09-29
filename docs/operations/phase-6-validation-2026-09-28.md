@@ -48,12 +48,13 @@ node /home/rjbischo/.cache/node/corepack/pnpm/12.4.1/bin/pnpm.mjs --filter @arch
 | 9, clustering (class T) | `golden_09_clustering.rs` checks k-means, PAM, Ward.D2, DIANA, WSS, and silhouette. `golden_09_metric_linkage_matrix.rs` checks all 16 metric/linkage pairs on tied and untied six-row matrices, including exact merge orientation/order and tolerant heights; PAM and DIANA Euclidean/Manhattan also run on both matrices. | Both R-captured datasets match with exact topology/ordering and heights within `2e-12 * (1 + |R|)`. Reproduce using `Rscript scripts/capture_phase6_metric_matrix.R`; oracle R 4.5.2 / cluster 2.1.8.2. Fixture SHA-256: `3bc9dc3ac230a1d2a6b4dd7fb5d34d67c4c532557917898df6e0b5cf41c9414f`. |
 | 10, membership probabilities (class E/T) | `golden_10_membership.rs` checks eligibility, Hotelling T² and Mahalanobis tables against the R golden, including assignment labels and serialized numeric tolerances. | Passes for the recorded INAA/CORE/first-four-chemistry-column baseline. This is one fixed baseline, not a broad distributional study. |
 | 11, Euclidean nearest matches (class E) | `golden_11_euclidean.rs` checks ordered identities, groups, and serialized distances against the R golden. | Passes for the recorded INAA baseline, top five, excluding same-group matches. Additional tied/duplicate-ID and alternate projection cases are covered by analysis/application tests, not this single R golden. |
-| 13, interactive multiplot sampling (class E) | The artifact and manifest record 100,000 points, 180,000 candidates, 12 facets, 5 groups, and 99,960 selected points. `multiplot-model.test.ts` checks all rows at the ceiling and deterministic stride-from-zero sampling at 250,000; component tests check the status label. | Unit/model behavior passes. The recorded artifact is not directly consumed by a Rust golden test, and browser rendering at 100,000 points is not measured here. |
+| 13, interactive multiplot sampling (class E) | `multiplot-model.test.ts` reads `fixtures/golden/13_multiplot_interactive_sampling.json`, reconstructs source-row order by group from `fixtures/INAA_test.csv`, and compares every group/facet selected row, selected count, and per-group cap. | Direct R fixture parity passes: 180,000 candidates, 12 facets, 5 groups, cap 1,666, and 99,960 selected. Sampling now follows per-group/facet first-row `slice_head` order. The actual browser render at 100,000 points is still not measured. |
 
 `cargo test -p archaeodash-parity` passed all 26 parity/support tests: the
 registered import, PCA, UMAP, LDA, clustering, membership, Euclidean, Explore,
 export, transformation, and group-profile test files. Procedure 13 is in the
-web tests, not that Rust suite. The full web suite passed 87 tests.
+web tests, not that Rust suite. The full web suite passed 91 tests after the
+procedure 13 parity correction.
 `cargo test -p archaeodash-analysis` passed 39 unit tests at the prior
 validation checkpoint; the new R matrix adds one parity test.
 

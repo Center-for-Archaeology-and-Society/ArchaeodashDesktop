@@ -1,7 +1,7 @@
 /**
  * Multiplot (Section 9.4): grid of pairwise X/Y scatters with disjoint
  * selectors, point size, panel height 500–2000, static/interactive mode,
- * deterministic 100k-point interactive sampling (labeled per procedure 13),
+ * legacy per-group/per-facet 100k-point interactive sampling (labeled per procedure 13),
  * progressive render with cancel, and plot save (SVG download in static
  * mode; Plotly toImage SVG export in interactive mode; the uuid stays
  * internal to selection only).
@@ -242,8 +242,8 @@ export function Multiplot(props: MultiplotProps): ReactElement {
 
   const pairs = useMemo(() => allPairs(props.columns.length), [props.columns]);
   const plan: SamplingPlan = useMemo(
-    () => samplingPlan(props.rowIndices.length),
-    [props.rowIndices],
+    () => samplingPlan(props.rowIndices, props.groupLabels, pairs.length, props.columns.length ** 2),
+    [props.rowIndices, props.groupLabels, pairs.length, props.columns.length],
   );
   const visiblePairs = renderCount === null ? pairs : pairs.slice(0, renderCount);
 
@@ -276,7 +276,7 @@ export function Multiplot(props: MultiplotProps): ReactElement {
     });
   };
 
-  const samplingStatus = samplingStatusText(plan, props.rowIndices.length);
+  const samplingStatus = mode === 'interactive' ? samplingStatusText(plan) : null;
 
   return (
     <div className="multiplot">
@@ -319,7 +319,7 @@ export function Multiplot(props: MultiplotProps): ReactElement {
           Save plots (SVG)
         </button>
       </div>
-      {samplingStatus !== null && <p role="status">{samplingStatus}</p>}
+      {samplingStatus !== null && <p role={plan.errorText === null ? 'status' : 'alert'}>{samplingStatus}</p>}
       {pairs.length === 0 && <p className="muted">Pick at least two predictors for a multiplot.</p>}
       <div className="multiplot-grid" ref={gridRef}>
         {visiblePairs.map((pair) => (
@@ -358,7 +358,7 @@ function MultiplotPanel({
   height: number;
   mode: MultiplotMode;
 }): ReactElement {
-  const { traces } = panelPoints(props, pair, plan.indices);
+  const { traces } = panelPoints(props, pair, mode === 'interactive' ? plan.indices : props.rowIndices);
   const xLabel = props.columns[pair.xIndex] ?? `X${pair.xIndex}`;
   const yLabel = props.columns[pair.yIndex] ?? `Y${pair.yIndex}`;
   if (mode === 'interactive') {

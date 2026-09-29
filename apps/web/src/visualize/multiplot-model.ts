@@ -1,34 +1,87 @@
 /**
- * Multiplot model (Section 9.4): deterministic sampling for the interactive
- * 100,000-point ceiling, disjoint X/Y pair planning, and plot-save helpers.
- *
- * Parity class E (procedure 13): when a plot exceeds the ceiling the sampled
- * index set must be deterministic — a fixed stride from index 0, so the same
- * dataset always renders the same subset and the UI labels that sampling
- * happened (`sampled: true` with the stride).
+ * Multiplot model (Section 9.4): legacy R group/facet slice-head sampling for
+ * the interactive 100,000-point ceiling, disjoint pair planning, and save
+ * helpers.
  */
 
-/** Legacy interactive ceiling: at most 100,000 points per interactive panel. */
+/** Legacy interactive ceiling: at most 100,000 points across the rendered grid. */
 export const INTERACTIVE_POINT_CEILING = 100_000;
 
 export interface SamplingPlan {
-  /** Row indices to draw, ascending and deterministic. */
+  /** Source-array row indices to draw, in source order. */
   readonly indices: number[];
-  /** True when the ceiling forced sampling (the UI must label this). */
+  /** True when the interactive ceiling dropped candidate points. */
   readonly sampled: boolean;
-  /** Stride between kept rows (1 when unsampled). */
-  readonly stride: number;
+  readonly candidateCount: number;
+  readonly selectedCount: number;
+  readonly perGroupFacet: number;
+  readonly errorText: string | null;
 }
 
-export function samplingPlan(n: number, ceiling = INTERACTIVE_POINT_CEILING): SamplingPlan {
-  if (!Number.isFinite(n) || n <= 0) return { indices: [], sampled: false, stride: 1 };
-  if (n <= ceiling) {
-    return { indices: Array.from({ length: n }, (_, i) => i), sampled: false, stride: 1 };
+export function samplingPlan(
+  rowIndices: readonly number[],
+  groupLabels: readonly string[],
+  renderedFacetCount: number,
+  facetGridBudget: number,
+  ceiling = INTERACTIVE_POINT_CEILING,
+): SamplingPlan {
+  if (!Number.isSafeInteger(renderedFacetCount) || renderedFacetCount < 0 ||
+      !Number.isSafeInteger(facetGridBudget) || facetGridBudget < renderedFacetCount ||
+      !Number.isSafeInteger(ceiling) || ceiling < 1) {
+    throw new RangeError('Invalid multiplot sampling dimensions');
   }
-  const stride = Math.ceil(n / ceiling);
+  if (renderedFacetCount === 0 || rowIndices.length === 0) {
+    return {
+      indices: [],
+      sampled: false,
+      candidateCount: 0,
+      selectedCount: 0,
+      perGroupFacet: 0,
+      errorText: null,
+    };
+  }
+  const counts = new Map<string, number>();
+  for (const row of rowIndices) {
+    const group = groupLabels[row] ?? 'All';
+    counts.set(group, (counts.get(group) ?? 0) + 1);
+  }
+  const groupCount = Math.max(1, counts.size);
+  const rawBudget = Math.floor(ceiling / (facetGridBudget * groupCount));
+  const aggregateBound = Math.floor(ceiling / (renderedFacetCount * groupCount));
+  if (rawBudget < 1 || aggregateBound < 1) {
+    return {
+      indices: [],
+      sampled: true,
+      candidateCount: rowIndices.length * renderedFacetCount,
+      selectedCount: 0,
+      perGroupFacet: 0,
+      errorText: 'Too many groups or facets for the 100,000-point interactive limit. Reduce the selected groups or predictors.',
+    };
+  }
+  // R uses max(25, rawBudget). Clamp that floor to the stricter rendered-grid
+  // bound so unusually large facet/group grids can never exceed 100,000.
+  const perGroupFacet = Math.min(Math.max(25, rawBudget), aggregateBound);
+  const kept = new Map<string, number>();
   const indices: number[] = [];
-  for (let i = 0; i < n; i += stride) indices.push(i);
-  return { indices, sampled: true, stride };
+  for (const row of rowIndices) {
+    const group = groupLabels[row] ?? 'All';
+    const count = kept.get(group) ?? 0;
+    if (count < perGroupFacet) {
+      indices.push(row);
+      kept.set(group, count + 1);
+    }
+  }
+  const selectedRows = [...kept.values()].reduce((n, count) => n + count, 0);
+  const candidateCount = rowIndices.length * renderedFacetCount;
+  const selectedCount = selectedRows * renderedFacetCount;
+  return {
+    indices,
+    sampled: selectedCount < candidateCount,
+    candidateCount,
+    selectedCount,
+    perGroupFacet,
+    errorText: null,
+  };
 }
 
 /** One scatter panel of a multiplot grid. */
@@ -56,9 +109,10 @@ export function allPairs(columnCount: number): PlotPair[] {
  * preserve the 100k ceiling but display the deterministic sampling
  * status/count). Returns null when nothing was dropped.
  */
-export function samplingStatusText(plan: SamplingPlan, total: number): string | null {
+export function samplingStatusText(plan: SamplingPlan): string | null {
+  if (plan.errorText !== null) return plan.errorText;
   if (!plan.sampled) return null;
-  return `Sampled ${plan.indices.length} of ${total} points (stride ${plan.stride}, deterministic)`;
+  return `Sampled ${plan.selectedCount.toLocaleString()} of ${plan.candidateCount.toLocaleString()} interactive points (up to ${plan.perGroupFacet.toLocaleString()} per group and facet)`;
 }
 
 /**

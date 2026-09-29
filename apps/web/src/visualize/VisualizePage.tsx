@@ -45,6 +45,16 @@ type AsyncState<T> =
 
 const ELLIPSE_LEVELS: readonly string[] = ['off', '0.50', '0.90', '0.95', '0.99'] as const;
 
+/** Convert row-major API records into the column-major arrays used by plots. */
+export function transposeElementalRows(
+  rows: readonly GroupRowDto[],
+  columnCount: number,
+): (number | null)[][] {
+  return Array.from({ length: columnCount }, (_, columnIndex) =>
+    rows.map((row) => row.elemental[columnIndex] ?? null),
+  );
+}
+
 /** Pure selected-rows table: ANID, metadata, predictors — never the UUID. */
 export function SelectedRowsTable({
   rows,
@@ -440,7 +450,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       {plotMode === 'multiplot' && data ? (
         <Multiplot
           columns={data.elemental_columns}
-          values={data.rows.map((r) => r.elemental)}
+          values={transposeElementalRows(data.rows, data.elemental_columns.length)}
           groupLabels={data.rows.map((r) => {
             const gi = data.descriptive_columns.findIndex((c) => c.toLowerCase() === 'group');
             return gi >= 0 ? normalizeFilterValue(r.descriptive[gi]) : 'All';

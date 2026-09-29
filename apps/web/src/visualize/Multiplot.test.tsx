@@ -40,24 +40,22 @@ test('interactive mode is SSR-safe: placeholder panels, no window access, no uui
   assert.ok(!html.includes('NaN'), 'null cells skipped cleanly');
 });
 
-test('sampling status appears when the 100k ceiling drops points', () => {
+test('interactive mode reports per-group sampling while static mode keeps every row', () => {
   const total = 100_001;
   const props = baseProps();
   const sampled: MultiplotProps = {
     ...props,
-    // Only the sampled stride indices are visited; missing values are skipped.
+    // Rows are missing-valued here, so the test exercises allocation/status without circles.
     rowIndices: Array.from({ length: total }, (_, i) => i),
     values: [[], [], []],
     groupLabels: [],
     rowUuids: [],
   };
-  for (const mode of ['static', 'interactive'] as const) {
-    const html = renderToString(<Multiplot {...sampled} initialMode={mode} />);
-    assert.ok(
-      html.includes('Sampled 50001 of 100001 points (stride 2, deterministic)'),
-      `sampling label present in ${mode} mode`,
-    );
-  }
+  const staticHtml = renderToString(<Multiplot {...sampled} initialMode="static" />);
+  assert.ok(!staticHtml.includes('Sampled'), 'static plots preserve all source rows');
+  const interactiveHtml = renderToString(<Multiplot {...sampled} initialMode="interactive" />);
+  assert.ok(interactiveHtml.includes('Sampled 66,666 of 600,006 interactive points'));
+  assert.ok(interactiveHtml.includes('up to 11,111 per group and facet'));
 });
 
 test('unsampled data shows no sampling status', () => {

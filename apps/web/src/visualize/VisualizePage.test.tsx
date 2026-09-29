@@ -8,7 +8,7 @@ import type {
   GroupsService,
   OrdinationService,
 } from '@archaeodash/client';
-import { SelectedRowsTable, VisualizePage, type VisualizeDeps } from './VisualizePage.tsx';
+import { SelectedRowsTable, VisualizePage, transposeElementalRows, type VisualizeDeps } from './VisualizePage.tsx';
 import { Multiplot } from './Multiplot.tsx';
 import { chiSquare2, symbolFor } from './visualize-model.ts';
 
@@ -155,7 +155,20 @@ test('ten-symbol map and chi-square ellipse quantiles match the legacy contract'
   assert.ok(Math.abs(chiSquare2(0.95) - 5.991464547107979) < 1e-12);
 });
 
-test('multiplot renders static SVG panels for all disjoint pairs with sampling label', () => {
+test('multiplot input transposes row-major API data into column-major plot arrays', () => {
+  assert.deepEqual(transposeElementalRows(rows.rows, rows.elemental_columns.length), [
+    [1.5, 2.5],
+    [3.0, 4.0],
+  ]);
+  const wider = rows.rows.map((row, i) => ({ ...row, elemental: [i + 1, i + 11, i + 21] }));
+  assert.deepEqual(transposeElementalRows(wider, 3), [
+    [1, 2],
+    [11, 12],
+    [21, 22],
+  ]);
+});
+
+test('multiplot renders static SVG panels for all disjoint pairs without interactive sampling status', () => {
   const values: (number | null)[][] = [
     [1, 2, 3, 4],
     [2, 4, 6, 8],
@@ -176,6 +189,7 @@ test('multiplot renders static SVG panels for all disjoint pairs with sampling l
   assert.ok(html.includes('Save plots (SVG)'), 'plot save control present');
   // Null cells render nothing but panels still exist.
   assert.ok(!html.includes('NaN'));
+  assert.ok(!html.includes('Sampled'), 'static mode renders all selected rows');
 });
 
 test('multiplot point size and height controls are exposed', () => {
