@@ -9,9 +9,7 @@ use archaeodash_contracts::{
     GroupRowDto, GroupRowsResponse, GroupSummary, MergeGroupsRequest,
     PatchDescriptiveValuesRequest, TransactionResponse, TransferAction, TransferUnitsRequest,
 };
-use archaeodash_data_io::{
-    sanitize_group_name, scan_project, GroupFileData, GroupProfile, GroupRow,
-};
+use archaeodash_data_io::{sanitize_group_name, GroupFileData, GroupProfile, GroupRow};
 use archaeodash_file_store_fs::FsGroupFileStore;
 use archaeodash_storage::{
     plan_copy, plan_merge, plan_move, FileInput, GroupFileStore, PlannedOutput, StoreError,
@@ -48,7 +46,7 @@ impl GroupService {
     /// sorted by path (Section 6: metadata earns "ready to add"; catalog
     /// membership is never an eligibility gate).
     pub fn scan_candidates(&self) -> Result<Vec<GroupCandidate>, StoreError> {
-        let candidates = scan_project(&self.root)?;
+        let candidates = self.store.scan_candidates_snapshot()?;
         let mut out = Vec::new();
         for candidate in candidates {
             let path = candidate

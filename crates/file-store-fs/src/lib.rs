@@ -16,7 +16,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use archaeodash_data_io::{
-    read_group_file, sync_dir, validate_group_file, write_group_rows, GroupFileData, GroupProfile,
+    read_group_file, scan_project, sync_dir, validate_group_file, write_group_rows, GroupFileData,
+    GroupProfile, ScanCandidate,
 };
 use archaeodash_storage::{
     BackupRecord, GroupFileStore, StoreError, Transaction, TransactionIntent,
@@ -139,6 +140,14 @@ impl FsGroupFileStore {
                 }
             })
             .collect()
+    }
+
+    /// Discovers and profiles project candidates while holding one shared
+    /// project lock. This coordinates with transactions made through this
+    /// store; external writers that ignore the lock remain outside it.
+    pub fn scan_candidates_snapshot(&self) -> Result<Vec<ScanCandidate>, StoreError> {
+        let _project_lock = self.project_read_lock()?;
+        scan_project(&self.root).map_err(StoreError::from)
     }
 
     fn rollback_transaction(
@@ -711,6 +720,45 @@ mod tests {
         assert!(read_rx.recv_timeout(Duration::from_secs(3)).is_ok());
         drop(reader_guard);
         reader.join().expect("reader joins");
+    }
+
+    #[test]
+    fn candidate_scan_waits_for_exclusive_project_lock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let first = FsGroupFileStore::new(root).expect("first store");
+        let second = FsGroupFileStore::new(root).expect("second store");
+        let rel = "groups/scan-lock.parquet";
+        write_initial(
+            &root.join(rel),
+            "scan-lock",
+            &[row(Uuid::now_v7(), 1.0, None)],
+        );
+
+        let writer_guard = first.project_lock().expect("exclusive lock");
+        let (started_tx, started_rx) = mpsc::channel();
+        let (scan_tx, scan_rx) = mpsc::channel();
+        let scanner = std::thread::spawn(move || {
+            started_tx.send(()).expect("signal started");
+            scan_tx
+                .send(second.scan_candidates_snapshot())
+                .expect("send scan result");
+        });
+        started_rx.recv().expect("scanner started");
+        assert!(scan_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        drop(writer_guard);
+        let candidates = scan_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("scan completes after writer releases")
+            .expect("project scan succeeds");
+        assert!(candidates.iter().any(|candidate| {
+            candidate.path.ends_with(rel)
+                && matches!(
+                    candidate.status,
+                    archaeodash_data_io::CandidateStatus::ReadyToAdd(_)
+                )
+        }));
+        scanner.join().expect("scanner joins");
     }
 
     #[test]
