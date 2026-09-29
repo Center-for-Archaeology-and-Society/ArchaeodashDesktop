@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import type { GroupCandidate, GroupSummary, ImportPreviewResponse } from '@archaeodash/contracts';
 import type { Transport } from '@archaeodash/client';
+import type { StagedFile } from '@archaeodash/contracts';
 
-export type DataManagerTransport = Pick<Transport, 'files' | 'imports' | 'groups'>;
+export type DataManagerTransport = Pick<Transport, 'kind' | 'files' | 'imports' | 'groups'>;
 
 interface CheckedCandidate { candidate: GroupCandidate; validation: GroupSummary | null; error: string }
 
@@ -32,6 +33,18 @@ export function DataManager({ transport, onChanged }: { transport: DataManagerTr
   useEffect(() => { void refreshGroups().catch(cause => setError(cause instanceof Error ? cause.message : String(cause))); }, [refreshGroups]);
 
   const showError = (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause));
+  const previewStagedSource = async (staged: StagedFile, displayName: string) => {
+    if (staged.parse_state === 'parse_failed') throw new Error(staged.parse_error || 'The uploaded file could not be parsed.');
+    setSource(staged.path);
+    const next = await transport.imports.preview({ source: staged.path });
+    setPreview(next);
+    setGroupColumn('');
+    setGroupMode('column');
+    setGroupName('');
+    setIdColumn(next.id_column ?? '');
+    setMeasured(next.elemental_columns.filter(column => column !== (next.id_column ?? '')));
+    setMessage(`Uploaded ${displayName}. Choose a group column to preview and import.`);
+  };
   const upload = async (file?: File) => {
     if (!file) return;
     setBusy(true); setError(''); setMessage(''); setPreview(null);
@@ -39,16 +52,19 @@ export function DataManager({ transport, onChanged }: { transport: DataManagerTr
       const safeName = file.name.replaceAll(/[^A-Za-z0-9._-]/g, '_') || 'data.csv';
       const path = `sources/${Date.now()}-${safeName}`;
       const staged = await transport.files.upload(path, new Uint8Array(await file.arrayBuffer()));
-      if (staged.parse_state === 'parse_failed') throw new Error(staged.parse_error || 'The uploaded file could not be parsed.');
-      setSource(staged.path);
-      const next = await transport.imports.preview({ source: staged.path });
-      setPreview(next);
-      setGroupColumn('');
-      setGroupMode('column');
-      setGroupName('');
-      setIdColumn(next.id_column ?? '');
-      setMeasured(next.elemental_columns.filter(column => column !== (next.id_column ?? '')));
-      setMessage(`Uploaded ${file.name}. Choose a group column to preview and import.`);
+      await previewStagedSource(staged, file.name);
+    } catch (cause) { showError(cause); }
+    finally { setBusy(false); }
+  };
+  const chooseNativeSource = async () => {
+    if (!transport.files.pickImportSource) return;
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const staged = await transport.files.pickImportSource();
+      if (!staged) return;
+      setPreview(null);
+      const displayName = staged.path.split(/[\\/]/).at(-1) || staged.path;
+      await previewStagedSource(staged, displayName);
     } catch (cause) { showError(cause); }
     finally { setBusy(false); }
   };
@@ -87,7 +103,9 @@ export function DataManager({ transport, onChanged }: { transport: DataManagerTr
     <h1>Data Manager</h1>
     <section aria-labelledby="import-heading">
       <h2 id="import-heading">Import data</h2>
-      <label>Choose a CSV, TSV, or XLSX file <input type="file" accept=".csv,.tsv,.xlsx,text/csv" disabled={busy} onChange={event => void upload(event.currentTarget.files?.[0])} /></label>
+      {transport.kind === 'tauri' && transport.files.pickImportSource
+        ? <button type="button" disabled={busy} onClick={() => void chooseNativeSource()}>Choose a source file</button>
+        : <label>Choose a CSV, TSV, or XLSX file <input type="file" accept=".csv,.tsv,.xlsx,text/csv" disabled={busy} onChange={event => void upload(event.currentTarget.files?.[0])} /></label>}
       {source && <p>Source: {source}</p>}
       {preview && <>
         <p>{preview.row_count} rows; {preview.columns.length} columns</p>

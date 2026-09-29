@@ -108,6 +108,14 @@ test('tauri: file command args use camelCase keys over snake_case Rust params', 
   assert.deepEqual(h.calls[0]?.payload, { fileId: 'f-1' });
 });
 
+test('tauri: source picker passes no path and cancellation stays null', async () => {
+  const h = makeHarness();
+  h.respond(null);
+  assert.equal(await h.transport.files.pickImportSource?.(), null);
+  assert.equal(h.calls[0]?.label, 'invoke pick_and_upload_source');
+  assert.equal(h.calls[0]?.payload, undefined);
+});
+
 test('tauri: string rejections normalize into tauri_error envelopes', async () => {
   const h = makeHarness();
   h.fail({ code: 'validation_error', message: 'bad group file' });

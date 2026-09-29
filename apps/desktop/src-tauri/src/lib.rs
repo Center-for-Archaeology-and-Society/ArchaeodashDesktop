@@ -20,6 +20,7 @@ use std::sync::Mutex;
 mod export_files;
 mod job_events;
 mod projects;
+mod source_files;
 
 /// Project-scoped state shared by the import, group, file, transformation,
 /// explore, ordination, export, and preference commands.
@@ -635,6 +636,7 @@ pub fn run() {
             app_info,
             projects::open_project,
             projects::current_project,
+            source_files::pick_and_upload_source,
             submit_analysis_job,
             get_analysis_job,
             cancel_analysis_job,

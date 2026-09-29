@@ -79,3 +79,5 @@ Up: [[../../Vault/Index]]
 
 - [[Initial_Desktop_Test_Drive_2026-09-28]]
 - [[Desktop_Import_Playwright_Smoke_2026-09-28]]
+- [[Desktop_Import_Source_Native_Picker_2026-09-29]]
+- [[Interaction_Log_2026-09-29]]

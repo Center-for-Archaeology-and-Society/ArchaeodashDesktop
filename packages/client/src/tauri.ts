@@ -142,6 +142,7 @@ export class TauriTransport implements Transport {
 
   private makeFiles(): FilesService {
     return {
+      pickImportSource: () => this.call<StagedFile | null>('pick_and_upload_source'),
       upload: (path: string, content: Uint8Array) => {
         const request: FileUploadRequest = { path, content: Array.from(content) };
         return this.call<StagedFile>('upload_source_file', { request });

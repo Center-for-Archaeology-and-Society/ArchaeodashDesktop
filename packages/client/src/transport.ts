@@ -84,6 +84,8 @@ export interface ImportsService {
 }
 
 export interface FilesService {
+  /** Opens the desktop source-file picker and stages the selected file. */
+  pickImportSource?: () => Promise<StagedFile | null>;
   /** HTTP sends raw bytes; Tauri wraps them in a FileUploadRequest. */
   upload(path: string, content: Uint8Array): Promise<StagedFile>;
   metadata(fileId: string): Promise<StagedFile>;
