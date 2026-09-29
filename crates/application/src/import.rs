@@ -10,8 +10,9 @@ use archaeodash_contracts::{
 };
 use archaeodash_data_io::{
     data_loader, default_chem_columns, default_id_column, partition_by_group, sanitize_group_name,
-    scan_project, write_group_file, ImportError, ImportRecipe, Partition, ScanCandidate,
+    write_group_file, ImportError, ImportRecipe, Partition, ScanCandidate,
 };
+use archaeodash_file_store_fs::FsGroupFileStore;
 use sha2::{Digest, Sha256};
 
 /// Default project-relative destination for first-import group files.
@@ -57,6 +58,7 @@ fn import_partitions(
 /// Shared import use cases rooted at one local project directory.
 pub struct ImportService {
     root: PathBuf,
+    store: FsGroupFileStore,
 }
 
 impl ImportService {
@@ -64,7 +66,8 @@ impl ImportService {
     pub fn new(root: impl Into<PathBuf>) -> Result<Self, ImportError> {
         let root = root.into();
         std::fs::create_dir_all(&root).map_err(io_err)?;
-        Ok(Self { root })
+        let store = FsGroupFileStore::new(&root).map_err(|e| ImportError::Io(e.to_string()))?;
+        Ok(Self { root, store })
     }
 
     /// Lexically contains the project root: rejects absolute paths, `..`,
@@ -170,6 +173,13 @@ impl ImportService {
         };
         let source_path_string = Some(req.source.clone());
 
+        // Coordinate destination probing and every publication with store
+        // transactions and readers for this project.
+        let _project_lock = self
+            .store
+            .lock_exclusive()
+            .map_err(|e| ImportError::Io(e.to_string()))?;
+
         let mut groups = Vec::new();
         for partition in partitions {
             let group_id = sanitize_group_name(&partition.group_name);
@@ -216,7 +226,9 @@ impl ImportService {
     /// states (Section 10.2 `GET /projects/{id}/candidates`, local form).
     /// Results are sorted by path; full validation happens on add/load.
     pub fn scan(&self) -> Result<Vec<ScanCandidate>, ImportError> {
-        scan_project(&self.root)
+        self.store
+            .scan_candidates_snapshot()
+            .map_err(|e| ImportError::Io(e.to_string()))
     }
 }
 
@@ -362,6 +374,43 @@ mod tests {
         for candidate in &scanned {
             assert!(matches!(candidate.status, CandidateStatus::ReadyToAdd(_)));
         }
+    }
+
+    #[test]
+    fn commit_waits_for_exclusive_store_project_lock() {
+        let (service, dir, source) = service_with_source();
+        let locker = FsGroupFileStore::new(dir.path()).expect("store lock handle");
+        let lock = locker.lock_exclusive().expect("exclusive project lock");
+        let request = ImportCommitRequest {
+            source,
+            group_column: "Site".into(),
+            group_name: None,
+            visible_id_column: None,
+            elemental_columns: None,
+            recipe: None,
+            destination_dir: None,
+        };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            done_tx
+                .send(service.commit(&request))
+                .expect("send commit result");
+        });
+
+        assert!(done_rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_err());
+        assert!(
+            !dir.path().join("groups").exists(),
+            "commit does not publish before acquiring the lock"
+        );
+        drop(lock);
+        let response = done_rx
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("commit completes after lock release")
+            .expect("commit succeeds");
+        assert_eq!(response.groups.len(), 2);
+        worker.join().expect("commit worker joins");
     }
 
     #[test]

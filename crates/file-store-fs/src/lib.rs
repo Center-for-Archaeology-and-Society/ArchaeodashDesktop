@@ -49,6 +49,12 @@ pub struct FsGroupFileStore {
     root: PathBuf,
 }
 
+/// RAII guard for an exclusive project-wide filesystem lock. Dropping the
+/// guard releases the lock.
+pub struct ProjectLockGuard {
+    _lock: fs::File,
+}
+
 impl FsGroupFileStore {
     pub fn new(root: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let root = root.into();
@@ -96,6 +102,15 @@ impl FsGroupFileStore {
             .map_err(io_err)?;
         lock.lock().map_err(io_err)?;
         Ok(lock)
+    }
+
+    /// Acquires an exclusive project lock for coordinated filesystem work
+    /// performed by another application service. The lock is released when
+    /// the returned guard is dropped.
+    pub fn lock_exclusive(&self) -> Result<ProjectLockGuard, StoreError> {
+        Ok(ProjectLockGuard {
+            _lock: self.project_lock()?,
+        })
     }
 
     fn project_read_lock(&self) -> Result<fs::File, StoreError> {
