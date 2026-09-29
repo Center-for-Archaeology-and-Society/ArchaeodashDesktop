@@ -24,8 +24,14 @@ export function PlotPanel({ title, children, initialExpanded = false }: {
   </section>;
 }
 
-export function AnalysisPlots({ result }: { result: AnalysisResult }): ReactElement | null {
-  const [cutK, setCutK] = useState(2);
+export function AnalysisPlots({ result, cutK: controlledCutK, onCutKChange }: {
+  result: AnalysisResult;
+  cutK?: number;
+  onCutKChange?: (value: number) => void;
+}): ReactElement | null {
+  const [localCutK, setLocalCutK] = useState(2);
+  const cutK = controlledCutK ?? localCutK;
+  const setCutK = onCutKChange ?? setLocalCutK;
   const [leafSize, setLeafSize] = useState(12);
   if (result.kind === 'diagnostics') {
     return <PlotPanel title="Cluster diagnostics"><ClusterDiagnosticsPlots result={result.data} /></PlotPanel>;

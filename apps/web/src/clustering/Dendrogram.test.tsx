@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { Dendrogram } from './Dendrogram.tsx';
 
 test('dendrogram exposes leaf ordinals and cut groups without row identifiers', () => {
-  const result = { path: 'private.parquet', revision_id: 'private-revision', method: 'hclust_ward_d2' as const, n_rows: 3,
+  const result = { analytical_uuids: ['hidden-a', 'hidden-b', 'hidden-c'], path: 'private.parquet', revision_id: 'private-revision', method: 'hclust_ward_d2' as const, n_rows: 3,
     merge: [[-2, -3], [-1, 1]] as [number, number][], height: [1, 4], order: [1, 2, 3] };
   const markup = renderToStaticMarkup(<Dendrogram result={result} cutK={2} leafSize={20} />);
   assert.match(markup, /role="img"/);
@@ -17,13 +17,13 @@ test('dendrogram exposes leaf ordinals and cut groups without row identifiers', 
 });
 
 test('invalid clustering output renders an explicit unavailable state', () => {
-  const markup = renderToStaticMarkup(<Dendrogram result={{ path: '', revision_id: '', method: 'diana', n_rows: 2,
+  const markup = renderToStaticMarkup(<Dendrogram result={{ analytical_uuids: ['hidden-a', 'hidden-b'], path: '', revision_id: '', method: 'diana', n_rows: 2,
     merge: null, height: null, order: null }} />);
   assert.match(markup, /Dendrogram unavailable for this result/);
 });
 
 test('multiple dendrograms have distinct accessible IDs and extreme finite heights remain readable', () => {
-  const result = { path: '', revision_id: '', method: 'diana' as const, n_rows: 2,
+  const result = { analytical_uuids: ['hidden-a', 'hidden-b'], path: '', revision_id: '', method: 'diana' as const, n_rows: 2,
     merge: [[-1, -2]] as [number, number][], height: [Number.MAX_VALUE], order: [1, 2] };
   const markup = renderToStaticMarkup(<><Dendrogram result={result} /><Dendrogram result={result} /></>);
   const ids = [...markup.matchAll(/ id="([^"]+)"/g)].map(match => match[1]);

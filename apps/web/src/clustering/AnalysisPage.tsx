@@ -1,7 +1,9 @@
+import { moveAndReload } from './assignment-workflow.ts';
+import { ResultAssignment } from './ResultAssignment.tsx';
 import { AnalysisPlots } from './AnalysisPlots.tsx';
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import type {
-  Transport, GroupRowsResponse, ClusterMethod, MembershipMethod,
+  Transport, GroupRowsResponse, ClusterMethod, MembershipMethod, TransferUnitsRequest,
   ClusterFitResponse, ClusterDiagnosticsResponse,
   MembershipProbabilitiesResponse, EuclideanMatchesResponse,
 } from '@archaeodash/client';
@@ -77,11 +79,14 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   const [within, setWithin] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [cutK, setCutK] = useState(2);
+  const moving = useRef(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const generation = useRef(0);
   useEffect(() => {
     let active = true;
-    deps.groups.scan().then(found => { if (active) setPaths(found.map(p => p.path)); })
+    deps.groups.scan().then(found => { if (active) setPaths(found.filter(p => p.ready).map(p => p.path)); })
       .catch(e => { if (active) setError(String(e)); });
     return () => { active = false; generation.current++; };
   }, [deps]);
@@ -95,10 +100,10 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     }).catch(e => { if (active) setError(String(e)); });
     return () => { active = false; };
   }, [deps, path]);
-  function reset() { generation.current++; setResult(null); setError(''); setBusy(false); }
+  function reset() { generation.current++; setResult(null); setError(''); setNotice(''); setBusy(false); }
   async function run(diagnostics = false) {
     const ticket = ++generation.current;
-    setBusy(true); setError(''); setResult(null);
+    setBusy(true); setError(''); setNotice(''); setCutK(2); setResult(null);
     try {
       let next: AnalysisResult;
       if (kind === 'cluster') {
@@ -114,11 +119,34 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     } catch (e) { if (ticket === generation.current) setError(String(e)); }
     finally { if (ticket === generation.current) setBusy(false); }
   }
+  async function assign(request: TransferUnitsRequest) {
+    if (moving.current) return;
+    moving.current = true;
+    const ticket = generation.current;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const outcome = await moveAndReload(deps.groups, request);
+      if (ticket !== generation.current) return;
+      setResult(null); setData(null);
+      setNotice(`Moved ${request.selected_uuids.length} analytical units to ${request.destination_path}. Recompute analysis for the updated data.`);
+      if (outcome.refreshed) {
+        setPaths(outcome.refreshed.paths);
+        setPath(outcome.nextPath); setData(outcome.refreshed.rows);
+      } else {
+        setError(`Move committed, but reloading failed. Reopen the dataset. ${outcome.refreshError}`);
+      }
+    } catch (e) {
+      if (ticket === generation.current) setError(`Move failed; the selection was not retried. Recompute analysis if the data changed. ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      moving.current = false;
+      if (ticket === generation.current) setBusy(false);
+    }
+  }
   const disabled = busy || !data || !columns.length || (kind !== 'cluster' && (!group || !id));
   return <section aria-label={titles[kind]}>
     <h1>{titles[kind]}</h1>
     <p>Analyze measured elemental columns from one group file. Results are temporary.</p>
-    <label>Dataset <select value={path} onChange={e => { reset(); setData(null); setPath(e.target.value); }}>
+    <label>Dataset <select disabled={busy} value={path} onChange={e => { reset(); setData(null); setPath(e.target.value); }}>
       <option value="">Choose a group file…</option>{paths.map(p => <option key={p}>{p}</option>)}
     </select></label>
     {data && <fieldset disabled={busy} onChange={reset}><legend>Analysis settings</legend>
@@ -144,7 +172,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     </fieldset>}
     <button disabled={disabled} onClick={() => void run()}>Run analysis</button>
     {kind === 'cluster' && <button disabled={disabled} onClick={() => void run(true)}>Run cluster diagnostics</button>}
-    {busy && <p role="status">Computing…</p>}{error && <p role="alert">{error}</p>}
-    {result && <div key={generation.current}><AnalysisPlots result={result} /><ResultTable result={result} /></div>}
+    {busy && <p role="status">{moving.current ? 'Moving analytical units…' : 'Computing…'}</p>}{notice && <p role="status">{notice}</p>}{error && <p role="alert">{error}</p>}
+    {result && <div key={generation.current}><AnalysisPlots result={result} cutK={cutK} onCutKChange={setCutK} /><ResultAssignment result={result} cutK={cutK} destinations={paths} busy={busy} onConfirm={request => void assign(request)} /><ResultTable result={result} /></div>}
   </section>;
 }

@@ -25,3 +25,10 @@ Result selection is UUID-based, including deduplication of repeated nearest-matc
 The UI offers existing ready destination group files and requires a review followed by Confirm move. UUIDs stay out of labels, checkbox values, and rendered result data. Confirmed requests use the existing move transaction; controls are disabled in flight and a synchronous guard prevents duplicate submissions. Success discards stale analysis results. When all units leave the source, the next dataset is the destination. Refresh failure after a committed move reports success plus the reload error, never retries the transfer.
 
 HTTP/desktop integration tests compare result identities to input rows, move units into new and existing destinations, verify exact measured/visible/descriptive row preservation and source removal, verify advancing revisions, and reject stale retries without changing either file. Desktop coverage also proves the empty-source deletion response and source lookup failure. API tests (17), desktop tests (12), all client workspace tests (69 web), and workspace typechecks pass.
+
+## Final validation and remaining work
+
+- Combined Rust tests pass for analysis, contracts, application, API, desktop, and all existing parity fixtures; numerical results and ordering remain unchanged.
+- Client workspace tests (69 web tests), typechecks, production builds, Rust library clippy with warnings denied, Tauri shell compilation, formatting, and diff whitespace checks pass. The existing Plotly bundle-size warning remains.
+- Checks are unit/SSR, application, and adapter integration tests. Browser/desktop UI end-to-end acceptance and performance budgets remain open.
+- Existing-group manual moves are complete in this increment. Automatic best/matched-group assignment, multi-group cluster recording, PCA inputs, additional cluster metrics/linkages, and cancellable jobs remain open. No migration phase exit is declared from these checks alone.

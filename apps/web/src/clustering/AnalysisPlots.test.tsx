@@ -5,6 +5,7 @@ import { AnalysisPlots, PlotPanel } from './AnalysisPlots.tsx';
 import type { ClusterFitResponse } from '@archaeodash/client';
 
 const fit: ClusterFitResponse = {
+  analytical_uuids: ['hidden-a', 'hidden-b', 'hidden-c'],
   path: 'hidden-file', revision_id: 'hidden-revision', method: 'hclust_ward_d2', n_rows: 3,
   cluster: null, size: null, tot_withinss: null, centers: null, medoids: null,
   merge: [[-1, -2], [1, -3]], height: [1, 3], order: [1, 2, 3], silhouette: null,

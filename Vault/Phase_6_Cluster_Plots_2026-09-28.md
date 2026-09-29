@@ -29,3 +29,7 @@ Browser/desktop interaction and performance acceptance remain open (no browser w
 ## Final verification
 
 Production workspace build passes with the existing Plotly chunk-size warning. `git diff --check` is clean. The new atomic note is linked from the Vault index, daily log, and preceding integration checkpoint. Implementation was committed in three increments (scope note, diagnostic charts, dendrogram integration), followed by this validation record.
+
+## Follow-up
+
+[[Phase_6_Result_Assignment_2026-09-28]] adds hidden result identities, UUID-based selection, and confirmed manual moves. Automatic best/matched-group assignment and multi-group cluster recording remain open.

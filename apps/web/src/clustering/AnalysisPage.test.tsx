@@ -15,7 +15,7 @@ test('all analysis routes disable execution until a dataset is available', () =>
 test('Euclidean results hide internal keys and bound the initially rendered table', () => {
   const html = renderToStaticMarkup(<ResultTable result={{ kind: 'euclidean', data: {
     path: 'private.parquet', revision_id: 'private-revision', rows: Array.from({ length: 101 }, (_, i) => ({
-      rowid: 'hidden-uuid', id: `visible-${i}`, match_id: 'match', distance: 1, group: 'A', match_group: 'B',
+      analytical_uuid: 'hidden-observation-uuid', match_analytical_uuid: 'hidden-match-uuid', rowid: 'hidden-uuid', id: `visible-${i}`, match_id: 'match', distance: 1, group: 'A', match_group: 'B',
     })),
   } }} />);
   assert.doesNotMatch(html, /hidden-uuid|private-revision|private.parquet|visible-100/);
@@ -25,7 +25,7 @@ test('Euclidean results hide internal keys and bound the initially rendered tabl
 
 test('membership fallback visibly labels distances and renders missing cells', () => {
   const html = renderToStaticMarkup(<ResultTable result={{ kind: 'membership', data: {
-    path: 'hidden-path', revision_id: 'hidden-revision', effective_method: 'mahalanobis',
+    analytical_uuids: ['hidden-membership-uuid'], path: 'hidden-path', revision_id: 'hidden-revision', effective_method: 'mahalanobis',
     eligible_groups: ['A'], ids: ['sample'], groups: ['A'], probabilities: [[null]],
     best_group: [null], best_value: [null], in_group: [false],
   } }} />);
@@ -36,7 +36,7 @@ test('membership fallback visibly labels distances and renders missing cells', (
 
 test('hierarchical results show merge heights and diagnostic rows use one-based k', () => {
   const html = renderToStaticMarkup(<ResultTable result={{ kind: 'fit', data: {
-    path: '', revision_id: '', method: 'diana', n_rows: 2, cluster: null, size: null,
+    analytical_uuids: ['hidden-cluster-uuid-1', 'hidden-cluster-uuid-2'], path: '', revision_id: '', method: 'diana', n_rows: 2, cluster: null, size: null,
     tot_withinss: null, centers: null, medoids: null, merge: [[-1, -2]], height: [3],
     order: [1, 2], silhouette: null,
   } }} />);
