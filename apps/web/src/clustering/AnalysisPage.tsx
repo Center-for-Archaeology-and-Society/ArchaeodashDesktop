@@ -48,8 +48,8 @@ export function ResultTable({ result }: { result: AnalysisResult }): ReactElemen
       const data = result.data;
       const distance = data.effective_method === 'mahalanobis';
       method = distance ? 'Mahalanobis distances (lower is closer)' : 'Hotelling membership probabilities (%)';
-      headers = ['ID', 'Group', ...data.eligible_groups, 'Best group', 'Best value'];
-      rows = data.ids.map((id, i) => [id, data.groups[i], ...(data.probabilities[i] ?? []), data.best_group[i], data.best_value[i]]);
+      headers = ['ID', 'Group', ...data.eligible_groups, 'Best group', 'Best value', 'In group', 'Projection included'];
+      rows = data.ids.map((id, i) => [id, data.groups[i], ...(data.probabilities[i] ?? []), data.best_group[i], data.best_value[i], data.in_group[i] ? 'Yes' : 'No', data.projection_included?.[i] === false ? 'No' : 'Yes']);
       break;
     }
     case 'euclidean':
@@ -58,6 +58,7 @@ export function ResultTable({ result }: { result: AnalysisResult }): ReactElemen
   }
   return <section aria-label="Analysis results">
     {method && <p>Method: {method}</p>}
+    {result.kind === 'membership' && result.data.fallback_reason && <p role="status">Hotelling probabilities were unavailable for this comparison. Showing Mahalanobis distances instead ({result.data.fallback_reason.replaceAll('_', ' ')}).</p>}
     {result.data.source && <p>Source: {result.data.source}; columns: {result.data.column_names?.join(', ')}</p>}
     {(result.kind === 'fit' || result.kind === 'diagnostics') && result.data.metric && <p>Distance: {result.data.metric}{result.kind === 'fit' && result.data.merge ? `; linkage: ${result.data.method === 'diana' ? 'DIANA' : result.data.linkage}` : ''}</p>}
     {result.kind === 'diagnostics' && <p>Diagnostic method: {result.data.diagnostic_method ?? 'kmeans'}</p>}
@@ -81,6 +82,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   const [id, setId] = useState('');
   const [source, setSource] = useState<AnalysisSource>('elements');
   const [pcCount, setPcCount] = useState(2);
+  const [plotGroup, setPlotGroup] = useState('');
   const [sourceGroup, setSourceGroup] = useState('');
   const [metric, setMetric] = useState<ClusterDistanceMetric>('euclidean');
   const [linkage, setLinkage] = useState<ClusterLinkage>('ward_d2');
@@ -123,12 +125,13 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     if (path) deps.groups.rows(path).then(rows => {
       if (!active) return;
       setData(rows); setColumns(rows.elemental_columns); setGroup(rows.descriptive_columns[0] ?? '');
-      setId(rows.visible_id_column); setSourceGroup(rows.descriptive_columns[0] ?? ''); setProjection(null); setDefinitionName('');
+      setId(rows.visible_id_column); setSourceGroup(rows.descriptive_columns[0] ?? ''); setPlotGroup(rows.descriptive_columns[0] ?? ''); setProjection(null); setDefinitionName('');
     }).catch(e => { if (active) setError(String(e)); });
     return () => { active = false; };
   }, [deps, path]);
   function reset() { activeJob.current?.abort(); generation.current++; setResult(null); setReviewing(false); setError(''); setNotice(''); setBusy(false); }
   async function run(diagnostics = false) {
+    if (activeJob.current || moving.current) return;
     const ticket = ++generation.current;
     setBusy(true); setError(''); setNotice(''); setReviewing(false); setCutK(2); setResult(null);
     try {
@@ -137,7 +140,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
       if (kind === 'cluster') {
         analysis = diagnostics
           ? { kind: 'cluster_diagnostics', request: { ...input, max_k: k, seed, diagnostic_method: diagnosticMethod, metric: diagnosticMethod === 'kmeans' ? 'euclidean' : diagnosticMetric } }
-          : { kind: 'cluster_fit', request: { ...input, method, k, seed, iter_max: iterations, nstart: starts, metric: method === 'kmeans' ? 'euclidean' : metric, linkage, minkowski_p: minkowskiP } };
+          : { kind: 'cluster_fit', request: { ...input, method, k, seed, plot_group_column: plotGroup || null, iter_max: iterations, nstart: starts, metric: method === 'kmeans' ? 'euclidean' : metric, linkage, minkowski_p: minkowskiP } };
       } else if (kind === 'membership') {
         analysis = { kind: 'membership_probabilities', request: { ...input, group_column: group, id_column: id, method: membershipMethod, projection_groups: projection } };
       } else {
@@ -211,6 +214,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
         {method === 'hclust' && <label>Linkage <select value={linkage} onChange={e => setLinkage(e.target.value as ClusterLinkage)}><option value="average">Average</option><option value="complete">Complete</option><option value="ward_d">Ward.D</option><option value="ward_d2">Ward.D2</option></select></label>}
         {method === 'hclust' && metric === 'minkowski' && <label>Minkowski power <input type="number" min={1} step={0.1} value={minkowskiP} onChange={e => setMinkowskiP(Number(e.target.value))} /></label>}
         {method === 'kmeans' && <><label>Starts <input type="number" min={1} max={100} value={starts} onChange={e => setStarts(Number(e.target.value))} /></label><label>Maximum iterations <input type="number" min={1} max={200} value={iterations} onChange={e => setIterations(Number(e.target.value))} /></label></>}
+        {(method === 'kmeans' || method === 'pam') && <label>Plot grouping column <select value={plotGroup} onChange={e => setPlotGroup(e.target.value)}><option value="">No group colors</option>{data.descriptive_columns.map(c => <option key={c}>{c}</option>)}</select></label>}
         <label>Diagnostic method <select value={diagnosticMethod} onChange={e => setDiagnosticMethod(e.target.value as 'kmeans' | 'pam')}><option value="kmeans">k-means</option><option value="pam">k-medoids (PAM)</option></select></label>
         {diagnosticMethod === 'pam' && <label>Diagnostic distance <select value={diagnosticMetric} onChange={e => setDiagnosticMetric(e.target.value as 'euclidean' | 'manhattan')}><option value="euclidean">Euclidean</option><option value="manhattan">Manhattan</option></select></label>}
         <label>Cluster count / diagnostic maximum <input type="number" min={1} max={20} value={k} onChange={e => setK(Number(e.target.value))} /></label>

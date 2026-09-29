@@ -34,3 +34,15 @@ test('poll failure cancels orphaned computation and preserves the original error
   await assert.rejects(runAnalysisJob(jobs, request, { signal: new AbortController().signal, pollMs: 0, onProgress: () => {} }), /connection lost/);
   assert.equal(cancels, 1);
 });
+
+test('progress subscription is disposed on success and unavailable events do not block polling', async () => {
+  let disposed = 0;
+  const jobs: AnalysisJobsService = {
+    submit: async () => queued, get: async () => succeeded, cancel: async () => queued,
+    subscribe: (_id, report) => { report({ id: 'job', state: 'running', stage: 'computing', progress: 15, updated_at_ms: 2, error: null }); return () => { disposed++; }; },
+  };
+  await runAnalysisJob(jobs, request, { signal: new AbortController().signal, pollMs: 0, onProgress: () => {} });
+  assert.equal(disposed, 1);
+  jobs.subscribe = () => { throw new Error('events unavailable'); };
+  assert.deepEqual(await runAnalysisJob(jobs, request, { signal: new AbortController().signal, pollMs: 0, onProgress: () => {} }), succeeded.result);
+});

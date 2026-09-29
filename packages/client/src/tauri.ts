@@ -11,6 +11,7 @@
  */
 import type {
   AppInfo,
+  AnalysisJobEvent,
   AppliedTransformation,
   ApplyTransformationRequest,
   BatchRatioRequest,
@@ -80,11 +81,14 @@ import {
 } from './transport.ts';
 
 export type InvokeLike = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+export type UnlistenLike = () => void;
+export type ListenLike = (event: string, handler: (event: { payload: unknown }) => void) => Promise<UnlistenLike>;
 
 export class TauriTransport implements Transport {
   readonly kind = 'tauri' as const;
 
   private readonly invoke: InvokeLike;
+  private readonly listen?: ListenLike;
 
   readonly imports: ImportsService;
   readonly files: FilesService;
@@ -97,8 +101,9 @@ export class TauriTransport implements Transport {
   readonly exports: ExportsService;
   readonly preferences: PreferencesService;
 
-  constructor(invoke: InvokeLike) {
+  constructor(invoke: InvokeLike, listen?: ListenLike) {
     this.invoke = invoke;
+    this.listen = listen;
     this.imports = this.makeImports();
     this.files = this.makeFiles();
     this.groups = this.makeGroups();
@@ -184,6 +189,48 @@ export class TauriTransport implements Transport {
       submit: request => this.call('submit_analysis_job', { request }),
       get: id => this.call('get_analysis_job', { id }),
       cancel: id => this.call('cancel_analysis_job', { id }),
+      subscribe: (id, onEvent) => {
+        if (!this.listen) return () => {};
+        let disposed = false;
+        let unlisten: UnlistenLike | undefined;
+        let listeningStopped = false;
+        let watcherStarted = false;
+        const stopListening = () => {
+          if (listeningStopped || !unlisten) return;
+          listeningStopped = true;
+          unlisten();
+        };
+        const cleanup = () => {
+          if (disposed) return;
+          disposed = true;
+          stopListening();
+          if (watcherStarted) void this.call('stop_analysis_job_watch', { id }).catch(() => {});
+        };
+        void this.listen('analysis-job-progress', (event) => {
+          if (disposed || typeof event.payload !== 'object' || event.payload === null) return;
+          const payload = event.payload as AnalysisJobEvent;
+          if (payload.id === id) onEvent(payload);
+        }).then(async (unlistenFn) => {
+          unlisten = unlistenFn;
+          if (disposed) {
+            stopListening();
+            return;
+          }
+          try {
+            await this.call('watch_analysis_job', { id });
+            watcherStarted = true;
+            if (disposed) {
+              stopListening();
+              void this.call('stop_analysis_job_watch', { id }).catch(() => {});
+            }
+          } catch {
+            cleanup();
+          }
+        }).catch(() => {
+          // Polling continues if the optional event listener could not be registered.
+        });
+        return cleanup;
+      },
     };
   }
 

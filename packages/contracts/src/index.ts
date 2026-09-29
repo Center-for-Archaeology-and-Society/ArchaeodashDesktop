@@ -380,6 +380,7 @@ export interface ClusterDiagnosticsResponse {
   silhouette: (number | null)[];
 }
 export interface ClusterFitRequest extends OrdinationRequestBase, ClusterOptions {
+  plot_group_column?: string | null;
   method: ClusterMethod;
   k?: number | null;
   iter_max?: number;
@@ -387,6 +388,12 @@ export interface ClusterFitRequest extends OrdinationRequestBase, ClusterOptions
   seed?: number | null;
 }
 export interface ClusterFitResponse {
+  plot_warning?: string | null;
+  plot_coordinates?: [number, number][];
+  cluster_plot_coordinates?: [number, number][];
+  cluster_plot_column_names?: string[];
+  plot_column_names?: string[];
+  plot_groups?: string[];
   source?: AnalysisSource;
   column_names?: string[];
   metric?: ClusterDistanceMetric;
@@ -417,6 +424,9 @@ export interface MembershipProbabilitiesRequest extends AnalysisInputOptions {
   method: MembershipMethod;
 }
 export interface MembershipProbabilitiesResponse {
+  requested_method?: MembershipMethod;
+  fallback_reason?: string | null;
+  projection_included?: boolean[];
   source?: AnalysisSource;
   column_names?: string[];
   /** Hidden immutable identities aligned with ids and probability rows. */
@@ -594,5 +604,13 @@ export interface AnalysisJobSnapshot {
   started_at_ms: number | null;
   completed_at_ms: number | null;
   result: AnalysisJobResult | null;
+  error: ErrorEnvelope | null;
+}
+export interface AnalysisJobEvent {
+  id: string;
+  state: AnalysisJobState;
+  stage: AnalysisJobStage | null;
+  progress: number;
+  updated_at_ms: number;
   error: ErrorEnvelope | null;
 }

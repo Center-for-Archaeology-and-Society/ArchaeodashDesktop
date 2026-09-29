@@ -1,3 +1,4 @@
+import { PartitionPlot } from './PartitionPlot.tsx';
 import { useId, useState, type ReactElement, type ReactNode } from 'react';
 import type { AnalysisResult } from './AnalysisPage.tsx';
 import { ClusterDiagnosticsPlots } from './ClusterDiagnosticsPlots.tsx';
@@ -37,6 +38,7 @@ export function AnalysisPlots({ result, cutK: controlledCutK, onCutKChange, disa
   if (result.kind === 'diagnostics') {
     return <PlotPanel title="Cluster diagnostics"><ClusterDiagnosticsPlots result={result.data} /></PlotPanel>;
   }
+  if (result.kind === 'fit' && result.data.cluster) return <PlotPanel title="Partition clusters"><PartitionPlot result={result.data} /></PlotPanel>;
   if (result.kind !== 'fit' || !['hclust', 'hclust_ward_d2', 'diana'].includes(result.data.method)) return null;
   const count = result.data.n_rows;
   const boundedK = Math.max(1, Math.min(count, cutK));

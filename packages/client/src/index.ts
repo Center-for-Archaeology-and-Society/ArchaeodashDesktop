@@ -1,6 +1,7 @@
 export { HttpTransport } from './http.ts';
 export { TauriTransport } from './tauri.ts';
-export type { InvokeLike } from './tauri.ts';
+export type { InvokeLike, ListenLike, UnlistenLike } from './tauri.ts';
+export type { EventSourceFactory, EventSourceLike } from './http.ts';
 export { TransportError, toTransportError } from './transport.ts';
 export type {
   Transport,

@@ -18,7 +18,8 @@ export function isTauri(): boolean {
 export async function createTransport(): Promise<Transport> {
   if (isTauri()) {
     const { invoke } = await import('@tauri-apps/api/core');
-    return new TauriTransport(invoke as never);
+    const { listen } = await import('@tauri-apps/api/event');
+    return new TauriTransport(invoke as never, listen as never);
   }
   return new HttpTransport();
 }

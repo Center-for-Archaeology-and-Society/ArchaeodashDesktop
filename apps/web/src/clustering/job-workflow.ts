@@ -18,6 +18,13 @@ export async function runAnalysisJob(
   if (options.signal.aborted) throw new DOMException('Analysis cancelled', 'AbortError');
   let job = await jobs.submit({ analysis });
   let cancellationSent = false;
+  let finished = false;
+  let unsubscribe: (() => void) | undefined;
+  if (jobs.subscribe && !options.signal.aborted) {
+    try { unsubscribe = jobs.subscribe(job.id, event => {
+      if (!finished && event.id === job.id) options.onProgress({ ...job, state: event.state, stage: event.stage, progress: event.progress, error: event.error });
+    }); } catch { /* Polling remains authoritative if events are unavailable. */ }
+  }
   try {
     for (;;) {
       if (options.signal.aborted && !cancellationSent) {
@@ -42,5 +49,8 @@ export async function runAnalysisJob(
       try { await jobs.cancel(job.id); } catch { /* Preserve the original transport failure. */ }
     }
     throw error;
+  } finally {
+    finished = true;
+    unsubscribe?.();
   }
 }

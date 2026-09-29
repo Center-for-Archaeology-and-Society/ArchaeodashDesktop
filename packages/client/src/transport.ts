@@ -6,6 +6,7 @@
  */
 import type {
   AnalysisJobSnapshot,
+  AnalysisJobEvent,
   SubmitAnalysisJobRequest,
   AppliedTransformation,
   AppInfo,
@@ -120,6 +121,8 @@ export interface AnalysisJobsService {
   submit(request: SubmitAnalysisJobRequest): Promise<AnalysisJobSnapshot>;
   get(id: string): Promise<AnalysisJobSnapshot>;
   cancel(id: string): Promise<AnalysisJobSnapshot>;
+  /** Optional progress stream; polling remains the source for full job results. */
+  subscribe?(id: string, onEvent: (event: AnalysisJobEvent) => void): () => void;
 }
 
 export interface ClusteringService {

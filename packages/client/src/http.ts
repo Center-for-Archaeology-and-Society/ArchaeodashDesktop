@@ -5,6 +5,7 @@
  */
 import type {
   AppInfo,
+  AnalysisJobEvent,
   AppliedTransformation,
   ApplyTransformationRequest,
   BatchRatioRequest,
@@ -75,11 +76,21 @@ import {
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
+export interface EventSourceLike {
+  addEventListener(type: string, listener: (event: { data: string }) => void): void;
+  removeEventListener(type: string, listener: (event: { data: string }) => void): void;
+  close(): void;
+  onerror: ((event: unknown) => void) | null;
+}
+
+export type EventSourceFactory = (url: string) => EventSourceLike;
+
 export class HttpTransport implements Transport {
   readonly kind = 'http' as const;
 
   private readonly baseUrl: string;
   private readonly fetchImpl: FetchLike;
+  private readonly eventSourceFactory?: EventSourceFactory;
 
   readonly imports: ImportsService;
   readonly files: FilesService;
@@ -92,9 +103,16 @@ export class HttpTransport implements Transport {
   readonly exports: ExportsService;
   readonly preferences: PreferencesService;
 
-  constructor(baseUrl: string = '', fetchImpl: FetchLike = (...args) => fetch(...args)) {
+  constructor(
+    baseUrl: string = '',
+    fetchImpl: FetchLike = (...args) => fetch(...args),
+    eventSourceFactory?: EventSourceFactory,
+  ) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.fetchImpl = fetchImpl;
+    this.eventSourceFactory = eventSourceFactory ?? (typeof EventSource !== 'undefined'
+      ? (url) => new EventSource(url) as unknown as EventSourceLike
+      : undefined);
     this.imports = this.makeImports();
     this.files = this.makeFiles();
     this.groups = this.makeGroups();
@@ -238,6 +256,35 @@ export class HttpTransport implements Transport {
       submit: request => this.request('POST', '/api/v1/jobs', { body: request }),
       get: id => this.request('GET', `/api/v1/jobs/${encodeURIComponent(id)}`),
       cancel: id => this.request('POST', `/api/v1/jobs/${encodeURIComponent(id)}/cancel`),
+      subscribe: (id, onEvent) => {
+        if (!this.eventSourceFactory) return () => {};
+        let source: EventSourceLike;
+        try {
+          source = this.eventSourceFactory(`${this.baseUrl}/api/v1/jobs/${encodeURIComponent(id)}/events`);
+        } catch {
+          return () => {};
+        }
+        let disposed = false;
+        const onProgress = (event: { data: string }) => {
+          if (disposed) return;
+          try {
+            const payload = JSON.parse(event.data) as AnalysisJobEvent;
+            if (payload.id === id) onEvent(payload);
+          } catch {
+            // Polling remains authoritative if the optional event payload is invalid.
+          }
+        };
+        const dispose = () => {
+          if (disposed) return;
+          disposed = true;
+          source.removeEventListener('progress', onProgress);
+          source.onerror = null;
+          source.close();
+        };
+        source.addEventListener('progress', onProgress);
+        source.onerror = () => dispose();
+        return dispose;
+      },
     };
   }
 
