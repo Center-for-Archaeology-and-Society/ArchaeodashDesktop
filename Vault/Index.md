@@ -76,3 +76,5 @@ Up: [[../../Vault/Index]]
 
 - [[Phase_6_Remaining_Controls_Jobs_2026-09-28]]
 - [[Phase_6_Desktop_Project_Selection_2026-09-28]]
+
+- [[Initial_Desktop_Test_Drive_2026-09-28]]
