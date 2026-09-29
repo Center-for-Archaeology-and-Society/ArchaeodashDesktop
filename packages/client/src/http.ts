@@ -67,6 +67,7 @@ import {
   type ImportsService,
   type OrdinationService,
   type ClusteringService,
+  type AnalysisJobsService,
   type PreferencesService,
   type TransformationsService,
   type Transport,
@@ -86,6 +87,7 @@ export class HttpTransport implements Transport {
   readonly transformations: TransformationsService;
   readonly ordination: OrdinationService;
   readonly clustering: ClusteringService;
+  readonly jobs: AnalysisJobsService;
   readonly explore: ExploreService;
   readonly exports: ExportsService;
   readonly preferences: PreferencesService;
@@ -99,6 +101,7 @@ export class HttpTransport implements Transport {
     this.transformations = this.makeTransformations();
     this.ordination = this.makeOrdination();
     this.clustering = this.makeClustering();
+    this.jobs = this.makeJobs();
     this.explore = this.makeExplore();
     this.exports = this.makeExports();
     this.preferences = this.makePreferences();
@@ -227,6 +230,14 @@ export class HttpTransport implements Transport {
       pca: (request: PcaRequest) => this.request('POST', '/api/v1/ordination/pca', { body: request }),
       lda: (request: LdaRequest) => this.request('POST', '/api/v1/ordination/lda', { body: request }),
       umap: (request: UmapRequest) => this.request('POST', '/api/v1/ordination/umap', { body: request }),
+    };
+  }
+
+  private makeJobs(): AnalysisJobsService {
+    return {
+      submit: request => this.request('POST', '/api/v1/jobs', { body: request }),
+      get: id => this.request('GET', `/api/v1/jobs/${encodeURIComponent(id)}`),
+      cancel: id => this.request('POST', `/api/v1/jobs/${encodeURIComponent(id)}/cancel`),
     };
   }
 

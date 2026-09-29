@@ -37,7 +37,7 @@ export function AnalysisPlots({ result, cutK: controlledCutK, onCutKChange, disa
   if (result.kind === 'diagnostics') {
     return <PlotPanel title="Cluster diagnostics"><ClusterDiagnosticsPlots result={result.data} /></PlotPanel>;
   }
-  if (result.kind !== 'fit' || !['hclust_ward_d2', 'diana'].includes(result.data.method)) return null;
+  if (result.kind !== 'fit' || !['hclust', 'hclust_ward_d2', 'diana'].includes(result.data.method)) return null;
   const count = result.data.n_rows;
   const boundedK = Math.max(1, Math.min(count, cutK));
   return <section aria-label="Hierarchical cluster plots">
@@ -48,7 +48,7 @@ export function AnalysisPlots({ result, cutK: controlledCutK, onCutKChange, disa
         onChange={e => setLeafSize(Number(e.target.value))} /> {leafSize}px</label>
     </div>
     <p>Colors show the {boundedK}-cluster cut. Analytical unit numbers refer to the input row order; cutting the tree does not change the group file.</p>
-    <PlotPanel title={result.data.method === 'diana' ? 'DIANA dendrogram' : 'Ward.D2 dendrogram'}>
+    <PlotPanel title={result.data.method === 'diana' ? 'DIANA dendrogram' : `${result.data.linkage ?? 'ward_d2'} dendrogram`}>
       <Dendrogram result={result.data} cutK={boundedK} leafSize={leafSize} />
     </PlotPanel>
   </section>;

@@ -10,6 +10,7 @@ export type {
   TransformationsService,
   OrdinationService,
   ClusteringService,
+  AnalysisJobsService,
   ExploreService,
   ExportsService,
   PreferencesService,

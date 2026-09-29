@@ -73,6 +73,7 @@ import {
   type ImportsService,
   type OrdinationService,
   type ClusteringService,
+  type AnalysisJobsService,
   type PreferencesService,
   type TransformationsService,
   type Transport,
@@ -91,6 +92,7 @@ export class TauriTransport implements Transport {
   readonly transformations: TransformationsService;
   readonly ordination: OrdinationService;
   readonly clustering: ClusteringService;
+  readonly jobs: AnalysisJobsService;
   readonly explore: ExploreService;
   readonly exports: ExportsService;
   readonly preferences: PreferencesService;
@@ -103,6 +105,7 @@ export class TauriTransport implements Transport {
     this.transformations = this.makeTransformations();
     this.ordination = this.makeOrdination();
     this.clustering = this.makeClustering();
+    this.jobs = this.makeJobs();
     this.explore = this.makeExplore();
     this.exports = this.makeExports();
     this.preferences = this.makePreferences();
@@ -173,6 +176,14 @@ export class TauriTransport implements Transport {
       pca: (request: PcaRequest) => this.call<PcaResponse>('ordination_pca', { request }),
       lda: (request: LdaRequest) => this.call<LdaResponse>('ordination_lda', { request }),
       umap: (request: UmapRequest) => this.call<UmapResponse>('ordination_umap', { request }),
+    };
+  }
+
+  private makeJobs(): AnalysisJobsService {
+    return {
+      submit: request => this.call('submit_analysis_job', { request }),
+      get: id => this.call('get_analysis_job', { id }),
+      cancel: id => this.call('cancel_analysis_job', { id }),
     };
   }
 

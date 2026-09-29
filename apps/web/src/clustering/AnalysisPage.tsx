@@ -1,15 +1,18 @@
+import { runAnalysisJob } from './job-workflow.ts';
+import { analysisColumns, projectionLabels, sourceOptions } from './input-options.ts';
 import { moveAndReload, batchMoveAndReload } from './assignment-workflow.ts';
 import { ResultAssignment } from './ResultAssignment.tsx';
 import { AnalysisPlots } from './AnalysisPlots.tsx';
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import type {
+  AnalysisSource, ClusterDistanceMetric, ClusterLinkage, TransformationDefinition, AnalysisJobSnapshot, AnalysisJobRequest,
   Transport, GroupRowsResponse, ClusterMethod, MembershipMethod, TransferUnitsRequest, BatchTransferUnitsRequest, GroupCandidate,
   ClusterFitResponse, ClusterDiagnosticsResponse,
   MembershipProbabilitiesResponse, EuclideanMatchesResponse,
 } from '@archaeodash/client';
 
 export type AnalysisKind = 'cluster' | 'membership' | 'euclidean';
-export type AnalysisDeps = Pick<Transport, 'groups' | 'clustering'>;
+export type AnalysisDeps = Pick<Transport, 'groups' | 'clustering' | 'jobs' | 'transformations'>;
 export type AnalysisResult =
   | { kind: 'fit'; data: ClusterFitResponse }
   | { kind: 'diagnostics'; data: ClusterDiagnosticsResponse }
@@ -55,6 +58,9 @@ export function ResultTable({ result }: { result: AnalysisResult }): ReactElemen
   }
   return <section aria-label="Analysis results">
     {method && <p>Method: {method}</p>}
+    {result.data.source && <p>Source: {result.data.source}; columns: {result.data.column_names?.join(', ')}</p>}
+    {(result.kind === 'fit' || result.kind === 'diagnostics') && result.data.metric && <p>Distance: {result.data.metric}{result.kind === 'fit' && result.data.merge ? `; linkage: ${result.data.method === 'diana' ? 'DIANA' : result.data.linkage}` : ''}</p>}
+    {result.kind === 'diagnostics' && <p>Diagnostic method: {result.data.diagnostic_method ?? 'kmeans'}</p>}
     <p>{rows.length} result rows. Showing {Math.min(shown, rows.length)}.</p>
     {rows.length === 0 ? <p>No eligible results for these settings.</p> : <table className="data-table">
       <thead><tr>{headers.map((h, i) => <th key={i}>{h}</th>)}</tr></thead>
@@ -73,6 +79,23 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   const [columns, setColumns] = useState<string[]>([]);
   const [group, setGroup] = useState('');
   const [id, setId] = useState('');
+  const [source, setSource] = useState<AnalysisSource>('elements');
+  const [pcCount, setPcCount] = useState(2);
+  const [sourceGroup, setSourceGroup] = useState('');
+  const [metric, setMetric] = useState<ClusterDistanceMetric>('euclidean');
+  const [linkage, setLinkage] = useState<ClusterLinkage>('ward_d2');
+  const [minkowskiP, setMinkowskiP] = useState(2);
+  const [starts, setStarts] = useState(25);
+  const [iterations, setIterations] = useState(100);
+  const [diagnosticMetric, setDiagnosticMetric] = useState<'euclidean' | 'manhattan'>('euclidean');
+  const [diagnosticMethod, setDiagnosticMethod] = useState<'kmeans' | 'pam'>('kmeans');
+  const [projection, setProjection] = useState<string[] | null>(null);
+  const [definitions, setDefinitions] = useState<TransformationDefinition[]>([]);
+  const [definitionName, setDefinitionName] = useState('');
+  const definition = definitions.find(d => d.name === definitionName) ?? null;
+  const [job, setJob] = useState<AnalysisJobSnapshot | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const activeJob = useRef<AbortController | null>(null);
   const [method, setMethod] = useState<ClusterMethod>('kmeans');
   const [membershipMethod, setMembershipMethod] = useState<MembershipMethod>('hotellings');
   const [k, setK] = useState(2);
@@ -88,9 +111,11 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   const generation = useRef(0);
   useEffect(() => {
     let active = true;
+    deps.transformations.list().then(async list => Promise.all(list.transformations.map(d => deps.transformations.load(d.name))))
+      .then(found => { if (active) setDefinitions(found); }).catch(e => { if (active) setError(`Could not load transformations: ${String(e)}`); });
     deps.groups.scan().then(found => { if (active) { setCandidates(found); setPaths(found.filter(p => p.ready).map(p => p.path)); } })
       .catch(e => { if (active) setError(String(e)); });
-    return () => { active = false; generation.current++; };
+    return () => { active = false; generation.current++; activeJob.current?.abort(); };
   }, [deps]);
   useEffect(() => {
     let active = true;
@@ -98,28 +123,37 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     if (path) deps.groups.rows(path).then(rows => {
       if (!active) return;
       setData(rows); setColumns(rows.elemental_columns); setGroup(rows.descriptive_columns[0] ?? '');
-      setId(rows.visible_id_column);
+      setId(rows.visible_id_column); setSourceGroup(rows.descriptive_columns[0] ?? ''); setProjection(null); setDefinitionName('');
     }).catch(e => { if (active) setError(String(e)); });
     return () => { active = false; };
   }, [deps, path]);
-  function reset() { generation.current++; setResult(null); setReviewing(false); setError(''); setNotice(''); setBusy(false); }
+  function reset() { activeJob.current?.abort(); generation.current++; setResult(null); setReviewing(false); setError(''); setNotice(''); setBusy(false); }
   async function run(diagnostics = false) {
     const ticket = ++generation.current;
     setBusy(true); setError(''); setNotice(''); setReviewing(false); setCutK(2); setResult(null);
     try {
-      let next: AnalysisResult;
+      const input = { path, columns, transformation: definition, ...sourceOptions(source, pcCount, sourceGroup, seed) };
+      let analysis: AnalysisJobRequest;
       if (kind === 'cluster') {
-        next = diagnostics
-          ? { kind: 'diagnostics', data: await deps.clustering.diagnostics({ path, columns, max_k: k, seed }) }
-          : { kind: 'fit', data: await deps.clustering.fit({ path, columns, method, k, seed, iter_max: 100, nstart: 25 }) };
+        analysis = diagnostics
+          ? { kind: 'cluster_diagnostics', request: { ...input, max_k: k, seed, diagnostic_method: diagnosticMethod, metric: diagnosticMethod === 'kmeans' ? 'euclidean' : diagnosticMetric } }
+          : { kind: 'cluster_fit', request: { ...input, method, k, seed, iter_max: iterations, nstart: starts, metric: method === 'kmeans' ? 'euclidean' : metric, linkage, minkowski_p: minkowskiP } };
       } else if (kind === 'membership') {
-        next = { kind: 'membership', data: await deps.clustering.membershipProbabilities({ path, columns, group_column: group, id_column: id, method: membershipMethod }) };
+        analysis = { kind: 'membership_probabilities', request: { ...input, group_column: group, id_column: id, method: membershipMethod, projection_groups: projection } };
       } else {
-        next = { kind: 'euclidean', data: await deps.clustering.euclideanMatches({ path, columns, group_column: group, id_column: id, limit, within_group: within }) };
+        analysis = { kind: 'euclidean_matches', request: { ...input, group_column: group, id_column: id, limit, within_group: within, projection_groups: projection } };
       }
+      const controller = new AbortController();
+      activeJob.current = controller;
+      setCancelling(false); setJob(null);
+      const output = await runAnalysisJob(deps.jobs, analysis, { signal: controller.signal, onProgress: value => { if (ticket === generation.current) setJob(value); } });
+      const next: AnalysisResult = output.kind === 'cluster_fit' ? { kind: 'fit', data: output.result }
+        : output.kind === 'cluster_diagnostics' ? { kind: 'diagnostics', data: output.result }
+        : output.kind === 'membership_probabilities' ? { kind: 'membership', data: output.result }
+        : { kind: 'euclidean', data: output.result };
       if (ticket === generation.current) setResult(next);
-    } catch (e) { if (ticket === generation.current) setError(String(e)); }
-    finally { if (ticket === generation.current) setBusy(false); }
+    } catch (e) { if (ticket === generation.current) { if (e instanceof DOMException && e.name === 'AbortError') setNotice('Analysis cancelled.'); else setError(String(e)); } }
+    finally { if (ticket === generation.current) { setBusy(false); setCancelling(false); activeJob.current = null; } }
   }
   async function assign(request: TransferUnitsRequest | BatchTransferUnitsRequest) {
     if (moving.current) return;
@@ -145,26 +179,45 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
       if (ticket === generation.current) setBusy(false);
     }
   }
-  const disabled = busy || !data || !columns.length || (kind !== 'cluster' && (!group || !id));
+  const disabled = busy || !data || !columns.length || (kind !== 'cluster' && (!group || !id)) || (source === 'lda' && !sourceGroup);
   return <section aria-label={titles[kind]}>
     <h1>{titles[kind]}</h1>
-    <p>Analyze measured elemental columns from one group file. Results are temporary.</p>
+    <p>Analyze measured or transformed columns and recomputed ordination scores. Results are temporary.</p>
     <label>Dataset <select disabled={busy} value={path} onChange={e => { reset(); setData(null); setPath(e.target.value); }}>
       <option value="">Choose a group file…</option>{paths.map(p => <option key={p}>{p}</option>)}
     </select></label>
     {data && <fieldset disabled={busy} onChange={reset}><legend>Analysis settings</legend>
-      <label>Elemental columns <select multiple value={columns} onChange={e => setColumns(Array.from(e.target.selectedOptions, o => o.value))}>
-        {data.elemental_columns.map(c => <option key={c}>{c}</option>)}
+      <label>Transformation <select value={definitionName} onChange={e => { const selected = definitions.find(d => d.name === e.target.value) ?? null; setDefinitionName(e.target.value); setColumns(analysisColumns(data, selected)); }}>
+        <option value="">Measured values</option>{definitions.map(d => <option key={d.name}>{d.name}</option>)}
+      </select></label>
+      <label>Analysis source <select value={source} onChange={e => setSource(e.target.value as AnalysisSource)}>
+        <option value="elements">Elements / ratios</option><option value="pca">PCA scores</option><option value="umap">UMAP dimensions</option><option value="lda">Linear discriminants</option>
+      </select></label>
+      {source === 'pca' && <label>Principal components <input type="number" min={1} max={columns.length} value={pcCount} onChange={e => setPcCount(Number(e.target.value))} /></label>}
+      {source === 'lda' && <label>LDA grouping column <select value={sourceGroup} onChange={e => setSourceGroup(e.target.value)}>{data.descriptive_columns.map(c => <option key={c}>{c}</option>)}</select></label>}
+      {source === 'umap' && <label>UMAP seed <input type="number" min={0} max={2147483627} value={seed} onChange={e => setSeed(Number(e.target.value))} /></label>}
+      <label>Input columns <select multiple value={columns} onChange={e => setColumns(Array.from(e.target.selectedOptions, o => o.value))}>
+        {analysisColumns(data, definition).map(c => <option key={c}>{c}</option>)}
       </select></label>
       {kind === 'cluster' ? <>
-        <label>Method <select value={method} onChange={e => setMethod(e.target.value as ClusterMethod)}>
+        <label>Method <select value={method} onChange={e => { setMethod(e.target.value as ClusterMethod); setMetric('euclidean'); }}>
           <option value="kmeans">k-means</option><option value="pam">k-medoids (PAM)</option>
-          <option value="hclust_ward_d2">Hierarchical (Ward.D2)</option><option value="diana">Divisive (DIANA)</option>
+          <option value="hclust">Hierarchical</option><option value="diana">Divisive (DIANA)</option>
         </select></label>
-        <label>Cluster count / diagnostic maximum <input type="number" min={2} max={20} value={k} onChange={e => setK(Number(e.target.value))} /></label>
+        {method !== 'kmeans' && <label>Distance <select value={metric} onChange={e => setMetric(e.target.value as ClusterDistanceMetric)}>
+          <option value="euclidean">Euclidean</option><option value="manhattan">Manhattan</option>
+          {method === 'hclust' && <><option value="minkowski">Minkowski</option><option value="maximum">Maximum</option></>}
+        </select></label>}
+        {method === 'hclust' && <label>Linkage <select value={linkage} onChange={e => setLinkage(e.target.value as ClusterLinkage)}><option value="average">Average</option><option value="complete">Complete</option><option value="ward_d">Ward.D</option><option value="ward_d2">Ward.D2</option></select></label>}
+        {method === 'hclust' && metric === 'minkowski' && <label>Minkowski power <input type="number" min={1} step={0.1} value={minkowskiP} onChange={e => setMinkowskiP(Number(e.target.value))} /></label>}
+        {method === 'kmeans' && <><label>Starts <input type="number" min={1} max={100} value={starts} onChange={e => setStarts(Number(e.target.value))} /></label><label>Maximum iterations <input type="number" min={1} max={200} value={iterations} onChange={e => setIterations(Number(e.target.value))} /></label></>}
+        <label>Diagnostic method <select value={diagnosticMethod} onChange={e => setDiagnosticMethod(e.target.value as 'kmeans' | 'pam')}><option value="kmeans">k-means</option><option value="pam">k-medoids (PAM)</option></select></label>
+        {diagnosticMethod === 'pam' && <label>Diagnostic distance <select value={diagnosticMetric} onChange={e => setDiagnosticMetric(e.target.value as 'euclidean' | 'manhattan')}><option value="euclidean">Euclidean</option><option value="manhattan">Manhattan</option></select></label>}
+        <label>Cluster count / diagnostic maximum <input type="number" min={1} max={20} value={k} onChange={e => setK(Number(e.target.value))} /></label>
         <label>Random seed <input type="number" min={-2147483648} max={2147483627} value={seed} onChange={e => setSeed(Number(e.target.value))} /></label>
       </> : <>
-        <label>Group column <select value={group} onChange={e => setGroup(e.target.value)}>{data.descriptive_columns.map(c => <option key={c}>{c}</option>)}</select></label>
+        <label>Group column <select value={group} onChange={e => { setGroup(e.target.value); setProjection(null); }}>{data.descriptive_columns.map(c => <option key={c}>{c}</option>)}</select></label>
+        <label>Projection groups <select multiple value={projection ?? projectionLabels(data, group)} onChange={e => setProjection(Array.from(e.target.selectedOptions, o => o.value))}>{projectionLabels(data, group).map(g => <option key={g}>{g}</option>)}</select></label>
         <label>ID column <select value={id} onChange={e => setId(e.target.value)}>{[...new Set([data.visible_id_column, ...data.descriptive_columns])].map(c => <option key={c}>{c}</option>)}</select></label>
         {kind === 'membership' ? <label>Method <select value={membershipMethod} onChange={e => setMembershipMethod(e.target.value as MembershipMethod)}><option value="hotellings">Hotelling probabilities (Mahalanobis fallback)</option><option value="mahalanobis">Mahalanobis distances</option></select></label> : <>
           <label>Matches per analytical unit <input type="number" min={1} max={100} value={limit} onChange={e => setLimit(Number(e.target.value))} /></label>
@@ -175,7 +228,8 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     </fieldset>}
     <button disabled={disabled} onClick={() => void run()}>Run analysis</button>
     {kind === 'cluster' && <button disabled={disabled} onClick={() => void run(true)}>Run cluster diagnostics</button>}
-    {busy && <p role="status">{moving.current ? 'Moving analytical units…' : 'Computing…'}</p>}{notice && <p role="status">{notice}</p>}{error && <p role="alert">{error}</p>}
+    {busy && <p role="status">{moving.current ? 'Moving analytical units…' : cancelling ? 'Cancelling analysis…' : job ? `${job.state}: ${job.stage?.replaceAll('_', ' ') ?? 'waiting'} (${job.progress}%)` : 'Submitting analysis…'}</p>}
+    {busy && !moving.current && <button disabled={cancelling} onClick={() => { setCancelling(true); activeJob.current?.abort(); }}>Cancel analysis</button>}{notice && <p role="status">{notice}</p>}{error && <p role="alert">{error}</p>}
     {result && <div key={generation.current}><AnalysisPlots result={result} cutK={cutK} onCutKChange={setCutK} disabled={busy || reviewing} /><ResultAssignment result={result} cutK={cutK} destinations={paths} candidates={candidates} busy={busy} onReviewChange={setReviewing} onConfirm={request => void assign(request)} onBatchConfirm={request => void assign(request)} /><ResultTable result={result} /></div>}
   </section>;
 }

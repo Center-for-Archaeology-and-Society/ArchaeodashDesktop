@@ -345,12 +345,32 @@ export interface UmapResponse extends OrdinationResponseBase {
 
 // --- Clustering, membership and nearest matches (Phase 6) ---
 
-export type ClusterMethod = 'kmeans' | 'pam' | 'hclust_ward_d2' | 'diana';
-export interface ClusterDiagnosticsRequest extends OrdinationRequestBase {
+export type ClusterMethod = 'kmeans' | 'pam' | 'hclust' | 'hclust_ward_d2' | 'diana';
+export type AnalysisSource = 'elements' | 'pca' | 'umap' | 'lda';
+export type ClusterDistanceMetric = 'euclidean' | 'manhattan' | 'minkowski' | 'maximum';
+export type ClusterLinkage = 'average' | 'complete' | 'ward_d' | 'ward_d2';
+export interface AnalysisInputOptions {
+  transformation?: TransformationDefinition | null;
+  source?: AnalysisSource;
+  pc_count?: number | null;
+  source_group_column?: string | null;
+  umap_seed?: number | null;
+}
+export interface ClusterOptions extends AnalysisInputOptions {
+  metric?: ClusterDistanceMetric;
+  minkowski_p?: number;
+  linkage?: ClusterLinkage;
+}
+export interface ClusterDiagnosticsRequest extends OrdinationRequestBase, ClusterOptions {
   max_k: number;
   seed: number;
+  diagnostic_method?: 'kmeans' | 'pam';
 }
 export interface ClusterDiagnosticsResponse {
+  source?: AnalysisSource;
+  metric?: ClusterDistanceMetric;
+  linkage?: ClusterLinkage;
+  diagnostic_method?: 'kmeans' | 'pam';
   path: string;
   revision_id: string;
   column_names: string[];
@@ -359,7 +379,7 @@ export interface ClusterDiagnosticsResponse {
   /** Silhouette values correspond to k=2..=max_k; null represents NaN. */
   silhouette: (number | null)[];
 }
-export interface ClusterFitRequest extends OrdinationRequestBase {
+export interface ClusterFitRequest extends OrdinationRequestBase, ClusterOptions {
   method: ClusterMethod;
   k?: number | null;
   iter_max?: number;
@@ -367,6 +387,10 @@ export interface ClusterFitRequest extends OrdinationRequestBase {
   seed?: number | null;
 }
 export interface ClusterFitResponse {
+  source?: AnalysisSource;
+  column_names?: string[];
+  metric?: ClusterDistanceMetric;
+  linkage?: ClusterLinkage;
   /** Hidden immutable identities in input row order. */
   analytical_uuids: string[];
   path: string;
@@ -384,7 +408,8 @@ export interface ClusterFitResponse {
   silhouette?: (number | null)[] | null;
 }
 export type MembershipMethod = 'hotellings' | 'mahalanobis';
-export interface MembershipProbabilitiesRequest {
+export interface MembershipProbabilitiesRequest extends AnalysisInputOptions {
+  projection_groups?: string[] | null;
   path: string;
   columns: string[];
   group_column: string;
@@ -392,6 +417,8 @@ export interface MembershipProbabilitiesRequest {
   method: MembershipMethod;
 }
 export interface MembershipProbabilitiesResponse {
+  source?: AnalysisSource;
+  column_names?: string[];
   /** Hidden immutable identities aligned with ids and probability rows. */
   analytical_uuids: string[];
   path: string;
@@ -405,7 +432,8 @@ export interface MembershipProbabilitiesResponse {
   best_value: (number | null)[];
   in_group: boolean[];
 }
-export interface EuclideanMatchesRequest {
+export interface EuclideanMatchesRequest extends AnalysisInputOptions {
+  projection_groups?: string[] | null;
   path: string;
   columns: string[];
   group_column: string;
@@ -425,6 +453,8 @@ export interface EuclideanMatchDto {
   match_group: string;
 }
 export interface EuclideanMatchesResponse {
+  source?: AnalysisSource;
+  column_names?: string[];
   path: string;
   revision_id: string;
   rows: EuclideanMatchDto[];
@@ -539,4 +569,30 @@ export interface GetPreferencesResponse {
 export interface PutPreferenceRequest {
   key: PreferenceKey;
   value: unknown;
+}
+
+// Project-scoped bounded asynchronous analysis jobs.
+export type AnalysisJobRequest =
+  | { kind: 'cluster_fit'; request: ClusterFitRequest }
+  | { kind: 'cluster_diagnostics'; request: ClusterDiagnosticsRequest }
+  | { kind: 'membership_probabilities'; request: MembershipProbabilitiesRequest }
+  | { kind: 'euclidean_matches'; request: EuclideanMatchesRequest };
+export interface SubmitAnalysisJobRequest { analysis: AnalysisJobRequest; timeout_ms?: number | null }
+export type AnalysisJobResult =
+  | { kind: 'cluster_fit'; result: ClusterFitResponse }
+  | { kind: 'cluster_diagnostics'; result: ClusterDiagnosticsResponse }
+  | { kind: 'membership_probabilities'; result: MembershipProbabilitiesResponse }
+  | { kind: 'euclidean_matches'; result: EuclideanMatchesResponse };
+export type AnalysisJobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'timed_out';
+export type AnalysisJobStage = 'validating' | 'reading_rows' | 'normalizing_schema' | 'computing' | 'publishing';
+export interface AnalysisJobSnapshot {
+  id: string;
+  state: AnalysisJobState;
+  stage: AnalysisJobStage | null;
+  progress: number;
+  submitted_at_ms: number;
+  started_at_ms: number | null;
+  completed_at_ms: number | null;
+  result: AnalysisJobResult | null;
+  error: ErrorEnvelope | null;
 }

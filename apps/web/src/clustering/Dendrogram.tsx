@@ -24,8 +24,8 @@ export function Dendrogram({ result, cutK = 2, leafSize = 12 }: {
     ? plotRight
     : plotRight - ((v - layout.minHeight) / (layout.maxHeight - layout.minHeight)) * (plotRight - plotLeft);
   const size = Number.isFinite(leafSize) ? Math.max(8, Math.min(20, leafSize)) : 12;
-  return <figure aria-label={`${result.method === 'diana' ? 'DIANA' : 'Ward.D2'} dendrogram`}>
-    <figcaption>{result.method === 'diana' ? 'DIANA' : 'Ward.D2'} hierarchical clustering; cut into {cutK} clusters</figcaption>
+  return <figure aria-label={`${result.method === 'diana' ? 'DIANA' : result.linkage ? ({ average: 'Average', complete: 'Complete', ward_d: 'Ward.D', ward_d2: 'Ward.D2' }[result.linkage]) : 'Ward.D2'} dendrogram`}>
+    <figcaption>{result.method === 'diana' ? 'DIANA' : result.linkage ? ({ average: 'Average', complete: 'Complete', ward_d: 'Ward.D', ward_d2: 'Ward.D2' }[result.linkage]) : 'Ward.D2'} hierarchical clustering; cut into {cutK} clusters</figcaption>
       <svg role="img" aria-labelledby={`${id}-title ${id}-desc`} viewBox={`0 0 ${width} ${height}`} width={width} height={height} style={{ display: 'block', width: '100%', height: 'auto', minWidth: width, maxWidth: 'none', font: 'inherit', color: 'inherit' }}>
         <title id={`${id}-title`}>Hierarchical clustering dendrogram</title>
         <desc id={`${id}-desc`}>Horizontal dendrogram with merge height increasing from right to left. Leaves are analytical units in dendrogram order.</desc>
