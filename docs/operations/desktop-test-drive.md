@@ -58,7 +58,9 @@ project folder.
 ## Initial test limits
 
 Use a disposable copy of data and keep other programs from editing its group files
-during this initial test; external-writer/snapshot concurrency work remains open.
+during this initial test. Application reads, scans, imports, and transactions now
+coordinate through the project lock; external programs that ignore it remain
+outside that protection.
 
 This walkthrough checks basic project opening, import, analysis, export, and
 reopen behavior on the current machine. It does not establish cross-platform

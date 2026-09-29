@@ -113,6 +113,6 @@ processes after the run. A later [desktop test-drive checkpoint](desktop-test-dr
   goldens and the available procedure 13 model/component tests. It does not run
   the entire 14-procedure suite through one production-like end-to-end path.
 - Broader native workflow/assignment acceptance and the 100,000-point browser render performance test remain open; the initial native smoke workflow passed in the linked test-drive checkpoint. Cross-platform timing and peak-memory budgets remain unmeasured.
-- Reader snapshot isolation and uncoordinated external-writer acceptance remain unresolved storage gates from the earlier batch-assignment checkpoint. Footer resource preflight does not remove the race between a file check and an external replacement.
+- Filesystem reads, multi-group planning snapshots, project candidate scans, and application import publication now coordinate with store transactions through `.archaeodash/project.lock`. This protects cooperating application/store users; uncoordinated external-writer acceptance remains unresolved, and footer resource preflight does not remove races with a program that ignores the lock.
 - Service limits are fixed at 1,000 rows for pairwise clustering workloads;
   the wider backend probe does not change or validate that service policy.
