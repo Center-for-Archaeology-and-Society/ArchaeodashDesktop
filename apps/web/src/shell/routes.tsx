@@ -1,4 +1,5 @@
 /** Static content routes. Analysis routes are wired in main.tsx. */
+import { Link } from 'react-router';
 import { marked } from 'marked';
 import type { ReactElement } from 'react';
 import { useMemo } from 'react';
@@ -25,6 +26,7 @@ export function HomePage(): ReactElement {
         ArchaeoDash — a dashboard for archaeological compositional analysis. Open or import a
         dataset from the Data Manager to begin.
       </p>
+      <Link to="/data">Import and manage data</Link>
     </section>
   );
 }

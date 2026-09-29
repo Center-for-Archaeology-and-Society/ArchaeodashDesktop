@@ -137,7 +137,8 @@ export function AppShell({
         >
           <h2>Data Manager</h2>
           {projectName && <p aria-label="Current project">Project: {projectName}</p>}
-          <p className="sidebar-note">Dataset import and group management arrive with the Data Manager slice.</p>
+          <NavLink to="/data">Import and manage data</NavLink>
+          <p className="sidebar-note">Import source files, inspect project groups, then choose a group in an analysis view.</p>
           {appInfo && (
             <p className="sidebar-footer">
               {appInfo.app} {appInfo.version}

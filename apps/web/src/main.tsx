@@ -8,6 +8,7 @@ import { StrictMode, useEffect, useRef, useState, type ReactElement } from 'reac
 import { createRoot } from 'react-dom/client';
 import { createBrowserRouter, Outlet, RouterProvider, type RouteObject } from 'react-router';
 import type { AppInfo, Transport } from '@archaeodash/client';
+import { DataManager } from './data-manager/DataManager.tsx';
 import { AppShell } from './shell/AppShell.tsx';
 import {
   HelpPage,
@@ -87,9 +88,10 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
   );
 }
 
-function routeChildren(deps: ExploreDeps, ordinationDeps: OrdinationDeps, visualizeDeps: VisualizeDeps, analysisDeps: AnalysisDeps): RouteObject[] {
+function routeChildren(deps: ExploreDeps, ordinationDeps: OrdinationDeps, visualizeDeps: VisualizeDeps, analysisDeps: AnalysisDeps, transport: Transport): RouteObject[] {
   return [
     { index: true, element: <HomePage /> },
+    { path: 'data', element: <DataManager transport={transport} /> },
     { path: 'explore', element: <ExplorePage deps={deps} /> },
     { path: 'visualize', element: <VisualizePage deps={visualizeDeps} /> },
     { path: 'ordination', element: <OrdinationPage deps={ordinationDeps} /> },
@@ -136,7 +138,7 @@ export function createAppRouter(transport: Transport) {
     exports: transport.exports,
   };
   return createBrowserRouter([
-    { element: <AppRoot transport={transport} />, children: routeChildren(exploreDeps, ordinationDeps, visualizeDeps, transport) },
+    { element: <AppRoot transport={transport} />, children: routeChildren(exploreDeps, ordinationDeps, visualizeDeps, transport, transport) },
   ]);
 }
 

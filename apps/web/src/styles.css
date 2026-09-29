@@ -359,3 +359,10 @@ body {
 .cluster-diagnostic-svg { display: block; width: 100%; min-width: 20rem; font: inherit; }
 .cluster-plot-panel.expanded .cluster-diagnostic-plot { min-width: 0; }
 .cluster-plot-panel.expanded .cluster-diagnostics-plots { min-width: 70rem; }
+
+/* Keep import roles readable for wider analytical spreadsheets. */
+.data-manager-page section { margin-block: 1.25rem; }
+.data-manager-page fieldset { margin-block: 1rem; padding: 0.75rem; }
+.data-manager-page label { display: inline-flex; align-items: center; gap: 0.4rem; margin: 0.4rem 1rem 0.4rem 0; }
+.data-manager-page select, .data-manager-page input:not([type=checkbox]):not([type=radio]) { max-width: 100%; }
+.data-manager-page li { margin-block: 0.35rem; overflow-wrap: anywhere; }
