@@ -48,14 +48,30 @@ test('interactive mode reports per-group sampling while static mode keeps every 
     // Rows are missing-valued here, so the test exercises allocation/status without circles.
     rowIndices: Array.from({ length: total }, (_, i) => i),
     values: [[], [], []],
-    groupLabels: [],
+    groupLabels: Array.from({ length: total }, (_, i) => i % 2 === 0 ? 'Baca' : 'Other'),
     rowUuids: [],
   };
   const staticHtml = renderToString(<Multiplot {...sampled} initialMode="static" />);
   assert.ok(!staticHtml.includes('Sampled'), 'static plots preserve all source rows');
   const interactiveHtml = renderToString(<Multiplot {...sampled} initialMode="interactive" />);
-  assert.ok(interactiveHtml.includes('Sampled 66,666 of 600,006 interactive points'));
-  assert.ok(interactiveHtml.includes('up to 11,111 per group and facet'));
+  assert.ok(interactiveHtml.includes('Sampled 99,996 of 600,006 interactive points'));
+  assert.ok(interactiveHtml.includes('up to 8,333 per group and facet'));
+});
+
+test('procedure 13 renders 99,960 points for four columns, five groups, and 15,000 rows', () => {
+  const groupLabels = Array.from({ length: 15_000 }, (_, i) => `G${Math.floor(i / 3_000) + 1}`);
+  const props: MultiplotProps = {
+    columns: ['a', 'b', 'c', 'd'],
+    values: Array.from({ length: 4 }, (_, column) =>
+      Array.from({ length: 15_000 }, (_, row) => row + column / 10)),
+    groupLabels,
+    groupNames: ['G1', 'G2', 'G3', 'G4', 'G5'],
+    rowIndices: Array.from({ length: 15_000 }, (_, i) => i),
+  };
+  const html = renderToString(<Multiplot {...props} initialMode="interactive" />);
+  assert.equal((html.match(/class="multiplot-panel-plotly"/g) ?? []).length, 12);
+  assert.ok(html.includes('Sampled 99,960 of 180,000 interactive points'));
+  assert.ok(html.includes('up to 1,666 per group and facet'));
 });
 
 test('unsampled data shows no sampling status', () => {

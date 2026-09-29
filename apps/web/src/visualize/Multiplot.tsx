@@ -203,6 +203,7 @@ export function InteractivePanel({
       const config = { responsive: false, displayModeBar: true } as const;
       void Plotly.react(holder.current, data, layout, config).then(() => {
         if (disposed || !holder.current) return;
+        holder.current.dataset.renderState = 'complete';
         const gd = holder.current as unknown as {
           on: (event: string, cb: (eventData: unknown) => void) => void;
           removeAllListeners?: (event: string) => void;
@@ -215,7 +216,7 @@ export function InteractivePanel({
         gd.on('plotly_doubleclick', () => onSelect?.([]));
       });
     })().catch(() => {
-      /* plotly load failure leaves the placeholder; SSR tests never reach this */
+      if (!disposed && holder.current) holder.current.dataset.renderState = 'error';
     });
     return () => {
       disposed = true;
@@ -226,6 +227,7 @@ export function InteractivePanel({
     <div
       ref={holder}
       className="multiplot-panel-plotly"
+      data-render-state="loading"
       data-pair={`${pair.xIndex}-${pair.yIndex}`}
       role="img"
       aria-label={`Scatter of ${yLabel} by ${xLabel}`}
@@ -242,8 +244,8 @@ export function Multiplot(props: MultiplotProps): ReactElement {
 
   const pairs = useMemo(() => allPairs(props.columns.length), [props.columns]);
   const plan: SamplingPlan = useMemo(
-    () => samplingPlan(props.rowIndices, props.groupLabels, pairs.length, props.columns.length ** 2),
-    [props.rowIndices, props.groupLabels, pairs.length, props.columns.length],
+    () => samplingPlan(props.rowIndices, props.groupLabels, pairs.length, pairs.length),
+    [props.rowIndices, props.groupLabels, pairs.length],
   );
   const visiblePairs = renderCount === null ? pairs : pairs.slice(0, renderCount);
 
