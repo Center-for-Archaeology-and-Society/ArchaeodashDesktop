@@ -648,8 +648,8 @@ mod tests {
 
     use super::*;
     use archaeodash_contracts::{
-        ClusterMethod, EuclideanMatchesRequest, ImportCommitRequest, ImportPreviewRequest,
-        MembershipMethodDto, MembershipProbabilitiesRequest,
+        ClusterFitRequest, ClusterMethod, EuclideanMatchesRequest, ImportCommitRequest,
+        ImportPreviewRequest, MembershipMethodDto, MembershipProbabilitiesRequest,
     };
 
     #[test]
@@ -763,6 +763,27 @@ mod tests {
             })
             .expect("merge groups");
         let path = merged.outputs[0].path.clone();
+        let merged_fit = clustering
+            .cluster_fit(ClusterFitRequest {
+                path: path.clone(),
+                columns: vec!["as".into(), "fe".into()],
+                transformation: None,
+                method: ClusterMethod::Kmeans,
+                k: Some(2),
+                iter_max: 50,
+                nstart: 5,
+                seed: Some(42),
+            })
+            .expect("fit merged group");
+        let before_transfer = groups.rows(&path).expect("read merged group rows");
+        assert_eq!(
+            merged_fit.analytical_uuids,
+            before_transfer
+                .rows
+                .iter()
+                .map(|row| row.analytical_uuid.clone())
+                .collect::<Vec<_>>()
+        );
         let membership = clustering
             .membership_probabilities(MembershipProbabilitiesRequest {
                 path: path.clone(),
@@ -775,6 +796,7 @@ mod tests {
         assert_eq!(membership.ids.len(), 24);
         assert_eq!(membership.probabilities.len(), 24);
         assert_eq!(membership.eligible_groups.len(), 3);
+        assert_eq!(membership.analytical_uuids, merged_fit.analytical_uuids);
 
         let matches = clustering
             .euclidean_matches(EuclideanMatchesRequest {
@@ -788,10 +810,115 @@ mod tests {
             .expect("euclidean matches");
         assert!(!matches.rows.is_empty());
         assert!(matches.rows.iter().all(|row| row.group != row.match_group));
+        let source_uuids = before_transfer
+            .rows
+            .iter()
+            .map(|row| row.analytical_uuid.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(matches.rows.iter().all(|row| {
+            source_uuids.contains(row.analytical_uuid.as_str())
+                && source_uuids.contains(row.match_analytical_uuid.as_str())
+        }));
+
+        // A selected identity from the analytical result can be moved through
+        // the same desktop transaction API without changing its measured row.
+        let selected_uuid = merged_fit.analytical_uuids[0].clone();
+        let selected_before = before_transfer
+            .rows
+            .iter()
+            .find(|row| row.analytical_uuid == selected_uuid)
+            .expect("fit identity belongs to source rows")
+            .clone();
+        let source_revision = before_transfer.revision_id.clone();
+        let destination_path = "groups/Selected_Unit.parquet";
+        groups
+            .transfer_units(&TransferUnitsRequest {
+                action: archaeodash_contracts::TransferAction::Move,
+                source_path: path.clone(),
+                destination_path: destination_path.into(),
+                destination_group_name: Some("Selected Unit".into()),
+                selected_uuids: vec![selected_uuid.clone()],
+                expected_source_revision: source_revision.clone(),
+            })
+            .expect("move selected analytical unit");
+        let destination_after = groups
+            .rows(destination_path)
+            .expect("read transfer destination");
+        assert_eq!(destination_after.rows, vec![selected_before.clone()]);
+        let source_after = groups.rows(&path).expect("read source after move");
+        assert!(source_after
+            .rows
+            .iter()
+            .all(|row| row.analytical_uuid != selected_uuid));
+
+        // Move a second result row into the existing destination group. Both
+        // original and new rows remain intact and the group revision advances.
+        let second_uuid = merged_fit.analytical_uuids[1].clone();
+        let second_before = source_after
+            .rows
+            .iter()
+            .find(|row| row.analytical_uuid == second_uuid)
+            .expect("second fit identity remains in source")
+            .clone();
+        let second_source_revision = source_after.revision_id.clone();
+        let second_transfer = groups
+            .transfer_units(&TransferUnitsRequest {
+                action: archaeodash_contracts::TransferAction::Move,
+                source_path: path.clone(),
+                destination_path: destination_path.into(),
+                destination_group_name: None,
+                selected_uuids: vec![second_uuid.clone()],
+                expected_source_revision: second_source_revision.clone(),
+            })
+            .expect("move another unit into existing destination");
+        assert_eq!(second_transfer.outputs.len(), 2);
+        let destination_after_second = groups
+            .rows(destination_path)
+            .expect("read destination after second move");
+        assert_eq!(
+            destination_after_second.rows,
+            vec![selected_before.clone(), second_before]
+        );
+        assert_ne!(
+            destination_after_second.revision_id,
+            destination_after.revision_id
+        );
+        let source_after_second = groups.rows(&path).expect("read source after second move");
+        assert!(source_after_second
+            .rows
+            .iter()
+            .all(|row| row.analytical_uuid != second_uuid));
+        assert_ne!(source_after_second.revision_id, second_source_revision);
+
+        let retry_error = groups
+            .transfer_units(&TransferUnitsRequest {
+                action: archaeodash_contracts::TransferAction::Move,
+                source_path: path.clone(),
+                destination_path: destination_path.into(),
+                destination_group_name: None,
+                selected_uuids: vec![second_uuid],
+                expected_source_revision: second_source_revision,
+            })
+            .expect_err("stale result revision rejected");
+        assert!(retry_error.to_string().contains("revision"));
+        assert_eq!(
+            groups
+                .rows(destination_path)
+                .expect("destination is unchanged after rejected retry")
+                .rows,
+            destination_after_second.rows
+        );
+        assert_eq!(
+            groups
+                .rows(&path)
+                .expect("source is unchanged after rejected retry")
+                .rows,
+            source_after_second.rows
+        );
 
         let err = clustering
             .euclidean_matches(EuclideanMatchesRequest {
-                path,
+                path: path.clone(),
                 columns: vec!["as".into(), "fe".into()],
                 group_column: "Site".into(),
                 id_column: "anid".into(),
@@ -800,6 +927,26 @@ mod tests {
             })
             .expect_err("invalid limit");
         assert!(err.contains("limit"));
+
+        // Moving every remaining source row removes the source file. The
+        // transaction response names that deletion so the client can refresh.
+        let remaining_uuids = source_after_second
+            .rows
+            .iter()
+            .map(|row| row.analytical_uuid.clone())
+            .collect::<Vec<_>>();
+        let final_transfer = groups
+            .transfer_units(&TransferUnitsRequest {
+                action: archaeodash_contracts::TransferAction::Move,
+                source_path: path.clone(),
+                destination_path: destination_path.into(),
+                destination_group_name: None,
+                selected_uuids: remaining_uuids,
+                expected_source_revision: source_after_second.revision_id.clone(),
+            })
+            .expect("move remaining units");
+        assert_eq!(final_transfer.deleted_paths, vec![path.clone()]);
+        assert!(groups.rows(&path).is_err(), "source group was removed");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

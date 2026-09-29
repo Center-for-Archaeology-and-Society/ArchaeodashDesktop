@@ -17,3 +17,11 @@ Related: [[Interaction_Log_2026-09-28]].
 Cluster and membership responses now carry immutable UUIDs in input row order. Euclidean rows carry both observation and matched UUIDs, while retaining legacy rowid for compatibility. The numerical nearest-match implementation propagates the matched row key without changing distance calculation or ordering. Rust and TypeScript contracts and transport fixtures agree.
 
 Analysis/application/contracts tests and library clippy pass. A regression duplicates both visible IDs and legacy row IDs and still correlates observation/match UUIDs correctly. Initial API/desktop tests verify result-to-transfer identity and stale-source rejection; existing-destination/all-source cases are being added before final integration.
+
+## Transaction and UI checkpoint
+
+Result selection is UUID-based, including deduplication of repeated nearest-match observations. Hierarchical selection shares the plot cut k while mapping leaves back to input-order UUIDs. Canonical identities and matching vector lengths are required; missing result identities disable assignment. A pure request builder captures the result source path/revision and only allows selected identities present in that result.
+
+The UI offers existing ready destination group files and requires a review followed by Confirm move. UUIDs stay out of labels, checkbox values, and rendered result data. Confirmed requests use the existing move transaction; controls are disabled in flight and a synchronous guard prevents duplicate submissions. Success discards stale analysis results. When all units leave the source, the next dataset is the destination. Refresh failure after a committed move reports success plus the reload error, never retries the transfer.
+
+HTTP/desktop integration tests compare result identities to input rows, move units into new and existing destinations, verify exact measured/visible/descriptive row preservation and source removal, verify advancing revisions, and reject stale retries without changing either file. Desktop coverage also proves the empty-source deletion response and source lookup failure. API tests (17), desktop tests (12), all client workspace tests (69 web), and workspace typechecks pass.

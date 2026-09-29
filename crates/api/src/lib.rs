@@ -887,6 +887,57 @@ mod tests {
         let merged: TransactionResponse = serde_json::from_slice(&bytes).unwrap();
         let all_path = merged.outputs[0].path.clone();
 
+        // The fit's row identities provide stable selections for the group
+        // transaction API. Keep the selected row's measured values as the
+        // source of truth for the transfer assertion below.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/cluster/fit")
+                    .header("content-type", "application/json")
+                    .body(json_body(&ClusterFitRequest {
+                        path: all_path.clone(),
+                        columns: vec!["as".into(), "fe".into()],
+                        transformation: None,
+                        method: ClusterMethod::Kmeans,
+                        k: Some(2),
+                        iter_max: 50,
+                        nstart: 5,
+                        seed: Some(42),
+                    }))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let merged_fit: ClusterFitResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            merged_fit.analytical_uuids.len(),
+            merged_fit.n_rows as usize
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get(&format!("/api/v1/groups/rows?path={all_path}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let before_transfer: GroupRowsResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            merged_fit.analytical_uuids,
+            before_transfer
+                .rows
+                .iter()
+                .map(|row| row.analytical_uuid.clone())
+                .collect::<Vec<_>>()
+        );
+
         let response = app
             .clone()
             .oneshot(
@@ -909,6 +960,7 @@ mod tests {
         assert_eq!(membership.ids.len(), 24);
         assert_eq!(membership.probabilities.len(), 24);
         assert_eq!(membership.eligible_groups.len(), 3);
+        assert_eq!(membership.analytical_uuids, merged_fit.analytical_uuids);
 
         let response = app
             .clone()
@@ -932,6 +984,200 @@ mod tests {
         let matches: EuclideanMatchesResponse = serde_json::from_slice(&bytes).unwrap();
         assert!(!matches.rows.is_empty());
         assert!(matches.rows.iter().all(|row| row.group != row.match_group));
+        let source_uuids = before_transfer
+            .rows
+            .iter()
+            .map(|row| row.analytical_uuid.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(matches.rows.iter().all(|row| {
+            source_uuids.contains(row.analytical_uuid.as_str())
+                && source_uuids.contains(row.match_analytical_uuid.as_str())
+        }));
+
+        let selected_uuid = merged_fit.analytical_uuids[0].clone();
+        let selected_before = before_transfer
+            .rows
+            .iter()
+            .find(|row| row.analytical_uuid == selected_uuid)
+            .expect("fit identity belongs to source rows")
+            .clone();
+        let source_revision = before_transfer.revision_id.clone();
+        let destination_path = "groups/Selected_Unit.parquet";
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/groups/transfer-units")
+                    .header("content-type", "application/json")
+                    .body(json_body(&TransferUnitsRequest {
+                        action: TransferAction::Move,
+                        source_path: all_path.clone(),
+                        destination_path: destination_path.into(),
+                        destination_group_name: Some("Selected Unit".into()),
+                        selected_uuids: vec![selected_uuid.clone()],
+                        expected_source_revision: source_revision.clone(),
+                    }))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get(&format!("/api/v1/groups/rows?path={destination_path}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let destination_after: GroupRowsResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(destination_after.rows, vec![selected_before.clone()]);
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get(&format!("/api/v1/groups/rows?path={all_path}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let source_after: GroupRowsResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(source_after
+            .rows
+            .iter()
+            .all(|row| row.analytical_uuid != selected_uuid));
+
+        // A second result UUID can target the existing group. Its revision
+        // advances and the first transferred row remains byte-for-byte equal.
+        let second_uuid = merged_fit.analytical_uuids[1].clone();
+        let second_before = source_after
+            .rows
+            .iter()
+            .find(|row| row.analytical_uuid == second_uuid)
+            .expect("second fit identity remains in source")
+            .clone();
+        let second_source_revision = source_after.revision_id.clone();
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/groups/transfer-units")
+                    .header("content-type", "application/json")
+                    .body(json_body(&TransferUnitsRequest {
+                        action: TransferAction::Move,
+                        source_path: all_path.clone(),
+                        destination_path: destination_path.into(),
+                        destination_group_name: None,
+                        selected_uuids: vec![second_uuid.clone()],
+                        expected_source_revision: second_source_revision.clone(),
+                    }))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let second_transfer: TransactionResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(second_transfer.outputs.len(), 2);
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get(&format!("/api/v1/groups/rows?path={destination_path}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let destination_after_second: GroupRowsResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            destination_after_second.rows,
+            vec![selected_before.clone(), second_before]
+        );
+        assert_ne!(
+            destination_after_second.revision_id,
+            destination_after.revision_id
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get(&format!("/api/v1/groups/rows?path={all_path}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let source_after_second: GroupRowsResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(source_after_second
+            .rows
+            .iter()
+            .all(|row| row.analytical_uuid != second_uuid));
+        assert_ne!(source_after_second.revision_id, second_source_revision);
+
+        // Retrying with the second operation's old source revision conflicts
+        // before either the source or destination is changed.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/api/v1/groups/transfer-units")
+                    .header("content-type", "application/json")
+                    .body(json_body(&TransferUnitsRequest {
+                        action: TransferAction::Move,
+                        source_path: all_path.clone(),
+                        destination_path: destination_path.into(),
+                        destination_group_name: None,
+                        selected_uuids: vec![second_uuid],
+                        expected_source_revision: second_source_revision,
+                    }))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get(&format!("/api/v1/groups/rows?path={destination_path}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let destination_after_retry: GroupRowsResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(destination_after_retry.rows, destination_after_second.rows);
+        assert_eq!(
+            destination_after_retry.revision_id,
+            destination_after_second.revision_id
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get(&format!("/api/v1/groups/rows?path={all_path}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let source_after_retry: GroupRowsResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(source_after_retry.rows, source_after_second.rows);
+        assert_eq!(
+            source_after_retry.revision_id,
+            source_after_second.revision_id
+        );
 
         let response = app
             .oneshot(
