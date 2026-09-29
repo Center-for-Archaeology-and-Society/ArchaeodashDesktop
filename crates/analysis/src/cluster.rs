@@ -16,6 +16,7 @@
 
 use archaeodash_domain::DomainError;
 
+use crate::CancellationToken;
 use crate::ColumnMatrix;
 
 // ---------------------------------------------------------------------------
@@ -402,7 +403,9 @@ fn kmns_start(
     k: usize,
     centers: &[Vec<f64>],
     iter_max: usize,
+    cancel: &CancellationToken,
 ) -> Result<Kmeans, DomainError> {
+    cancel.check()?;
     let mut s = Kmns {
         x,
         n,
@@ -425,6 +428,9 @@ fn kmns_start(
     // Initial two-closest-centre assignment (Fortran DO 50 block; the early
     // exit `IF (DB .GE. DT(2)) GO TO 50` skips the promote step).
     for i in 0..n {
+        if i % 64 == 0 {
+            cancel.check()?;
+        }
         s.ic1[i] = 0;
         s.ic2[i] = 1;
         let mut dt = [0.0f64; 2];
@@ -500,12 +506,15 @@ fn kmns_start(
 
     let mut iter_used = 0usize;
     while iter_used < iter_max {
+        cancel.check()?;
         iter_used += 1;
         s.optra();
+        cancel.check()?;
         if s.indx == n {
             break;
         }
         if !s.qtran() {
+            cancel.check()?;
             break;
         }
         if k == 2 {
@@ -548,6 +557,25 @@ pub fn kmeans(
     nstart: usize,
     seed: i32,
 ) -> Result<Kmeans, DomainError> {
+    kmeans_cancellable(
+        x,
+        centers,
+        iter_max,
+        nstart,
+        seed,
+        &CancellationToken::default(),
+    )
+}
+
+pub fn kmeans_cancellable(
+    x: &ColumnMatrix,
+    centers: usize,
+    iter_max: usize,
+    nstart: usize,
+    seed: i32,
+    cancel: &CancellationToken,
+) -> Result<Kmeans, DomainError> {
+    cancel.check()?;
     let n = x.n_rows();
     let p = x.cols.len();
     if n < 2 || p == 0 {
@@ -605,9 +633,10 @@ pub fn kmeans(
     let mut rng = RMt19937::new(seed);
     let mut best: Option<Kmeans> = None;
     for _ in 0..nstart {
+        cancel.check()?;
         let idx = r_sample_int(&mut rng, mm, centers);
         let init: Vec<Vec<f64>> = idx.iter().map(|&i| cn[i - 1].clone()).collect();
-        let fit = kmns_start(&rows, n, p, centers, &init, iter_max)?;
+        let fit = kmns_start(&rows, n, p, centers, &init, iter_max, cancel)?;
         if best
             .as_ref()
             .is_none_or(|b| fit.tot_withinss < b.tot_withinss)
@@ -621,6 +650,84 @@ pub fn kmeans(
 // ---------------------------------------------------------------------------
 // PAM (cluster::pam, original build + swap, pamonce = FALSE)
 // ---------------------------------------------------------------------------
+
+/// Distance supported by the Phase 6 clustering procedures.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DistanceMetric {
+    Euclidean,
+    Manhattan,
+    Minkowski { p: f64 },
+    Maximum,
+}
+
+/// Agglomerative linkage supported by HCA.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkageMethod {
+    Average,
+    Complete,
+    WardD,
+    WardD2,
+}
+
+fn validate_metric(metric: DistanceMetric) -> Result<(), DomainError> {
+    if let DistanceMetric::Minkowski { p } = metric {
+        if !p.is_finite() || p <= 0.0 {
+            return Err(DomainError::validation(
+                "cluster_metric",
+                "Minkowski p must be finite and positive",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn metric_distance(a: &[f64], b: &[f64], metric: DistanceMetric) -> f64 {
+    match metric {
+        DistanceMetric::Euclidean => a
+            .iter()
+            .zip(b)
+            .map(|(x, y)| (x - y) * (x - y))
+            .sum::<f64>()
+            .sqrt(),
+        DistanceMetric::Manhattan => a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum(),
+        DistanceMetric::Minkowski { p } => a
+            .iter()
+            .zip(b)
+            .map(|(x, y)| (x - y).abs().powf(p))
+            .sum::<f64>()
+            .powf(1.0 / p),
+        DistanceMetric::Maximum => a
+            .iter()
+            .zip(b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0, f64::max),
+    }
+}
+
+fn metric_matrix(
+    x: &ColumnMatrix,
+    metric: DistanceMetric,
+    cancel: &CancellationToken,
+) -> Result<Vec<Vec<f64>>, DomainError> {
+    validate_metric(metric)?;
+    let n = x.n_rows();
+    let p = x.cols.len();
+    let rows: Vec<Vec<f64>> = (0..n)
+        .map(|i| (0..p).map(|j| x.cols[j][i]).collect())
+        .collect();
+    let mut d = vec![vec![0.0; n]; n];
+    for i in 0..n {
+        if i % 16 == 0 {
+            cancel.check()?;
+        }
+        for j in i + 1..n {
+            let v = metric_distance(&rows[i], &rows[j], metric);
+            d[i][j] = v;
+            d[j][i] = v;
+        }
+    }
+    Ok(d)
+}
 
 /// `cluster::pam` result pieces.
 #[derive(Debug, Clone, PartialEq)]
@@ -642,6 +749,34 @@ pub struct Pam {
 /// clears `-16 * eps * |objective|`, and `cstat` numbers clusters by
 /// first appearance in row order.
 pub fn pam(x: &ColumnMatrix, k: usize) -> Result<Pam, DomainError> {
+    pam_with_metric(x, k, DistanceMetric::Euclidean)
+}
+
+/// PAM using the requested R `cluster::daisy` metric.
+pub fn pam_with_metric(
+    x: &ColumnMatrix,
+    k: usize,
+    metric: DistanceMetric,
+) -> Result<Pam, DomainError> {
+    pam_with_metric_cancellable(x, k, metric, &CancellationToken::default())
+}
+
+pub fn pam_with_metric_cancellable(
+    x: &ColumnMatrix,
+    k: usize,
+    metric: DistanceMetric,
+    cancel: &CancellationToken,
+) -> Result<Pam, DomainError> {
+    cancel.check()?;
+    if !matches!(
+        metric,
+        DistanceMetric::Euclidean | DistanceMetric::Manhattan
+    ) {
+        return Err(DomainError::validation(
+            "pam_metric",
+            "PAM supports Euclidean and Manhattan distances",
+        ));
+    }
     let n = x.n_rows();
     let p = x.cols.len();
     if n < 2 || k < 1 || k >= n {
@@ -653,7 +788,11 @@ pub fn pam(x: &ColumnMatrix, k: usize) -> Result<Pam, DomainError> {
     let rows: Vec<Vec<f64>> = (0..n)
         .map(|i| (0..p).map(|j| x.cols[j][i]).collect())
         .collect();
-    let dist = dense_euclidean(&rows, n, p);
+    let dist = if metric == DistanceMetric::Euclidean {
+        dense_euclidean(&rows, n, p)
+    } else {
+        metric_matrix(x, metric, cancel)?
+    };
 
     // BUILD (bswap, med_given = FALSE): `s` is the sentinel
     // 1.1 * max(dys) + 1 used to seed dysma; for the first medoid every
@@ -672,9 +811,13 @@ pub fn pam(x: &ColumnMatrix, k: usize) -> Result<Pam, DomainError> {
     let mut dysma = vec![s; n + 1];
     let mut medoids: Vec<usize> = Vec::with_capacity(k);
     for _ in 0..k {
+        cancel.check()?;
         let mut nmax = 1usize;
         let mut ammax = 0.0f64;
         for i in 1..=n {
+            if i % 16 == 0 {
+                cancel.check()?;
+            }
             if !nrepr[i] {
                 let mut beter = 0.0f64;
                 for j in 1..=n {
@@ -708,6 +851,7 @@ pub fn pam(x: &ColumnMatrix, k: usize) -> Result<Pam, DomainError> {
     // improvement clears -16 * eps * |sky|; `sky` accumulates the applied dz.
     let mut dysmb = vec![0.0f64; n + 1];
     loop {
+        cancel.check()?;
         for j in 1..=n {
             dysma[j] = s;
             dysmb[j] = s;
@@ -727,6 +871,9 @@ pub fn pam(x: &ColumnMatrix, k: usize) -> Result<Pam, DomainError> {
         let mut hbest = 0usize;
         let mut nbest = 0usize;
         for h in 1..=n {
+            if h % 16 == 0 {
+                cancel.check()?;
+            }
             if nrepr[h] {
                 continue;
             }
@@ -845,6 +992,14 @@ pub struct Hclust {
 /// R merge coding and dendrogram order.
 #[allow(clippy::too_many_lines)]
 pub fn hclust_ward_d2(x: &ColumnMatrix) -> Result<Hclust, DomainError> {
+    hclust_ward_d2_cancellable(x, &CancellationToken::default())
+}
+
+pub fn hclust_ward_d2_cancellable(
+    x: &ColumnMatrix,
+    cancel: &CancellationToken,
+) -> Result<Hclust, DomainError> {
+    cancel.check()?;
     let n = x.n_rows();
     let p = x.cols.len();
     if n < 2 {
@@ -906,6 +1061,7 @@ pub fn hclust_ward_d2(x: &ColumnMatrix) -> Result<Hclust, DomainError> {
     let mut aggloms = 0usize;
 
     loop {
+        cancel.check()?;
         // Least dissimilarity among the live NN pairs.
         let mut dmin = inf;
         let mut im = 0usize;
@@ -1032,6 +1188,217 @@ pub fn hclust_ward_d2(x: &ColumnMatrix) -> Result<Hclust, DomainError> {
     })
 }
 
+/// Hierarchical clustering with selectable metric and R linkage update.
+/// The legacy Euclidean Ward.D2 entry point above remains the line-faithful
+/// R `hclust.f` implementation used by existing fixtures.
+pub fn hclust(
+    x: &ColumnMatrix,
+    metric: DistanceMetric,
+    linkage: LinkageMethod,
+) -> Result<Hclust, DomainError> {
+    hclust_cancellable(x, metric, linkage, &CancellationToken::default())
+}
+
+pub fn hclust_cancellable(
+    x: &ColumnMatrix,
+    metric: DistanceMetric,
+    linkage: LinkageMethod,
+    cancel: &CancellationToken,
+) -> Result<Hclust, DomainError> {
+    cancel.check()?;
+    if metric == DistanceMetric::Euclidean && linkage == LinkageMethod::WardD2 {
+        return hclust_ward_d2_cancellable(x, cancel);
+    }
+    hclust_nn_chain_cancellable(x, metric, linkage, cancel)
+}
+
+/// R's `hclust.f` nearest-neighbour chain and `hcass2` reconstruction, with
+/// the selected dissimilarity and Lance-Williams update.
+#[allow(clippy::too_many_lines)]
+fn hclust_nn_chain_cancellable(
+    x: &ColumnMatrix,
+    metric: DistanceMetric,
+    linkage: LinkageMethod,
+    cancel: &CancellationToken,
+) -> Result<Hclust, DomainError> {
+    validate_metric(metric)?;
+    let n = x.n_rows();
+    if n < 2 {
+        return Err(DomainError::validation(
+            "hclust_input",
+            "hclust requires at least two rows",
+        ));
+    }
+    let p = x.cols.len();
+    let rows: Vec<Vec<f64>> = (0..n)
+        .map(|i| (0..p).map(|j| x.cols[j][i]).collect())
+        .collect();
+    // hclust.f uses R dist()'s compact upper-triangle IOFFST layout.
+    let mut diss = vec![0.0f64; n * (n - 1) / 2 + 1];
+    let mut idx = 0usize;
+    for i in 1..n {
+        cancel.check()?;
+        for j in i + 1..=n {
+            let d = metric_distance(&rows[i - 1], &rows[j - 1], metric);
+            idx += 1;
+            diss[idx] = if linkage == LinkageMethod::WardD2 {
+                d * d
+            } else {
+                d
+            };
+        }
+    }
+    let ioffst = |i: usize, j: usize| -> usize {
+        let (lo, hi) = if i < j { (i, j) } else { (j, i) };
+        hi + (lo - 1) * n - (lo * (lo + 1)) / 2
+    };
+    let mut memb = vec![1.0f64; n + 1];
+    let mut flag = vec![true; n + 1];
+    let mut nn = vec![0usize; n + 1];
+    let mut disnn = vec![0.0f64; n + 1];
+    for i in 1..n {
+        let mut dmin = f64::INFINITY;
+        let mut jm = 0usize;
+        for j in i + 1..=n {
+            let d = diss[ioffst(i, j)];
+            if dmin > d {
+                dmin = d;
+                jm = j;
+            }
+        }
+        nn[i] = jm;
+        disnn[i] = dmin;
+    }
+    let mut ia = vec![0i64; n];
+    let mut ib = vec![0i64; n];
+    let mut crit = vec![0.0f64; n];
+    let mut ncl = n as i64;
+    let mut aggloms = 0usize;
+    loop {
+        cancel.check()?;
+        let mut dmin = f64::INFINITY;
+        let mut im = 0usize;
+        let mut jm = 0usize;
+        for i in 1..n {
+            if flag[i] && disnn[i] < dmin {
+                dmin = disnn[i];
+                im = i;
+                jm = nn[i];
+            }
+        }
+        ncl -= 1;
+        let (i2, j2) = (im.min(jm), im.max(jm));
+        ia[aggloms] = i2 as i64;
+        ib[aggloms] = j2 as i64;
+        aggloms += 1;
+        crit[aggloms - 1] = if linkage == LinkageMethod::WardD2 {
+            dmin.sqrt()
+        } else {
+            dmin
+        };
+        flag[j2] = false;
+        let mut dmin_new = f64::INFINITY;
+        let mut jj = 0usize;
+        for k in 1..=n {
+            if flag[k] && k != i2 {
+                let ind1 = ioffst(i2, k);
+                let ind2 = ioffst(j2, k);
+                let d12 = diss[ioffst(i2, j2)];
+                let da = diss[ind1];
+                let db = diss[ind2];
+                let ni = memb[i2];
+                let nj = memb[j2];
+                let nk = memb[k];
+                diss[ind1] = match linkage {
+                    LinkageMethod::Average => (ni * da + nj * db) / (ni + nj),
+                    LinkageMethod::Complete => da.max(db),
+                    LinkageMethod::WardD | LinkageMethod::WardD2 => {
+                        ((ni + nk) * da + (nj + nk) * db - nk * d12) / (ni + nj + nk)
+                    }
+                };
+                if i2 < k {
+                    if diss[ind1] < dmin_new {
+                        dmin_new = diss[ind1];
+                        jj = k;
+                    }
+                } else if diss[ind1] < disnn[k] {
+                    disnn[k] = diss[ind1];
+                    nn[k] = i2;
+                }
+            }
+        }
+        memb[i2] += memb[j2];
+        disnn[i2] = dmin_new;
+        nn[i2] = jj;
+        for i in 1..n {
+            if flag[i] && (nn[i] == i2 || nn[i] == j2) {
+                let mut dmin2 = f64::INFINITY;
+                let mut jm2 = 0usize;
+                for j in i + 1..=n {
+                    if flag[j] {
+                        let d = diss[ioffst(i, j)];
+                        if d < dmin2 {
+                            dmin2 = d;
+                            jm2 = j;
+                        }
+                    }
+                }
+                nn[i] = jm2;
+                disnn[i] = dmin2;
+            }
+        }
+        if ncl <= 1 {
+            break;
+        }
+    }
+    // Same hcass2 merge recoding and leaf order used by the exact Ward.D2 port.
+    let mut iia: Vec<i64> = ia[..n - 1].to_vec();
+    let mut iib: Vec<i64> = ib[..n - 1].to_vec();
+    for i in 0..n - 2 {
+        let k = ia[i].min(ib[i]);
+        for j in i + 1..n - 1 {
+            if ia[j] == k {
+                iia[j] = -(i as i64) - 1;
+            }
+            if ib[j] == k {
+                iib[j] = -(i as i64) - 1;
+            }
+        }
+    }
+    for i in 0..n - 1 {
+        iia[i] = -iia[i];
+        iib[i] = -iib[i];
+        if iia[i] > 0 && iib[i] < 0 {
+            std::mem::swap(&mut iia[i], &mut iib[i]);
+        }
+        if iia[i] > 0 && iib[i] > 0 {
+            let (a, b) = (iia[i].min(iib[i]), iia[i].max(iib[i]));
+            iia[i] = a;
+            iib[i] = b;
+        }
+    }
+    let mut iorder = vec![iia[n - 2], iib[n - 2]];
+    let mut loc = 2usize;
+    for i in (0..n - 2).rev() {
+        let stage = i as i64 + 1;
+        if let Some(pos) = iorder.iter().position(|&v| v == stage) {
+            if pos + 1 == loc {
+                loc += 1;
+                iorder.push(iib[i]);
+            } else {
+                loc += 1;
+                iorder.insert(pos + 1, iib[i]);
+            }
+            iorder[pos] = iia[i];
+        }
+    }
+    Ok(Hclust {
+        merge: (0..n - 1).map(|i| [iia[i] as i32, iib[i] as i32]).collect(),
+        height: crit[..n - 1].to_vec(),
+        order: iorder.iter().map(|&v| (-v) as usize).collect(),
+    })
+}
+
 /// `cluster::diana(x, metric = "euclidean")` result pieces.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Diana {
@@ -1052,21 +1419,24 @@ struct CompactDist {
 }
 
 impl CompactDist {
-    fn euclidean(x: &[Vec<f64>], n: usize, p: usize) -> Self {
+    fn metric(
+        x: &[Vec<f64>],
+        n: usize,
+        metric: DistanceMetric,
+        cancel: &CancellationToken,
+    ) -> Result<Self, DomainError> {
         let mut d = vec![0.0f64; n * (n - 1) / 2 + 1];
         let mut idx = 1usize;
         for i in 1..=n {
+            if i % 16 == 0 {
+                cancel.check()?;
+            }
             for j in 1..i {
-                let mut s = 0.0f64;
-                for c in 0..p {
-                    let dv = x[i - 1][c] - x[j - 1][c];
-                    s += dv * dv;
-                }
-                d[idx] = s.sqrt();
+                d[idx] = metric_distance(&x[i - 1], &x[j - 1], metric);
                 idx += 1;
             }
         }
-        Self { d }
+        Ok(Self { d })
     }
 
     fn at(&self, l: usize, j: usize) -> f64 {
@@ -1086,6 +1456,29 @@ impl CompactDist {
 /// level and merge-structure derivation.
 #[allow(clippy::too_many_lines)]
 pub fn diana(x: &ColumnMatrix) -> Result<Diana, DomainError> {
+    diana_with_metric(x, DistanceMetric::Euclidean)
+}
+
+/// DIANA-compatible divisive clustering with Euclidean or Manhattan distance.
+pub fn diana_with_metric(x: &ColumnMatrix, metric: DistanceMetric) -> Result<Diana, DomainError> {
+    diana_with_metric_cancellable(x, metric, &CancellationToken::default())
+}
+
+pub fn diana_with_metric_cancellable(
+    x: &ColumnMatrix,
+    metric: DistanceMetric,
+    cancel: &CancellationToken,
+) -> Result<Diana, DomainError> {
+    cancel.check()?;
+    if !matches!(
+        metric,
+        DistanceMetric::Euclidean | DistanceMetric::Manhattan
+    ) {
+        return Err(DomainError::validation(
+            "diana_metric",
+            "DIANA supports Euclidean and Manhattan distances",
+        ));
+    }
     let n = x.n_rows();
     let p = x.cols.len();
     if n < 2 {
@@ -1097,7 +1490,7 @@ pub fn diana(x: &ColumnMatrix) -> Result<Diana, DomainError> {
     let rows: Vec<Vec<f64>> = (0..n)
         .map(|i| (0..p).map(|j| x.cols[j][i]).collect())
         .collect();
-    let dys = CompactDist::euclidean(&rows, n, p);
+    let dys = CompactDist::metric(&rows, n, metric, cancel)?;
     let at = |l: usize, j: usize| dys.at(l, j);
 
     let mut kwan = vec![0usize; n + 1];
@@ -1110,6 +1503,7 @@ pub fn diana(x: &ColumnMatrix) -> Result<Diana, DomainError> {
     let mut merge_rows: Vec<[i32; 2]> = Vec::with_capacity(n - 1);
 
     loop {
+        cancel.check()?;
         let jb = ja + kwan[ja] - 1;
         let mut jma = jb;
         if kwan[ja] == 2 {
@@ -1123,6 +1517,9 @@ pub fn diana(x: &ColumnMatrix) -> Result<Diana, DomainError> {
             let mut bygsd = -1.0f64;
             let mut lndsd = 0usize;
             for l in ja..=jb {
+                if l % 16 == 0 {
+                    cancel.check()?;
+                }
                 let lner = ner[l];
                 let mut sd = 0.0f64;
                 for j in ja..=jb {
@@ -1154,6 +1551,9 @@ pub fn diana(x: &ColumnMatrix) -> Result<Diana, DomainError> {
                 let mut jaway = 0usize;
                 let mut bdyff = -1.0f64;
                 for l in ja..=jma {
+                    if l % 16 == 0 {
+                        cancel.check()?;
+                    }
                     let lner = ner[l];
                     let mut da = 0.0f64;
                     for j in ja..=jma {
@@ -1232,6 +1632,9 @@ pub fn diana(x: &ColumnMatrix) -> Result<Diana, DomainError> {
             } else {
                 let mut dm = 0.0f64;
                 for k in ja..jb {
+                    if k % 16 == 0 {
+                        cancel.check()?;
+                    }
                     for j in (k + 1)..=jb {
                         let dd = at(ner[k], ner[j]);
                         if dm < dd {
@@ -1423,6 +1826,122 @@ mod silhouette_tests {
             (silhouette_mean(&dist, &[1, 1, 2], 2) - widths.iter().sum::<f64>() / 3.0).abs()
                 < 1e-12
         );
+    }
+}
+
+#[cfg(test)]
+mod distance_linkage_tests {
+    use super::{diana_with_metric, hclust, pam_with_metric, DistanceMetric, LinkageMethod};
+    use crate::ColumnMatrix;
+
+    fn fixture() -> ColumnMatrix {
+        ColumnMatrix {
+            names: vec!["x".into(), "y".into()],
+            cols: vec![vec![0., 1., 5., 5.], vec![0., 0., 0., 2.]],
+        }
+    }
+
+    #[test]
+    fn manhattan_hclust_and_diana_match_r_oracle() {
+        let x = fixture();
+        let expected = [
+            (LinkageMethod::Average, vec![1., 2., 5.5]),
+            (LinkageMethod::Complete, vec![1., 2., 7.]),
+            (LinkageMethod::WardD, vec![1., 2., 9.5]),
+            (LinkageMethod::WardD2, vec![1., 2., 7.7781745930520225]),
+        ];
+        for (link, heights) in expected {
+            let fit = hclust(&x, DistanceMetric::Manhattan, link).unwrap();
+            assert_eq!(fit.merge, vec![[-1, -2], [-3, -4], [1, 2]]);
+            for (actual, want) in fit.height.iter().zip(heights) {
+                assert!(
+                    (actual - want).abs() < 1e-10,
+                    "{link:?}: {actual} != {want}"
+                );
+            }
+            assert_eq!(fit.order, vec![1, 2, 3, 4]);
+        }
+        let fit = diana_with_metric(&x, DistanceMetric::Manhattan).unwrap();
+        assert_eq!(fit.merge, vec![[-1, -2], [-3, -4], [1, 2]]);
+        assert_eq!(fit.height, vec![1., 7., 2.]);
+    }
+
+    #[test]
+    fn manhattan_pam_matches_r_oracle() {
+        let fit = pam_with_metric(&fixture(), 2, DistanceMetric::Manhattan).unwrap();
+        assert_eq!(fit.medoids, vec![2, 3]);
+        assert_eq!(fit.clustering, vec![1, 1, 2, 2]);
+    }
+
+    #[test]
+    fn rejects_invalid_minkowski_exponent() {
+        assert!(hclust(
+            &fixture(),
+            DistanceMetric::Minkowski { p: 0.0 },
+            LinkageMethod::Average
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn equal_distance_ties_follow_r_outputs() {
+        let tied = ColumnMatrix {
+            names: vec!["x".into(), "y".into()],
+            cols: vec![vec![0., 0., 1., -1.], vec![0., 0., 0., 0.]],
+        };
+        let expected = [
+            (LinkageMethod::Average, vec![0., 1., 4. / 3.]),
+            (LinkageMethod::Complete, vec![0., 1., 2.]),
+            (LinkageMethod::WardD, vec![0., 4. / 3., 5. / 3.]),
+            (
+                LinkageMethod::WardD2,
+                vec![0., 1.1547005383792515, 1.632993161855452],
+            ),
+        ];
+        for (linkage, heights) in expected {
+            let fit = hclust(&tied, DistanceMetric::Euclidean, linkage).unwrap();
+            assert_eq!(fit.merge, vec![[-1, -2], [-3, 1], [-4, 2]]);
+            for (actual, want) in fit.height.iter().zip(heights) {
+                assert!(
+                    (actual - want).abs() < 1e-10,
+                    "{linkage:?}: {actual} != {want}"
+                );
+            }
+            assert_eq!(fit.order, vec![4, 3, 1, 2]);
+        }
+    }
+
+    #[test]
+    fn minkowski_and_maximum_distances_match_r_average_linkage_heights() {
+        let x = ColumnMatrix {
+            names: vec!["x".into(), "y".into()],
+            cols: vec![vec![0., 1., 3., -2.], vec![0., 2., 0., 1.]],
+        };
+        let cases = [
+            (
+                DistanceMetric::Minkowski { p: 3. },
+                vec![2.0800838230519041, 2.5583363974637834, 3.5110466782514442],
+            ),
+            (DistanceMetric::Maximum, vec![2., 2.5, 10. / 3.]),
+        ];
+        for (metric, heights) in cases {
+            let fit = hclust(&x, metric, LinkageMethod::Average).unwrap();
+            let (merge, order) = match metric {
+                DistanceMetric::Minkowski { .. } => {
+                    (vec![[-1, -2], [-4, 1], [-3, 2]], vec![3, 4, 1, 2])
+                }
+                DistanceMetric::Maximum => (vec![[-1, -2], [-3, 1], [-4, 2]], vec![4, 3, 1, 2]),
+                _ => unreachable!(),
+            };
+            assert_eq!(fit.merge, merge);
+            assert_eq!(fit.order, order);
+            for (actual, want) in fit.height.iter().zip(heights) {
+                assert!(
+                    (actual - want).abs() < 1e-8,
+                    "{metric:?}: {actual} != {want}"
+                );
+            }
+        }
     }
 }
 

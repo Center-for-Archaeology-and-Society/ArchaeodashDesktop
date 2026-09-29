@@ -13,3 +13,11 @@ Related: [[Interaction_Log_2026-09-28]].
 ## Client checkpoint
 
 Client requests now expose measured/transformed columns, ephemeral PCA/UMAP/LDA sources, component counts, projection groups, metric/linkage controls, k-means starts/iterations, and k-means/PAM diagnostics. Typed HTTP/Tauri job transports share a submit-once polling workflow. Cancellation during submission, worker acknowledgement, deadline errors, and orphan cancellation after transport failures have focused tests. Client workspace tests and typechecks pass (86 web tests). Browser interaction checks against a local API harness are next.
+
+## Numerical and job checkpoint
+
+Generic HCA now follows R's nearest-neighbor agglomeration and merge recoding, including exact tie orientation and leaf order. R probes cover Average, Complete, Ward.D, Ward.D2, Manhattan, Maximum, and nondefault Minkowski power; Euclidean legacy goldens remain intact. PAM and DIANA accept Manhattan distance. Cooperative tokens reach cluster starts/iterations, membership/matching loops, and UMAP neighbors/epochs. Exact nearest matching retains only the requested top candidates, preserving NaN/tie order and the legacy post-limit same-group filter.
+
+The project-local job pool admits at most two workers and sixteen queued operations, retains at most 32 snapshots, caps each result at 8 MiB, defaults to a ten-minute deadline, and rejects deadlines above thirty minutes. Dropping the last pool owner requests cancellation. Lifecycle, queue, cancellation, timeout, numerical, and production clippy checks pass. Hosted per-user quotas remain a Phase 7 concern.
+
+A real Chromium browser run against Vite and the Rust loopback API passed PCA/HCA Manhattan Average, cut/expanded dendrogram controls, PAM Manhattan diagnostics, UMAP cancellation, unchanged source rows, and hidden UUID checks. Further membership, recording, and source checks are in progress.

@@ -34,7 +34,7 @@ use rand::RngExt;
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 
-use crate::ColumnMatrix;
+use crate::{CancellationToken, ColumnMatrix};
 
 /// Resolved legacy `umap.defaults` configuration (golden capture 7 config).
 #[derive(Debug, Clone, PartialEq)]
@@ -151,6 +151,42 @@ pub fn knn_brute_force(data: &[Vec<f64>], k: usize) -> (Vec<Vec<usize>>, Vec<Vec
         }
     }
     (indexes, distances)
+}
+
+#[allow(clippy::type_complexity)]
+fn knn_brute_force_cancellable(
+    data: &[Vec<f64>],
+    k: usize,
+    cancel: &CancellationToken,
+) -> Result<(Vec<Vec<usize>>, Vec<Vec<f64>>), DomainError> {
+    let v = data.len();
+    let mut dist = vec![vec![0.0f64; v]; v];
+    for i in 0..v {
+        if i % 16 == 0 {
+            cancel.check()?;
+        }
+        for j in (i + 1)..v {
+            let d = euclidean(&data[i], &data[j]);
+            dist[i][j] = d;
+            dist[j][i] = d;
+        }
+    }
+    let mut indexes = vec![vec![0usize; k]; v];
+    let mut distances = vec![vec![0.0f64; k]; v];
+    for i in 0..v {
+        cancel.check()?;
+        let mut order: Vec<usize> = (0..v).collect();
+        order.sort_by(|&x, &y| {
+            let dx = if x == i { -1.0 } else { dist[i][x] };
+            let dy = if y == i { -1.0 } else { dist[i][y] };
+            dx.partial_cmp(&dy).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for (j, &idx) in order.iter().enumerate().take(k) {
+            indexes[i][j] = idx;
+            distances[i][j] = if idx == i { 0.0 } else { dist[i][idx] };
+        }
+    }
+    Ok((indexes, distances))
 }
 
 /// Legacy `smooth.knn.dist`: per-row binary search for the bandwidth-scaled
@@ -607,10 +643,11 @@ fn optimize_embedding(
     eps: &[f64],
     config: &UmapConfig,
     rng: &mut ChaCha12Rng,
-) {
+    cancel: &CancellationToken,
+) -> Result<(), DomainError> {
     let n = eps.len();
     if n == 0 {
-        return;
+        return Ok(());
     }
     let v = layout.len() as f64;
     let a = config.a;
@@ -629,9 +666,13 @@ fn optimize_embedding(
     let mut adjust = vec![false; n];
     let mut nns = vec![0.0f64; n];
     for epoch in 0..config.n_epochs {
+        cancel.check()?;
         let alpha = config.alpha * (1.0 - epoch as f64 / config.n_epochs as f64);
         let np1 = (epoch + 1) as f64;
         for i in 0..n {
+            if i % 64 == 0 {
+                cancel.check()?;
+            }
             adjust[i] = eons[i] <= np1;
             if adjust[i] {
                 nns[i] = ((1.0 + epoch as f64 - eon2s[i]) / epns[i]).floor();
@@ -680,6 +721,7 @@ fn optimize_embedding(
             }
         }
     }
+    Ok(())
 }
 
 /// Legacy `find.ab.params`: recursive 10x10 grid search fitting the
@@ -757,6 +799,17 @@ pub fn find_ab_params(spread: f64, min_dist: f64) -> (f64, f64) {
 pub const DEFAULT_SEED: u64 = 20260914;
 
 pub fn umap(m: &ColumnMatrix, seed: u64) -> Result<Umap, DomainError> {
+    umap_cancellable(m, seed, &CancellationToken::default())
+}
+
+/// Runs the seeded fit while checking cancellation between neighbor rows and
+/// SGD epochs.
+pub fn umap_cancellable(
+    m: &ColumnMatrix,
+    seed: u64,
+    cancel: &CancellationToken,
+) -> Result<Umap, DomainError> {
+    cancel.check()?;
     let config = UmapConfig::default();
     let v = m.cols.first().map_or(0, |col| col.len());
     let p = m.cols.len();
@@ -796,7 +849,7 @@ pub fn umap(m: &ColumnMatrix, seed: u64) -> Result<Umap, DomainError> {
     let data: Vec<Vec<f64>> = (0..v)
         .map(|i| m.cols.iter().map(|col| col[i]).collect())
         .collect();
-    let (indexes, distances) = knn_brute_force(&data, k);
+    let (indexes, distances) = knn_brute_force_cancellable(&data, k, cancel)?;
     let graph = fuzzy_simplicial_set(
         &indexes,
         &distances,
@@ -819,7 +872,7 @@ pub fn umap(m: &ColumnMatrix, seed: u64) -> Result<Umap, DomainError> {
         let weights: Vec<f64> = kept.iter().map(|&(_, _, w)| w).collect();
         let eps = epochs_per_sample(&weights, config.n_epochs);
         let pairs: Vec<(usize, usize)> = kept.iter().map(|&(f, t, _)| (f, t)).collect();
-        optimize_embedding(&mut layout, &pairs, &eps, &config, &mut rng);
+        optimize_embedding(&mut layout, &pairs, &eps, &config, &mut rng, cancel)?;
     }
     center_columns(&mut layout);
     Ok(Umap {

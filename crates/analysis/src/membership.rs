@@ -34,7 +34,7 @@ use std::cmp::Ordering;
 use archaeodash_data_io::rnum::r_round;
 use archaeodash_domain::DomainError;
 
-use crate::{sum, ColumnMatrix};
+use crate::{sum, CancellationToken, ColumnMatrix};
 
 /// R `.Machine$double.eps`, the default `solve` tolerance.
 const R_DOUBLE_EPS: f64 = 2.220_446_049_250_313e-16;
@@ -125,6 +125,30 @@ pub fn group_mem_probs_tracked(
     eligible: &[String],
     method: MembershipMethod,
 ) -> Result<(MembershipTable, MembershipMethod), DomainError> {
+    group_mem_probs_tracked_cancellable(
+        ids,
+        groups,
+        group,
+        chem,
+        chem_select,
+        eligible,
+        method,
+        &CancellationToken::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn group_mem_probs_tracked_cancellable(
+    ids: &[String],
+    groups: &[String],
+    group: &str,
+    chem: &ColumnMatrix,
+    chem_select: &[String],
+    eligible: &[String],
+    method: MembershipMethod,
+    cancel: &CancellationToken,
+) -> Result<(MembershipTable, MembershipMethod), DomainError> {
+    cancel.check()?;
     let n = chem.n_rows();
     if ids.len() != n || groups.len() != n {
         return Err(DomainError::validation(
@@ -179,18 +203,26 @@ pub fn group_mem_probs_tracked(
             // The R tryCatch: any per-pair error (na.fail on NA cells,
             // singular pooled covariance) retries the whole table via the
             // Mahalanobis path.
-            match hotellings_table(&cells, groups, &eligible) {
+            match hotellings_table(&cells, groups, &eligible, cancel) {
                 Some(table) => (table, MembershipMethod::Hotellings),
-                None => (
-                    non_finite_to_inf(mahalanobis_cells(&cells, groups, &eligible)),
-                    MembershipMethod::Mahalanobis,
-                ),
+                None if cancel.is_cancelled() => {
+                    return Err(DomainError::validation(
+                        "analysis_cancelled",
+                        "analysis cancelled",
+                    ))
+                }
+                None => {
+                    let table = mahalanobis_cells(&cells, groups, &eligible, cancel);
+                    cancel.check()?;
+                    (non_finite_to_inf(table), MembershipMethod::Mahalanobis)
+                }
             }
         }
-        MembershipMethod::Mahalanobis => (
-            non_finite_to_inf(mahalanobis_cells(&cells, groups, &eligible)),
-            MembershipMethod::Mahalanobis,
-        ),
+        MembershipMethod::Mahalanobis => {
+            let table = mahalanobis_cells(&cells, groups, &eligible, cancel);
+            cancel.check()?;
+            (non_finite_to_inf(table), MembershipMethod::Mahalanobis)
+        }
     };
 
     // probsAll[!is.finite(probsAll)] <- Inf for Mahalanobis was applied above;
@@ -234,6 +266,7 @@ pub fn group_mem_probs_tracked(
             }
         })
         .collect();
+    cancel.check()?;
 
     Ok((
         MembershipTable {
@@ -264,6 +297,7 @@ fn hotellings_table(
     cells: &[Vec<f64>],
     groups: &[String],
     eligible: &[String],
+    cancel: &CancellationToken,
 ) -> Option<Vec<Vec<f64>>> {
     let n = cells.len();
     // na.fail on any pair's X or Y fails whenever any cell is NA.
@@ -273,6 +307,9 @@ fn hotellings_table(
     let p = cells.first().map_or(0, Vec::len);
     let mut out = vec![vec![f64::NAN; eligible.len()]; n];
     for r in 0..n {
+        if cancel.is_cancelled() {
+            return None;
+        }
         for (gi, grp) in eligible.iter().enumerate() {
             // grpindx <- setdiff(which(data[[group]] == grp), r)
             let grp_rows: Vec<&[f64]> = (0..n)
@@ -524,10 +561,18 @@ fn mahalanobis_distance(row: &[f64], data: &[&[f64]]) -> f64 {
     }
 }
 
-fn mahalanobis_cells(cells: &[Vec<f64>], groups: &[String], eligible: &[String]) -> Vec<Vec<f64>> {
+fn mahalanobis_cells(
+    cells: &[Vec<f64>],
+    groups: &[String],
+    eligible: &[String],
+    cancel: &CancellationToken,
+) -> Vec<Vec<f64>> {
     let n = cells.len();
     let mut out = vec![vec![f64::NAN; eligible.len()]; n];
     for r in 0..n {
+        if cancel.is_cancelled() {
+            return out;
+        }
         for (gi, grp) in eligible.iter().enumerate() {
             let grp_rows: Vec<&[f64]> = (0..n)
                 .filter(|&i| i != r && &groups[i] == grp)
@@ -633,6 +678,31 @@ pub fn calc_e_distance(
     limit: usize,
     within_group: bool,
 ) -> Result<Vec<EuclideanMatch>, DomainError> {
+    calc_e_distance_cancellable(
+        rowids,
+        ids,
+        groups,
+        chem,
+        projection,
+        limit,
+        within_group,
+        &CancellationToken::default(),
+    )
+}
+
+/// Cancellation-aware, bounded-memory nearest-neighbour implementation. It
+/// retains only the exact stable top-k candidates for each legacy rowid key.
+#[allow(clippy::too_many_arguments)]
+pub fn calc_e_distance_cancellable(
+    rowids: &[String],
+    ids: &[String],
+    groups: &[String],
+    chem: &ColumnMatrix,
+    projection: &[String],
+    limit: usize,
+    within_group: bool,
+    cancel: &CancellationToken,
+) -> Result<Vec<EuclideanMatch>, DomainError> {
     let n = chem.n_rows();
     if rowids.len() != n || ids.len() != n || groups.len() != n {
         return Err(DomainError::validation(
@@ -647,24 +717,15 @@ pub fn calc_e_distance(
         ));
     }
     let p = chem.cols.len();
-    // stats::dist euclidean: sequential squared-difference accumulation; NA
-    // cells propagate as NaN distances.
-    #[allow(clippy::needless_range_loop)]
-    let dist = {
-        let mut dist = vec![vec![0.0_f64; n]; n];
-        for i in 0..n {
-            for j in i + 1..n {
-                let mut acc = 0.0_f64;
-                for k in 0..p {
-                    let diff = chem.cols[k][i] - chem.cols[k][j];
-                    acc += diff * diff;
-                }
-                let value = acc.sqrt();
-                dist[i][j] = value;
-                dist[j][i] = value;
-            }
-        }
-        dist
+    #[derive(Clone)]
+    struct Candidate {
+        sequence: usize,
+        i: usize,
+        j: usize,
+        distance: f64,
+    }
+    let compare = |a: &Candidate, b: &Candidate| {
+        cmp_distance(a.distance, b.distance).then_with(|| a.sequence.cmp(&b.sequence))
     };
     let projection: std::collections::HashSet<&str> =
         projection.iter().map(String::as_str).collect();
@@ -672,44 +733,58 @@ pub fn calc_e_distance(
         .iter()
         .map(|g| projection.contains(g.as_str()))
         .collect();
-    // as.data.frame(as.table(as.matrix(d))): column-major expansion with the
-    // observation (Var1) varying slowest, then the two filters.
-    let mut candidates: Vec<(usize, usize, f64)> = Vec::new();
+    // The old full matrix/table order is i-major then j-major. Keep that
+    // sequence as a stable tie-break while retaining at most `limit` rows per
+    // observation rowid key.
+    let cap = limit;
+    let mut candidates: std::collections::BTreeMap<String, Vec<Candidate>> =
+        std::collections::BTreeMap::new();
+    let mut sequence = 0usize;
     for i in 0..n {
+        if i % 16 == 0 {
+            cancel.check()?;
+        }
         for j in 0..n {
             if rowids[i] == rowids[j] || !in_projection[j] {
+                sequence = sequence.wrapping_add(1);
                 continue;
             }
-            candidates.push((i, j, dist[i][j]));
+            let mut acc = 0.0_f64;
+            for k in 0..p {
+                let diff = chem.cols[k][i] - chem.cols[k][j];
+                acc += diff * diff;
+            }
+            let candidate = Candidate {
+                sequence,
+                i,
+                j,
+                distance: acc.sqrt(),
+            };
+            let rows = candidates.entry(rowids[i].clone()).or_default();
+            let pos = rows
+                .binary_search_by(|current| compare(current, &candidate))
+                .unwrap_or_else(|p| p);
+            if pos < cap {
+                rows.insert(pos, candidate);
+                if rows.len() > cap {
+                    rows.pop();
+                }
+            }
+            sequence = sequence.wrapping_add(1);
         }
     }
-    // group_by(observation_rowid) (dplyr sorts character keys), stable
-    // arrange(distance), slice_head(n = limit).
-    let mut keys: Vec<&str> = candidates
-        .iter()
-        .map(|(i, _, _)| rowids[*i].as_str())
-        .collect();
-    keys.sort_unstable();
-    keys.dedup();
-    let mut selected: Vec<(usize, usize, f64)> = Vec::new();
-    for key in keys {
-        let mut rows: Vec<&(usize, usize, f64)> = candidates
-            .iter()
-            .filter(|(i, _, _)| rowids[*i].as_str() == key)
-            .collect();
-        rows.sort_by(|a, b| cmp_distance(a.2, b.2));
-        selected.extend(rows.into_iter().take(limit));
-    }
-    let mut out: Vec<EuclideanMatch> = selected
-        .into_iter()
-        .map(|(i, j, distance)| EuclideanMatch {
-            rowid: rowids[i].clone(),
-            match_rowid: rowids[j].clone(),
-            id: ids[i].clone(),
-            match_id: ids[j].clone(),
-            distance,
-            group: groups[i].clone(),
-            match_group: groups[j].clone(),
+    cancel.check()?;
+    let mut out: Vec<EuclideanMatch> = candidates
+        .values()
+        .flat_map(|rows| rows.iter())
+        .map(|candidate| EuclideanMatch {
+            rowid: rowids[candidate.i].clone(),
+            match_rowid: rowids[candidate.j].clone(),
+            id: ids[candidate.i].clone(),
+            match_id: ids[candidate.j].clone(),
+            distance: candidate.distance,
+            group: groups[candidate.i].clone(),
+            match_group: groups[candidate.j].clone(),
         })
         .collect();
     // Final stable arrange(observation, distance); NaN sorts last like R's
@@ -737,6 +812,52 @@ fn cmp_distance(a: f64, b: f64) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn euclidean_top_k_preserves_duplicate_rowid_grouping_and_post_limit_filter() {
+        let rows = vec!["a", "a", "b", "c"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        let ids = vec!["i0", "i1", "i2", "i3"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        let groups = vec!["X", "Y", "X", "Y"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        let projection = vec!["X".into(), "Y".into()];
+        let chem = ColumnMatrix {
+            names: vec!["v".into()],
+            cols: vec![vec![0.0, 1.0, 2.0, 3.0]],
+        };
+        let all = calc_e_distance(&rows, &ids, &groups, &chem, &projection, 1, true).unwrap();
+        assert_eq!(all.len(), 3); // one top result per legacy rowid key
+        assert_eq!(
+            all.iter().map(|m| m.rowid.as_str()).collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
+        assert_eq!(all[0].id, "i1"); // duplicate rowid key chooses the nearest member
+        assert_eq!(all[0].match_id, "i2");
+        let cross = calc_e_distance(&rows, &ids, &groups, &chem, &projection, 1, false).unwrap();
+        assert_eq!(cross.len(), 3); // filtering happens after each rowid's top-1 is chosen
+        assert!(cross.iter().all(|m| m.group != m.match_group));
+    }
+
+    #[test]
+    fn euclidean_cooperative_cancel_stops_before_pair_scan() {
+        let token = CancellationToken::new();
+        token.cancel();
+        let rows = vec!["a".into(), "b".into()];
+        let chem = ColumnMatrix {
+            names: vec!["v".into()],
+            cols: vec![vec![0.0, 1.0]],
+        };
+        let err = calc_e_distance_cancellable(&rows, &rows, &rows, &chem, &rows, 1, true, &token)
+            .unwrap_err();
+        assert!(err.to_string().contains("analysis_cancelled"));
+    }
 
     #[test]
     fn eligible_groups_use_sorted_count_threshold() {
