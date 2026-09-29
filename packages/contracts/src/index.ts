@@ -42,6 +42,8 @@ export type JobState =
 export interface ImportPreviewRequest {
   source: string;
   group_column?: string | null;
+  /** Assign every source row to one named group instead of partitioning. */
+  group_name?: string | null;
 }
 
 export interface PartitionPreview {
@@ -68,7 +70,10 @@ export interface ImportRecipeDto {
 
 export interface ImportCommitRequest {
   source: string;
-  group_column: string;
+  /** Existing callers pass a column. Empty string is allowed with group_name. */
+  group_column?: string;
+  /** Assign every row to this one group; mutually exclusive with group_column. */
+  group_name?: string | null;
   visible_id_column?: string | null;
   elemental_columns?: string[] | null;
   recipe?: ImportRecipeDto | null;

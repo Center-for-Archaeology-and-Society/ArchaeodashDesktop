@@ -44,6 +44,9 @@ pub struct ImportPreviewRequest {
     /// Optional group column; when present the response includes the group
     /// partition summary that a commit with the same column would produce.
     pub group_column: Option<String>,
+    /// Assign every row to one group instead of partitioning by a column.
+    #[serde(default)]
+    pub group_name: Option<String>,
 }
 
 /// One group partition from the preview summary.
@@ -94,8 +97,12 @@ pub struct ImportRecipeDto {
 pub struct ImportCommitRequest {
     /// Project-relative path of the source CSV/TSV.
     pub source: String,
-    /// Group column; blank values are rejected.
+    /// Group column; blank values are rejected. Empty only when `group_name` is set.
+    #[serde(default)]
     pub group_column: String,
+    /// Assign every row to one group instead of partitioning by a column.
+    #[serde(default)]
+    pub group_name: Option<String>,
     /// Visible-ID column; defaults to the `anid` suggestion.
     pub visible_id_column: Option<String>,
     /// Elemental columns; defaults to `default_chem_columns`.
@@ -1383,12 +1390,33 @@ mod tests {
                 blank_non_element_label: Some("[blank]".into()),
             }),
             destination_dir: None,
+            group_name: None,
         };
         let json = serde_json::to_string(&commit).unwrap();
         assert_eq!(
             serde_json::from_str::<ImportCommitRequest>(&json).unwrap(),
             commit
         );
+
+        let single_group = ImportCommitRequest {
+            source: "sources/one.csv".into(),
+            group_column: String::new(),
+            group_name: Some("Reference Set".into()),
+            visible_id_column: None,
+            elemental_columns: None,
+            recipe: None,
+            destination_dir: None,
+        };
+        let json = serde_json::to_string(&single_group).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ImportCommitRequest>(&json).unwrap(),
+            single_group
+        );
+        // Legacy requests omit the new field and continue to select a column.
+        let legacy = r#"{"source":"sources/old.csv","group_column":"Site","visible_id_column":null,"elemental_columns":null,"recipe":null,"destination_dir":null}"#;
+        let parsed: ImportCommitRequest = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed.group_column, "Site");
+        assert_eq!(parsed.group_name, None);
     }
 
     #[test]

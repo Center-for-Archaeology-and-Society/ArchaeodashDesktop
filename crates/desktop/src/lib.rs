@@ -783,6 +783,7 @@ mod tests {
                 elemental_columns: None,
                 recipe: None,
                 destination_dir: None,
+                group_name: None,
             })
             .expect("commit fixture");
 
@@ -1068,6 +1069,7 @@ mod tests {
             .open_import_preview(ImportPreviewRequest {
                 source: "x.csv".into(),
                 group_column: None,
+                group_name: None,
             })
             .expect_err("no project open");
         assert!(err.contains("no project open"));
@@ -1092,6 +1094,7 @@ mod tests {
             .open_import_preview(ImportPreviewRequest {
                 source: "mini.csv".into(),
                 group_column: Some("Site".into()),
+                group_name: None,
             })
             .expect("preview");
         assert_eq!(preview.row_count, 2);
@@ -1105,6 +1108,7 @@ mod tests {
                 elemental_columns: None,
                 recipe: None,
                 destination_dir: None,
+                group_name: None,
             })
             .expect("commit");
         assert_eq!(commit.groups.len(), 1);
@@ -1116,6 +1120,7 @@ mod tests {
             .open_import_preview(ImportPreviewRequest {
                 source: "../outside.csv".into(),
                 group_column: None,
+                group_name: None,
             })
             .expect_err("escape rejected");
         assert!(err.contains("escapes"));
@@ -1156,6 +1161,7 @@ mod tests {
                 elemental_columns: None,
                 recipe: None,
                 destination_dir: None,
+                group_name: None,
             })
             .expect("import");
         let groups = DesktopGroups::new();
@@ -1245,6 +1251,7 @@ mod tests {
                 elemental_columns: None,
                 recipe: None,
                 destination_dir: None,
+                group_name: None,
             })
             .expect("commit");
         assert_eq!(commit.groups.len(), 2);
@@ -1401,6 +1408,7 @@ mod tests {
                 elemental_columns: None,
                 recipe: None,
                 destination_dir: None,
+                group_name: None,
             })
             .expect("commit");
 
@@ -1499,6 +1507,7 @@ mod tests {
                 elemental_columns: None,
                 recipe: None,
                 destination_dir: None,
+                group_name: None,
             })
             .expect("commit");
 
@@ -1555,6 +1564,7 @@ mod tests {
                 elemental_columns: None,
                 recipe: None,
                 destination_dir: None,
+                group_name: None,
             })
             .expect("commit");
         assert_eq!(commit.groups.len(), 3);
@@ -1618,6 +1628,7 @@ mod tests {
                 elemental_columns: None,
                 recipe: None,
                 destination_dir: None,
+                group_name: None,
             })
             .expect("commit many");
         let umap = ordination
@@ -1681,6 +1692,7 @@ mod tests {
                 elemental_columns: None,
                 recipe: None,
                 destination_dir: None,
+                group_name: None,
             })
             .expect("commit");
         let path = commit.groups[0].path.clone();

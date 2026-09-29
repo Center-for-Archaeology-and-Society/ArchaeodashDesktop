@@ -816,6 +816,7 @@ mod tests {
                             elemental_columns: None,
                             recipe: None,
                             destination_dir: None,
+                            group_name: None,
                         })
                         .unwrap(),
                     ))
@@ -977,6 +978,7 @@ mod tests {
                         elemental_columns: None,
                         recipe: None,
                         destination_dir: None,
+                        group_name: None,
                     }))
                     .unwrap(),
             )
@@ -1437,6 +1439,7 @@ mod tests {
                         serde_json::to_vec(&ImportPreviewRequest {
                             source: "mini.csv".into(),
                             group_column: Some("Site".into()),
+                            group_name: None,
                         })
                         .unwrap(),
                     ))
@@ -1469,6 +1472,7 @@ mod tests {
                             elemental_columns: None,
                             recipe: None,
                             destination_dir: None,
+                            group_name: None,
                         })
                         .unwrap(),
                     ))
@@ -2081,6 +2085,7 @@ mod tests {
                         serde_json::to_vec(&ImportPreviewRequest {
                             source: "../outside.csv".into(),
                             group_column: None,
+                            group_name: None,
                         })
                         .unwrap(),
                     ))
@@ -2186,6 +2191,7 @@ mod tests {
                             elemental_columns: None,
                             recipe: None,
                             destination_dir: None,
+                            group_name: None,
                         })
                         .unwrap(),
                     ))
@@ -2344,6 +2350,7 @@ mod tests {
                             elemental_columns: None,
                             recipe: None,
                             destination_dir: None,
+                            group_name: None,
                         })
                         .unwrap(),
                     ))

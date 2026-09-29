@@ -849,6 +849,7 @@ mod tests {
                 elemental_columns: None,
                 recipe: None,
                 destination_dir: None,
+                group_name: None,
             })
             .expect("commit");
         let paths: Vec<String> = resp.groups.iter().map(|g| g.path.clone()).collect();

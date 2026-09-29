@@ -10,7 +10,7 @@ use archaeodash_contracts::{
 };
 use archaeodash_data_io::{
     data_loader, default_chem_columns, default_id_column, partition_by_group, sanitize_group_name,
-    scan_project, write_group_file, ImportError, ImportRecipe, ScanCandidate,
+    scan_project, write_group_file, ImportError, ImportRecipe, Partition, ScanCandidate,
 };
 use sha2::{Digest, Sha256};
 
@@ -23,6 +23,35 @@ const INITIAL_REVISION: &str = "rev-1";
 
 fn io_err(e: std::io::Error) -> ImportError {
     ImportError::Io(e.to_string())
+}
+
+/// Resolves the two mutually exclusive import grouping modes. No grouping is
+/// valid for a metadata-only preview; commits must always select a mode.
+fn import_partitions(
+    frame: &archaeodash_data_io::TextFrame,
+    group_column: Option<&str>,
+    group_name: Option<&str>,
+    required: bool,
+) -> Result<Vec<Partition>, ImportError> {
+    let column = group_column.filter(|column| !column.trim().is_empty());
+    let name = group_name.filter(|name| !name.trim().is_empty());
+    if group_name.is_some() && name.is_none() {
+        return Err(ImportError::Parse("group name cannot be blank".into()));
+    }
+    match (column, name) {
+        (Some(_), Some(_)) => Err(ImportError::Parse(
+            "choose either a group column or one group name, not both".into(),
+        )),
+        (Some(column), None) => partition_by_group(frame, column),
+        (None, Some(name)) => Ok(vec![Partition {
+            group_name: name.trim().to_string(),
+            row_indices: (0..frame.n_rows()).collect(),
+        }]),
+        (None, None) if required => Err(ImportError::Parse(
+            "choose a group column or provide one group name".into(),
+        )),
+        (None, None) => Ok(Vec::new()),
+    }
 }
 
 /// Shared import use cases rooted at one local project directory.
@@ -66,20 +95,22 @@ impl ImportService {
         let frame = data_loader(&self.resolve(&req.source)?)?;
         let id_column = default_id_column(&frame.columns);
         let elemental_columns = default_chem_columns(&frame.columns);
-        let partitions = match &req.group_column {
-            Some(column) => partition_by_group(&frame, column)?
-                .into_iter()
-                .map(|partition| PartitionPreview {
-                    suggested_path: format!(
-                        "{DEFAULT_DESTINATION_DIR}/{}.parquet",
-                        sanitize_group_name(&partition.group_name)
-                    ),
-                    row_count: partition.row_indices.len() as u64,
-                    group_name: partition.group_name,
-                })
-                .collect(),
-            None => Vec::new(),
-        };
+        let partitions: Vec<PartitionPreview> = import_partitions(
+            &frame,
+            req.group_column.as_deref(),
+            req.group_name.as_deref(),
+            false,
+        )?
+        .into_iter()
+        .map(|partition| PartitionPreview {
+            suggested_path: format!(
+                "{DEFAULT_DESTINATION_DIR}/{}.parquet",
+                sanitize_group_name(&partition.group_name)
+            ),
+            row_count: partition.row_indices.len() as u64,
+            group_name: partition.group_name,
+        })
+        .collect();
         Ok(ImportPreviewResponse {
             source: req.source.clone(),
             row_count: frame.n_rows() as u64,
@@ -124,7 +155,12 @@ impl ImportService {
         self.resolve(destination_dir)?;
         // Validate partitioning before any filesystem side effects: a commit
         // rejected for blank group values must not create directories.
-        let partitions = partition_by_group(&frame, &req.group_column)?;
+        let partitions = import_partitions(
+            &frame,
+            Some(&req.group_column),
+            req.group_name.as_deref(),
+            true,
+        )?;
 
         let source_sha256 = {
             let bytes = std::fs::read(&source_path).map_err(io_err)?;
@@ -244,6 +280,7 @@ mod tests {
         let req = ImportPreviewRequest {
             source: source.clone(),
             group_column: Some("Site".into()),
+            group_name: None,
         };
         let resp = service.preview(&req).expect("preview");
         assert_eq!(resp.row_count, 3);
@@ -271,6 +308,7 @@ mod tests {
         let req = ImportPreviewRequest {
             source: "../outside.csv".into(),
             group_column: None,
+            group_name: None,
         };
         let err = service.preview(&req).expect_err("escape rejected");
         assert!(matches!(err, ImportError::Parse(msg) if msg.contains("escapes")));
@@ -282,6 +320,7 @@ mod tests {
         let req = ImportCommitRequest {
             source,
             group_column: "Site".into(),
+            group_name: None,
             visible_id_column: None,
             elemental_columns: None,
             recipe: Some(ImportRecipeDto {
@@ -326,6 +365,68 @@ mod tests {
     }
 
     #[test]
+    fn preview_and_commit_can_assign_every_row_to_one_named_group() {
+        let (service, dir, source) = service_with_source();
+        let preview = service
+            .preview(&ImportPreviewRequest {
+                source: source.clone(),
+                group_column: None,
+                group_name: Some("Reference Set".into()),
+            })
+            .expect("single-group preview");
+        assert_eq!(preview.partitions.len(), 1);
+        assert_eq!(preview.partitions[0].group_name, "Reference Set");
+        assert_eq!(preview.partitions[0].row_count, 3);
+        assert_eq!(
+            preview.partitions[0].suggested_path,
+            "groups/Reference_Set.parquet"
+        );
+
+        let committed = service
+            .commit(&ImportCommitRequest {
+                source,
+                group_column: String::new(),
+                group_name: Some("Reference Set".into()),
+                visible_id_column: Some("anid".into()),
+                elemental_columns: Some(vec!["as".into(), "fe".into()]),
+                recipe: None,
+                destination_dir: None,
+            })
+            .expect("single-group commit");
+        assert_eq!(committed.groups.len(), 1);
+        assert_eq!(committed.groups[0].group_name, "Reference Set");
+        assert_eq!(committed.groups[0].path, "groups/Reference_Set.parquet");
+        assert_eq!(committed.groups[0].row_count, 3);
+        let data = read_group_file(&dir.path().join(&committed.groups[0].path))
+            .expect("committed group validates");
+        assert_eq!(data.profile.group_id, "Reference_Set");
+        assert_eq!(data.rows.len(), 3);
+    }
+
+    #[test]
+    fn commit_requires_exactly_one_nonblank_grouping_mode() {
+        let (service, _dir, source) = service_with_source();
+        for (group_column, group_name) in [
+            ("".to_string(), None),
+            ("Site".to_string(), Some("  ".to_string())),
+            ("Site".to_string(), Some("Named".to_string())),
+        ] {
+            let error = service
+                .commit(&ImportCommitRequest {
+                    source: source.clone(),
+                    group_column,
+                    group_name,
+                    visible_id_column: None,
+                    elemental_columns: None,
+                    recipe: None,
+                    destination_dir: None,
+                })
+                .expect_err("invalid grouping mode rejected");
+            assert!(matches!(error, ImportError::Parse(_)));
+        }
+    }
+
+    #[test]
     fn commit_rejects_blank_group_values() {
         let dir = tempdir::tempdir().expect("tempdir");
         std::fs::write(
@@ -342,6 +443,7 @@ mod tests {
                 elemental_columns: None,
                 recipe: None,
                 destination_dir: None,
+                group_name: None,
             })
             .expect_err("blank group rejected");
         assert!(matches!(err, ImportError::Parse(msg) if msg.contains("blank")));
@@ -366,6 +468,7 @@ mod tests {
                 elemental_columns: Some(vec!["as".into()]),
                 recipe: None,
                 destination_dir: None,
+                group_name: None,
             })
             .expect("commit");
         assert_eq!(resp.groups[0].path, "groups/A_B.parquet");

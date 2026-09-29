@@ -1141,6 +1141,7 @@ mod tests {
                 elemental_columns: None,
                 recipe: None,
                 destination_dir: None,
+                group_name: None,
             })
             .expect("commit");
         let groups = GroupService::new(&dir).expect("group service");
@@ -1440,6 +1441,7 @@ mod tests {
                 elemental_columns: None,
                 recipe: None,
                 destination_dir: None,
+                group_name: None,
             })
             .expect("commit");
         let service = ClusterService::new(&dir).expect("cluster service");
@@ -1635,6 +1637,7 @@ mod tests {
                 elemental_columns: None,
                 recipe: None,
                 destination_dir: None,
+                group_name: None,
             })
             .expect("commit");
         let groups = GroupService::new(&dir).expect("group service");

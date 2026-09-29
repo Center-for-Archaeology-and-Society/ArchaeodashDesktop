@@ -29,6 +29,7 @@ fn fixture() -> (std::path::PathBuf, String) {
             elemental_columns: None,
             recipe: None,
             destination_dir: None,
+            group_name: None,
         })
         .expect("commit source");
     (dir, result.groups[0].path.clone())
