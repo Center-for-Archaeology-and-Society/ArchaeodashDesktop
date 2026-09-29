@@ -15,6 +15,8 @@ export interface AutomaticDestinationMapping {
 }
 
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+const isIdentity = (value: unknown): value is string =>
+  typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 
 function selectedIds(result: AnalysisResult, selectedUuids: readonly string[], cutK: number): string[] {
   const rows = selectableRows(result, cutK);
@@ -55,8 +57,9 @@ export function recommendedAssignments(
   }
   if (result.kind === 'membership') {
     const { data } = result;
+    const indexByUuid = new Map(data.analytical_uuids.map((uuid, index) => [uuid, index]));
     return selected.map(analyticalUuid => {
-      const i = data.analytical_uuids.indexOf(analyticalUuid);
+      const i = indexByUuid.get(analyticalUuid)!;
       const group = data.best_group[i];
       const value = data.best_value[i];
       if (typeof group !== 'string' || !group.trim() || !data.eligible_groups.includes(group) || !finite(value)) {
@@ -66,15 +69,27 @@ export function recommendedAssignments(
     });
   }
   if (result.kind === 'euclidean') {
+    const selectedSet = new Set(selected);
+    const closest = new Map<string, { distance: number; groups: Set<string> }>();
+    for (const row of result.data.rows) {
+      if (!selectedSet.has(row.analytical_uuid) || row.match_analytical_uuid === row.analytical_uuid || !finite(row.distance)) continue;
+      if (!isIdentity(row.match_analytical_uuid) || typeof row.match_group !== 'string' || !row.match_group.trim()) {
+        throw new Error('A finite Euclidean match has incomplete identity or group data.');
+      }
+      const current = closest.get(row.analytical_uuid);
+      if (!current || row.distance < current.distance) {
+        closest.set(row.analytical_uuid, { distance: row.distance, groups: new Set([row.match_group]) });
+      } else if (row.distance === current.distance) {
+        current.groups.add(row.match_group);
+      }
+    }
     return selected.map(analyticalUuid => {
-      const matches = result.data.rows.filter(row => row.analytical_uuid === analyticalUuid && row.match_analytical_uuid !== analyticalUuid && finite(row.distance));
-      if (!matches.length) throw new Error('A selected observation has no finite non-self Euclidean match.');
-      const minimum = Math.min(...matches.map(row => row.distance!));
-      const groups = new Set(matches.filter(row => row.distance === minimum).map(row => row.match_group));
-      if (groups.size !== 1 || [...groups][0]!.trim() === '') {
+      const best = closest.get(analyticalUuid);
+      if (!best) throw new Error('A selected observation has no finite non-self Euclidean match.');
+      if (best.groups.size !== 1) {
         throw new Error('The closest Euclidean matches disagree; choose a destination manually.');
       }
-      return { analyticalUuid, groupLabel: [...groups][0]! };
+      return { analyticalUuid, groupLabel: [...best.groups][0]! };
     });
   }
   throw new Error('This analysis result cannot recommend assignments.');
@@ -116,7 +131,14 @@ export function buildAutomaticAssignmentRequest(
   }
   if (byLabel.size !== requiredLabels.size) throw new Error('Choose a destination for every recommended group.');
 
+  const uuidsByLabel = new Map<string, string[]>();
+  for (const recommendation of recommendations) {
+    const groupUuids = uuidsByLabel.get(recommendation.groupLabel) ?? [];
+    groupUuids.push(recommendation.analyticalUuid);
+    uuidsByLabel.set(recommendation.groupLabel, groupUuids);
+  }
   const targets = mappings.filter(mapping => mapping.destinationPath !== sourcePath).map(mapping => {
+    const selected = uuidsByLabel.get(mapping.groupLabel)!;
     const candidate = candidates.find(item => item.path === mapping.destinationPath);
     if (mapping.newGroupName !== undefined) {
       if (!mapping.newGroupName.trim() || candidate) throw new Error('A new group needs a name and a path unused by every group candidate.');
@@ -124,7 +146,7 @@ export function buildAutomaticAssignmentRequest(
         destination_path: mapping.destinationPath,
         destination_group_name: mapping.newGroupName.trim(),
         expected_destination_revision: null,
-        selected_uuids: recommendations.filter(item => item.groupLabel === mapping.groupLabel).map(item => item.analyticalUuid),
+        selected_uuids: selected,
       };
     }
     if (!candidate?.ready || !candidate.group || candidate.group.path !== candidate.path || !candidate.group.revision_id.trim()) {
@@ -133,7 +155,7 @@ export function buildAutomaticAssignmentRequest(
     return {
       destination_path: mapping.destinationPath,
       expected_destination_revision: candidate.group.revision_id,
-      selected_uuids: recommendations.filter(item => item.groupLabel === mapping.groupLabel).map(item => item.analyticalUuid),
+      selected_uuids: selected,
     };
   });
   if (!targets.length) throw new Error('Every selected observation is already in its recommended group.');

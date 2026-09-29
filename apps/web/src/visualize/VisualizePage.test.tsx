@@ -60,6 +60,7 @@ function makeDeps(): VisualizeDeps {
       throw new Error('unused');
     },
     rows: async () => rows,
+    batchTransferUnits: async () => { throw new Error('unused batch transfer'); },
     transferUnits: async () => {
       throw new Error('unused');
     },

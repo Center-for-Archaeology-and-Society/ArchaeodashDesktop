@@ -1,5 +1,6 @@
+import { AutomaticAssignment } from './AutomaticAssignment.tsx';
 import { useMemo, useState, type ReactElement } from 'react';
-import type { TransferUnitsRequest } from '@archaeodash/client';
+import type { TransferUnitsRequest, BatchTransferUnitsRequest, GroupCandidate } from '@archaeodash/client';
 import type { AnalysisResult } from './AnalysisPage.tsx';
 import { buildAssignmentRequest, selectableRows } from './assignment-model.ts';
 
@@ -18,9 +19,12 @@ export function MoveConfirmation({ request, busy, onConfirm, onCancel }: {
 }
 
 /** UUIDs stay in component state and requests, never checkbox values or labels. */
-export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfirm }: {
+export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfirm, candidates = [], onBatchConfirm, onReviewChange = () => {} }: {
   result: AnalysisResult;
   destinations: readonly string[];
+  candidates?: readonly GroupCandidate[];
+  onBatchConfirm?: (request: BatchTransferUnitsRequest) => void;
+  onReviewChange?: (reviewing: boolean) => void;
   cutK?: number;
   busy: boolean;
   onConfirm: (request: TransferUnitsRequest) => void;
@@ -31,12 +35,15 @@ export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfi
   const [shown, setShown] = useState(100);
   const [prepared, setPrepared] = useState<TransferUnitsRequest | null>(null);
   const [error, setError] = useState('');
+  const [automatic, setAutomatic] = useState(false);
+  const [autoReviewing, setAutoReviewing] = useState(false);
   if (result.kind === 'diagnostics') return null;
   const targets = destinations.filter(path => path !== result.data.path);
   function review() {
     try {
       if (!targets.includes(target)) throw new Error('Choose an available destination group.');
       setPrepared(buildAssignmentRequest(result, [...selected], target));
+      onReviewChange(true);
       setError('');
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   }
@@ -44,8 +51,9 @@ export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfi
     <h2>Select analytical units to move</h2>
     <p>{selected.size} of {rows.length} analytical units selected. Repeated nearest matches select the observation once.</p>
     {rows.length === 0 ? <p>No assignable analytical units are available. Recompute the analysis if its identities are unavailable.</p> : <>
-      <fieldset disabled={busy || prepared !== null}>
+      <fieldset disabled={busy || prepared !== null || autoReviewing}>
         <legend>Result selection</legend>
+        {onBatchConfirm && <label>Assignment mode <select value={automatic ? 'automatic' : 'manual'} onChange={event => setAutomatic(event.target.value === 'automatic')}><option value="manual">Choose one destination</option><option value="automatic">Use analysis groups</option></select></label>}
         <button type="button" onClick={() => setSelected(new Set(rows.map(row => row.analyticalUuid)))}>Select all {rows.length} analytical units</button>{' '}
         <button type="button" onClick={() => setSelected(new Set())}>Clear selection</button>
         <table className="data-table"><thead><tr><th>Select</th><th>Analytical unit</th><th>Result</th></tr></thead>
@@ -58,13 +66,14 @@ export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfi
           </tr>)}</tbody>
         </table>
         {shown < rows.length && <button type="button" onClick={() => setShown(value => value + 100)}>Show 100 more analytical units</button>}
-        <label>Destination group <select value={target} onChange={event => setTarget(event.target.value)}>
+        {!automatic && <><label>Destination group <select value={target} onChange={event => setTarget(event.target.value)}>
           <option value="">Choose an existing group…</option>{targets.map(path => <option key={path}>{path}</option>)}
         </select></label>
         {!targets.length && <p>No other ready group file is available. Import or create a destination group before assigning results.</p>}
-        <button type="button" disabled={!selected.size || !targets.includes(target)} onClick={review}>Review move</button>
+        <button type="button" disabled={!selected.size || !targets.includes(target)} onClick={review}>Review move</button></>}
       </fieldset>
-      {prepared && <MoveConfirmation request={prepared} busy={busy} onConfirm={onConfirm} onCancel={() => setPrepared(null)} />}
+      {automatic && onBatchConfirm && <AutomaticAssignment result={result} selected={[...selected]} candidates={candidates} cutK={cutK} busy={busy} onConfirm={onBatchConfirm} onReviewChange={value => { setAutoReviewing(value); onReviewChange(value); }} />}
+      {prepared && <MoveConfirmation request={prepared} busy={busy} onConfirm={onConfirm} onCancel={() => { setPrepared(null); onReviewChange(false); }} />}
     </>}
     {error && <p role="alert">{error}</p>}
   </section>;

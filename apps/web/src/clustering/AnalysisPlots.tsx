@@ -24,9 +24,10 @@ export function PlotPanel({ title, children, initialExpanded = false }: {
   </section>;
 }
 
-export function AnalysisPlots({ result, cutK: controlledCutK, onCutKChange }: {
+export function AnalysisPlots({ result, cutK: controlledCutK, onCutKChange, disabled = false }: {
   result: AnalysisResult;
   cutK?: number;
+  disabled?: boolean;
   onCutKChange?: (value: number) => void;
 }): ReactElement | null {
   const [localCutK, setLocalCutK] = useState(2);
@@ -41,7 +42,7 @@ export function AnalysisPlots({ result, cutK: controlledCutK, onCutKChange }: {
   const boundedK = Math.max(1, Math.min(count, cutK));
   return <section aria-label="Hierarchical cluster plots">
     <div className="cluster-plot-toolbar">
-      <label>Cut into clusters <input type="number" min={1} max={count} value={boundedK}
+      <label>Cut into clusters <input disabled={disabled} type="number" min={1} max={count} value={boundedK}
         onChange={e => { const value = Number(e.target.value); if (Number.isInteger(value) && value >= 1 && value <= count) setCutK(value); }} /></label>
       <label>Leaf text size <input type="range" min={8} max={20} value={leafSize}
         onChange={e => setLeafSize(Number(e.target.value))} /> {leafSize}px</label>

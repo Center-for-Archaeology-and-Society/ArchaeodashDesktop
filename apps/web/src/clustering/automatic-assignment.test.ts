@@ -35,6 +35,10 @@ test('fit recommendations use partitions and dendrogram cuts', () => {
 
 test('membership requires a finite best score and usable group for every selected row', () => {
   assert.deepEqual(recommendedAssignments(membership, [a]), [{ analyticalUuid: a, groupLabel: 'North' }]);
+  const repeatedDisplayIds: AnalysisResult = { kind: 'membership', data: { ...membership.data, ids: ['same visible ID', 'same visible ID'] } };
+  assert.deepEqual(recommendedAssignments(repeatedDisplayIds, [b, a]), [
+    { analyticalUuid: b, groupLabel: 'South' }, { analyticalUuid: a, groupLabel: 'North' },
+  ]);
   const missingScore = () => recommendedAssignments({ kind: 'membership', data: {
     ...membership.data, best_value: [null, 0.9],
   } }, [a]);
@@ -55,6 +59,12 @@ test('Euclidean recommendations select the nearest finite group and reject cross
   assert.throws(() => recommendedAssignments({ ...euclidean, data: { ...euclidean.data, rows: [
     ...euclidean.data.rows, { ...euclidean.data.rows[3]!, match_group: 'South' },
   ] } }, [a]), error => error instanceof Error && /choose a destination manually/i.test(error.message) && !error.message.includes(a));
+  const malformedNearest: AnalysisResult = { ...euclidean, data: { ...euclidean.data, rows: [
+    { ...euclidean.data.rows[2]!, distance: 0, match_group: '' },
+    { ...euclidean.data.rows[3]!, distance: 1, match_group: 'North' },
+  ] } };
+  assert.throws(() => recommendedAssignments(malformedNearest, [a]), error =>
+    error instanceof Error && /incomplete identity or group/.test(error.message) && !error.message.includes(a));
   assert.throws(() => recommendedAssignments(euclidean, [b]), /valid analytical units/);
 });
 

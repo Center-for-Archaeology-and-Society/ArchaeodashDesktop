@@ -43,6 +43,7 @@ function makeDeps(): ExploreDeps {
         },
       ],
     }),
+    batchTransferUnits: async () => { throw new Error('unused batch transfer'); },
     transferUnits: async () => {
       throw new Error('not used here');
     },

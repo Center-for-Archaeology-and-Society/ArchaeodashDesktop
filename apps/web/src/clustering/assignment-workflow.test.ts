@@ -43,3 +43,39 @@ test('revision conflict propagates without refreshing or retrying', async () => 
   await assert.rejects(moveAndReload(groups, request), /revision_conflict/);
   assert.equal(moves, 1);
 });
+
+test('batch assignment submits exactly once and opens the first target when source is deleted', async () => {
+  const { batchMoveAndReload } = await import('./assignment-workflow.ts');
+  let batches = 0;
+  const batch = { source_path: request.source_path, expected_source_revision: request.expected_source_revision,
+    targets: [{ destination_path: 'first.parquet', destination_group_name: 'First', selected_uuids: ['u1'] },
+      { destination_path: 'second.parquet', destination_group_name: 'Second', selected_uuids: ['u2'] }] };
+  const groups = {
+    batchTransferUnits: async (actual: unknown) => { batches++; assert.deepEqual(actual, batch); return { transaction_id: 'batch-tx', action: 'move_units', outputs: [], deleted_paths: [request.source_path] }; },
+    transferUnits: async () => { assert.fail('batch must not call individual transfers'); },
+    scan: async () => [{ path: 'first.parquet', ready: true }],
+    rows: async (path: string) => { assert.equal(path, 'first.parquet'); return { ...rows, path }; },
+  } as unknown as GroupsService;
+  const outcome = await batchMoveAndReload(groups, batch);
+  assert.equal(batches, 1);
+  assert.equal(outcome.nextPath, 'first.parquet');
+  assert.equal(outcome.refreshed?.candidates[0]?.path, 'first.parquet');
+});
+
+test('batch read failure preserves committed outcome and destination conflict is not retried', async () => {
+  const { batchMoveAndReload } = await import('./assignment-workflow.ts');
+  const batch = { source_path: request.source_path, expected_source_revision: request.expected_source_revision,
+    targets: [{ destination_path: 'target.parquet', expected_destination_revision: 'old-target-revision', selected_uuids: ['u1'] }] };
+  let batches = 0;
+  const groups = {
+    batchTransferUnits: async () => { batches++; return { transaction_id: 'batch-tx', action: 'move_units', outputs: [], deleted_paths: [] }; },
+    scan: async () => { throw new Error('read unavailable'); },
+  } as unknown as GroupsService;
+  const outcome = await batchMoveAndReload(groups, batch);
+  assert.equal(outcome.transaction.transaction_id, 'batch-tx');
+  assert.equal(outcome.refreshError, 'read unavailable');
+  assert.equal(batches, 1);
+  groups.batchTransferUnits = async () => { batches++; throw new Error('destination revision conflict'); };
+  await assert.rejects(batchMoveAndReload(groups, batch), /destination revision conflict/);
+  assert.equal(batches, 2);
+});
