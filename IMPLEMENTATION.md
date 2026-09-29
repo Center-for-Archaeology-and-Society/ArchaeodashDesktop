@@ -6,10 +6,10 @@ Status (2026-09-28): implementation in progress through Phase 6; phase exit gate
 
 - Phases 0–4: baseline fixtures, workspace, group-file operations, transformations, ordination, Explore, preferences, and exports have implementation slices recorded in Vault. This is not a claim that every phase exit criterion has passed.
 - Phase 5: visualization, assignment, static/interactive multiplots, and plot export are implemented; desktop end-to-end assignment and performance acceptance remain open.
-- Phase 6 (current): numerical clustering, membership, and Euclidean goldens, bounded shared services, HTTP/Tauri adapters, typed client transports, and analysis controls/result tables, elbow/silhouette plots, and horizontal Ward.D2/DIANA dendrograms with cut coloring and expanded views are implemented. UUID-addressed result selection and confirmed manual moves to existing group files are implemented with source-revision checks. Automatic best/matched-group assignment and multi-group cluster recording now use explicit reviewed destination mappings and one revision-checked batch transaction, with guarded filesystem publication and recovery. Additional distance/linkage options, PCA-based input controls, cancellable jobs, reader snapshot isolation/external-writer concurrency acceptance, and full exit acceptance remain open.
+- Phase 6 (current): numerical clustering, membership, and Euclidean goldens, bounded shared services, HTTP/Tauri adapters, typed client transports, and analysis controls/result tables, elbow/silhouette plots, and horizontal Ward.D2/DIANA dendrograms with cut coloring and expanded views are implemented. UUID-addressed result selection and confirmed manual moves to existing group files are implemented with source-revision checks. Automatic best/matched-group assignment and multi-group cluster recording now use explicit reviewed destination mappings and one revision-checked batch transaction, with guarded filesystem publication and recovery. The remaining source controls (transformations, PCA/UMAP/LDA and projection groups), HCA metric/linkage matrix, PAM/DIANA metrics, partition plots, bounded cancellable jobs with progress events, and native desktop project opening are now implemented. Procedures 9–11 and 13 pass their registered golden checks, including direct multiplot selection parity; 11 real API-backed browser cases pass. Reader snapshot isolation/external-writer concurrency, native desktop UI acceptance, cross-platform timing/memory, and the 100,000-point browser performance gate remain open.
 - Phases 7–9: not yet accepted; do not advance to auth/cutover/legacy removal on the strength of numerical goldens alone.
 
-See [Phase 6 checkpoint](Vault/Phase_6_Service_Integration_2026-09-28.md) and [automatic assignment checkpoint](Vault/Phase_6_Automatic_Assignment_2026-09-28.md) for validation evidence and remaining work.
+See [remaining controls and jobs](Vault/Phase_6_Remaining_Controls_Jobs_2026-09-28.md), [validation report](docs/operations/phase-6-validation-2026-09-28.md), [Phase 6 checkpoint](Vault/Phase_6_Service_Integration_2026-09-28.md) and [automatic assignment checkpoint](Vault/Phase_6_Automatic_Assignment_2026-09-28.md) for validation evidence and remaining work.
 
 Prepared: 2026-09-08
 
@@ -266,6 +266,8 @@ Exit: hidden `analytical_uuid` propagation and atomic analytical-unit transfers 
 ### Phase 6 — Cluster, membership, and Euclidean
 
 - All cluster families/diagnostics/dendrograms, Hotelling/Mahalanobis membership, exact nearest matches, result tables, and assignment paths.
+
+Implementation checkpoint (2026-09-28): source/metric controls, bounded jobs, progress/cancellation, partition and hierarchy plots, membership fallback/projection metadata, reviewed assignments, and desktop project selection are implemented. Registered procedures 9–11 and direct procedure 13 sampling parity pass. See the [validation report](docs/operations/phase-6-validation-2026-09-28.md) for exact coverage and open acceptance gates; this is not a phase exit sign-off.
 
 Exit: full statistical parity matrix approved; fallback/method metadata visible; large-job limits/cancellation pass.
 

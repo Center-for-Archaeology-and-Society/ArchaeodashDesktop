@@ -37,3 +37,11 @@ Benchmark and parity evidence is recorded in [Phase 6 validation](../docs/operat
 The checked-in supplementary R fixture covers all sixteen HCA metric/linkage combinations on tied and non-tied matrices, with exact merge orientation/order and tolerant heights; both PAM and DIANA metrics are also covered. All 26 parity/support tests pass. The separately required two-mean Mahalanobis utility is ported and tested. Silhouette computation now checks cancellation, and the legacy Ward.D2 metadata path rejects inconsistent options.
 
 The final source/plot/browser pass completed ten real API-backed cases in 3.31 seconds; the partition SVG was also inspected visually. Progress subscriptions have cleanup tests for late Tauri listener/watch completion. Review found that the desktop shell had no project-opening command despite adapter support; native folder selection is being wired so Phase 6 is usable from the desktop shell before declaring implementation finished.
+
+## Final implementation checkpoint
+
+Three Luna agents completed the remaining source, numerical, and job work with root integration. Native project selection is now implemented; see [[Phase_6_Desktop_Project_Selection_2026-09-28]]. Direct procedure 13 comparison corrected sampling to legacy per-group/facet source order (99,960 exact selected points), and visual input arrays now correctly transpose API rows into plot columns. Component bounds, job reset cleanup, and the missing app stylesheet reference were fixed.
+
+Final validation: Rust workspace tests, 92 web tests, 38 client tests, workspace typechecks/build, Rust formatting, and affected-library Clippy (including Tauri) pass. The production-built web app passed eleven real API-backed Chromium cases in 3.375 seconds; source row equality survived reviewed two-group recording. The reusable browser script and pinned Playwright dependency are checked in. No new notes are orphaned.
+
+Phase 6 is not signed off: native picker/webview acceptance, cross-platform timing/peak memory, 100,000-point browser performance, and reader snapshot/external-writer acceptance remain open. The validation report and IMPLEMENTATION.md now state these limits explicitly.

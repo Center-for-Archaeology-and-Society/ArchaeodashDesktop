@@ -6,8 +6,7 @@ This checkpoint re-runs the Section 15.4 procedures 9–11 and 13 that are
 represented in the current tree, records a reproducible release benchmark, and
 checks the new cooperative cancellation hooks. It is evidence for these
 procedures and the supported 1,000-row service limit; it is not a Phase 6 exit
-sign-off. Browser/desktop end-to-end acceptance and cross-platform performance
-acceptance remain open.
+sign-off. The web smoke path passes; native desktop end-to-end acceptance and cross-platform performance acceptance remain open.
 
 ## Reproduction environment
 
@@ -53,10 +52,8 @@ node /home/rjbischo/.cache/node/corepack/pnpm/12.4.1/bin/pnpm.mjs --filter @arch
 `cargo test -p archaeodash-parity` passed all 26 parity/support tests: the
 registered import, PCA, UMAP, LDA, clustering, membership, Euclidean, Explore,
 export, transformation, and group-profile test files. Procedure 13 is in the
-web tests, not that Rust suite. The full web suite passed 91 tests after the
-procedure 13 parity correction.
-`cargo test -p archaeodash-analysis` passed 39 unit tests at the prior
-validation checkpoint; the new R matrix adds one parity test.
+web tests, not that Rust suite. Final workspace verification passed 92 web tests and 38 client tests.
+`cargo test --workspace` passed, including 39 analysis, 66 application, 22 API, 15 desktop adapter, 12 data-io, 11 contract, 26 parity/support tests, and the native project-state test. Workspace typechecks/build, Rust formatting, and Clippy on affected library crates including the Tauri app passed. The build retains its Plotly chunk-size warning.
 
 ## Release benchmark
 
@@ -85,13 +82,38 @@ measurements, subject to scheduler effects. DIANA has checkpoints in its nested
 split scans after this probe exposed a roughly 463 ms delay when only its outer
 loop checked the token.
 
+## Real browser verification
+
+A headless Chromium run against the production Vite build and disposable local
+Rust API project passed 11 cases in 3.375 seconds: PCA HCA Manhattan/Average,
+ratio transformation and PCA component bounds, cut/expanded dendrogram, PAM
+Manhattan diagnostics, UMAP cancellation, immutable source rows, hidden UUIDs,
+LDA membership with projection groups, UMAP nearest matches, partition color
+modes, and reviewed two-group recording with exact original row equality.
+The partition SVG screenshot was visually inspected. This is a small synthetic
+smoke dataset, not a load test or the complete INAA acceptance workflow.
+
+Reproduce from a dependency-installed checkout (separate terminals for the API
+and preview; the script writes to the disposable project):
+
+```sh
+pnpm exec playwright install chromium
+cargo run -p archaeodash-api --example local -- /tmp/archaeodash-phase6-smoke
+pnpm --filter @archaeodash/web build
+pnpm --filter @archaeodash/web exec vite preview --host 127.0.0.1 --port 4173
+PHASE6_BASE_URL=http://127.0.0.1:4173 pnpm test:e2e:phase6
+```
+
+The API binds loopback port 8787; preview proxies API requests there. Stop both
+processes after the run. The native picker is compile-checked and its service
+construction is tested; no actual native dialog/webview run is claimed.
+
 ## Remaining gates
 
 - This re-run covers the currently registered Section 15.4 procedure 9–11
   goldens and the available procedure 13 model/component tests. It does not run
   the entire 14-procedure suite through one production-like end-to-end path.
-- No browser/desktop end-to-end run or 100,000-point render performance test was
-  available in this audit. Cross-platform timing and memory budgets remain
-  unmeasured.
+- Native desktop end-to-end acceptance and the 100,000-point browser render performance test remain open. Cross-platform timing and peak-memory budgets remain unmeasured.
+- Reader snapshot isolation and uncoordinated external-writer acceptance remain unresolved storage gates from the earlier batch-assignment checkpoint. Footer resource preflight does not remove the race between a file check and an external replacement.
 - Service limits are fixed at 1,000 rows for pairwise clustering workloads;
   the wider backend probe does not change or validate that service policy.
