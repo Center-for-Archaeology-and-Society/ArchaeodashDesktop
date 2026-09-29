@@ -97,6 +97,29 @@ impl FsGroupFileStore {
         Ok(lock)
     }
 
+    fn project_read_lock(&self) -> Result<fs::File, StoreError> {
+        let dir = self.root.join(ARCHAEODASH_DIR);
+        fs::create_dir_all(&dir).map_err(io_err)?;
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join("project.lock"))
+            .map_err(io_err)?;
+        lock.lock_shared().map_err(io_err)?;
+        Ok(lock)
+    }
+
+    // Used by execute while it already owns the exclusive project lock.
+    fn validate_group_unlocked(&self, path: &str) -> Result<GroupProfile, StoreError> {
+        Ok(validate_group_file(&self.resolve(path)?)?)
+    }
+
+    fn read_group_unlocked(&self, path: &str) -> Result<GroupFileData, StoreError> {
+        Ok(read_group_file(&self.resolve(path)?)?)
+    }
+
     fn rollback_transaction(
         &self,
         tx_dir: &Path,
@@ -218,11 +241,13 @@ impl FsGroupFileStore {
 
 impl GroupFileStore for FsGroupFileStore {
     fn validate_group(&self, path: &str) -> Result<GroupProfile, StoreError> {
-        Ok(validate_group_file(&self.resolve(path)?)?)
+        let _project_lock = self.project_read_lock()?;
+        self.validate_group_unlocked(path)
     }
 
     fn read_group(&self, path: &str) -> Result<GroupFileData, StoreError> {
-        Ok(read_group_file(&self.resolve(path)?)?)
+        let _project_lock = self.project_read_lock()?;
+        self.read_group_unlocked(path)
     }
 
     fn execute(&self, tx: &Transaction) -> Result<String, StoreError> {
@@ -239,7 +264,7 @@ impl GroupFileStore for FsGroupFileStore {
         //    revision with an unchanged measured checksum (Section 6.8
         //    `expected_revision`).
         for input in &tx.inputs {
-            let profile = self.validate_group(&input.path)?;
+            let profile = self.validate_group_unlocked(&input.path)?;
             if profile.revision_id != input.revision_id {
                 return Err(StoreError::RevisionConflict {
                     path: input.path.clone(),
@@ -530,6 +555,8 @@ mod tests {
     use archaeodash_data_io::{ColumnRoles, GroupRow, ImportRecipe};
     use archaeodash_storage::{assert_measured_values_preserved, FileInput, PlannedOutput};
     use std::collections::HashSet;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     fn profile(group_id: &str) -> GroupProfile {
         GroupProfile {
@@ -607,6 +634,51 @@ mod tests {
         assert!(store.resolve("../outside.parquet").is_err());
         assert!(store.resolve("/etc/passwd").is_err());
         assert!(store.resolve("groups/../../escape.parquet").is_err());
+    }
+
+    #[test]
+    fn group_reads_wait_for_writers_and_share_read_locks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let first = FsGroupFileStore::new(root).expect("first store");
+        let second = FsGroupFileStore::new(root).expect("second store");
+        let rel = "groups/read-lock.parquet";
+        write_initial(
+            &root.join(rel),
+            "read-lock",
+            &[row(Uuid::now_v7(), 1.0, None)],
+        );
+
+        let writer_guard = first.project_lock().expect("exclusive lock");
+        let (started_tx, started_rx) = mpsc::channel();
+        let (read_tx, read_rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            started_tx.send(()).expect("signal started");
+            read_tx
+                .send(second.read_group(rel))
+                .expect("send read result");
+        });
+        started_rx.recv().expect("reader started");
+        assert!(read_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        drop(writer_guard);
+        let data = read_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("read completes after writer releases")
+            .expect("group remains valid");
+        assert_eq!(data.profile.group_id, "read-lock");
+        reader.join().expect("reader joins");
+
+        let reader_guard = first.project_read_lock().expect("shared lock");
+        let (read_tx, read_rx) = mpsc::channel();
+        let second_reader = FsGroupFileStore::new(root).expect("second reader store");
+        let reader = std::thread::spawn(move || {
+            read_tx
+                .send(second_reader.validate_group(rel))
+                .expect("send validation result");
+        });
+        assert!(read_rx.recv_timeout(Duration::from_secs(3)).is_ok());
+        drop(reader_guard);
+        reader.join().expect("reader joins");
     }
 
     #[test]
