@@ -52,6 +52,7 @@ const httpLabels = {
   groupsScan: 'GET /api/v1/groups',
   groupsValidate: 'POST /api/v1/groups/validate',
   groupsRows: 'GET /api/v1/groups/rows?path=groups%2FBaca.parquet',
+  groupsBatchTransferUnits: 'POST /api/v1/groups/batch-transfer-units',
   preferencesGet: 'GET /api/v1/preferences',
   preferencesPut: 'PUT /api/v1/preferences',
   transformationsSave: 'POST /api/v1/transformations',

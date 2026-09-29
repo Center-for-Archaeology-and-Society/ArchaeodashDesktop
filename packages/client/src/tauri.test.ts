@@ -37,6 +37,7 @@ const tauriLabels = {
   groupsScan: 'invoke scan_group_candidates',
   groupsValidate: 'invoke validate_group_file',
   groupsRows: 'invoke group_rows',
+  groupsBatchTransferUnits: 'invoke batch_transfer_units',
   preferencesGet: 'invoke preferences_get',
   preferencesPut: 'invoke preferences_set',
   transformationsSave: 'invoke save_transformation',

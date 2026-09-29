@@ -8,6 +8,7 @@ import type {
   AppliedTransformation,
   ApplyTransformationRequest,
   BatchRatioRequest,
+  BatchTransferUnitsRequest,
   ClusterDiagnosticsRequest,
   ClusterDiagnosticsResponse,
   ClusterFitRequest,
@@ -187,6 +188,8 @@ export class HttpTransport implements Transport {
       rows: (path) => this.request('GET', '/api/v1/groups/rows', { query: { path } }),
       transferUnits: (request) =>
         this.request('POST', '/api/v1/groups/transfer-units', { body: request }),
+      batchTransferUnits: (request: BatchTransferUnitsRequest) =>
+        this.request('POST', '/api/v1/groups/batch-transfer-units', { body: request }),
       mergeGroups: (request) => this.request('POST', '/api/v1/groups/merge', { body: request }),
       patchDescriptiveValues: (request: PatchDescriptiveValuesRequest) =>
         this.request('PATCH', '/api/v1/groups/descriptive-values', { body: request }),

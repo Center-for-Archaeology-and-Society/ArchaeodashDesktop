@@ -291,4 +291,22 @@ export function registerTransportContractTests(
     assert.deepEqual(await h.transport.groups.rows('groups/Baca.parquet'), rows);
     assert.equal(h.calls[0]?.label, labels.groupsRows);
   });
+
+  test('groups.batchTransferUnits passes multiple targets and optimistic revisions through', async () => {
+    const h = makeHarness();
+    const request = {
+      source_path: 'groups/source.parquet',
+      expected_source_revision: 'source-rev',
+      targets: [
+        { destination_path: 'groups/a.parquet', destination_group_name: null, expected_destination_revision: 'a-rev', selected_uuids: ['u1'] },
+        { destination_path: 'groups/b.parquet', destination_group_name: 'B', expected_destination_revision: null, selected_uuids: ['u2'] },
+      ],
+    };
+    const response = { transaction_id: 'tx', action: 'batch_transfer_units', outputs: [], deleted_paths: [] };
+    h.respond(response);
+    assert.deepEqual(await h.transport.groups.batchTransferUnits(request), response);
+    assert.equal(h.calls[0]?.label, labels.groupsBatchTransferUnits);
+    if (labels.groupsBatchTransferUnits?.startsWith('POST')) assert.deepEqual(h.calls[0]?.payload, request);
+    else assert.deepEqual(h.calls[0]?.payload, { request });
+  });
 }

@@ -9,6 +9,7 @@ import type {
   AppInfo,
   ApplyTransformationRequest,
   BatchRatioRequest,
+  BatchTransferUnitsRequest,
   ClusterDiagnosticsRequest,
   ClusterDiagnosticsResponse,
   ClusterFitRequest,
@@ -91,6 +92,7 @@ export interface GroupsService {
   validate(path: string): Promise<GroupSummary>;
   rows(path: string): Promise<GroupRowsResponse>;
   transferUnits(request: TransferUnitsRequest): Promise<TransactionResponse>;
+  batchTransferUnits(request: BatchTransferUnitsRequest): Promise<TransactionResponse>;
   mergeGroups(request: MergeGroupsRequest): Promise<TransactionResponse>;
   patchDescriptiveValues(request: PatchDescriptiveValuesRequest): Promise<TransactionResponse>;
   duplicateGroup(request: DuplicateGroupRequest): Promise<TransactionResponse>;

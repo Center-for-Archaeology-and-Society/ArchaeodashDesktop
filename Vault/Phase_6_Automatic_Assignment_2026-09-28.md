@@ -11,3 +11,9 @@ Three Luna agents own the batch transaction core/storage safeguards, adapters/tr
 Existing journal execution did not protect a newly planned destination from a file appearing before publication, and partial rename failure discarded the journal. The batch slice will address these storage gaps before claiming atomic assignment. Phase exit acceptance and external-writer concurrency limitations must be reported accurately.
 
 Related: [[Interaction_Log_2026-09-28]].
+
+## Recommendation and transport checkpoint
+
+The recommendation planner maps selected UUIDs to fit/cut clusters, eligible finite best-group results, or nearest finite matched groups. Cross-group equal-distance ties require manual assignment; missing recommendations fail closed. Group labels are mapped explicitly to destination files with reviewed source/destination revisions, optional new group creation, and Keep in current group. Missing mappings and colliding paths are rejected; normal error messages omit internal UUIDs.
+
+HTTP, desktop, and TypeScript batch surfaces are wired to one batch service. Focused adapter tests and the shared client transport suite pass. Storage publication/recovery hardening is still under review before final integration.

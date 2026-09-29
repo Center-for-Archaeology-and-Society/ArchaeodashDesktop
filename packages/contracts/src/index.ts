@@ -142,6 +142,19 @@ export interface TransferUnitsRequest {
   expected_source_revision: string;
 }
 
+export interface BatchTransferTarget {
+  destination_path: string;
+  destination_group_name?: string | null;
+  expected_destination_revision?: string | null;
+  selected_uuids: string[];
+}
+
+export interface BatchTransferUnitsRequest {
+  source_path: string;
+  expected_source_revision: string;
+  targets: BatchTransferTarget[];
+}
+
 export interface MergeGroupsRequest {
   sources: string[];
   new_group_name: string;

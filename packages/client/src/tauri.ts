@@ -14,6 +14,7 @@ import type {
   AppliedTransformation,
   ApplyTransformationRequest,
   BatchRatioRequest,
+  BatchTransferUnitsRequest,
   ClusterDiagnosticsRequest,
   ClusterDiagnosticsResponse,
   ClusterFitRequest,
@@ -142,6 +143,7 @@ export class TauriTransport implements Transport {
       validate: (path: string) => this.call<GroupSummary>('validate_group_file', { path }),
       rows: (path: string) => this.call('group_rows', { path }),
       transferUnits: (request: TransferUnitsRequest) => this.call('transfer_units', { request }),
+      batchTransferUnits: (request: BatchTransferUnitsRequest) => this.call('batch_transfer_units', { request }),
       mergeGroups: (request: MergeGroupsRequest) => this.call('merge_groups', { request }),
       patchDescriptiveValues: (request: PatchDescriptiveValuesRequest) =>
         this.call('patch_descriptive_values', { request }),
