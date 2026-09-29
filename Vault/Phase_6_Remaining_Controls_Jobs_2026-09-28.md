@@ -31,3 +31,9 @@ A footer-only file preflight checks actual Parquet rows, full-schema cells, and 
 The expanded browser run passed ten cases in 3.26 seconds locally, including LDA membership, UMAP matches, projection groups, partition color controls, and confirmed two-group recording. Recorded rows exactly matched the original UUID/visible/descriptive/measured rows. Rust adapter/application/parity suites, 87 web tests, typechecks, and the production build pass. HTTP SSE and Tauri progress watchers are bounded and expose lifecycle updates; client polling remains the authoritative recovery path.
 
 Benchmark and parity evidence is recorded in [Phase 6 validation](../docs/operations/phase-6-validation-2026-09-28.md). It distinguishes local measured timings from unaccepted cross-platform/desktop UI performance gates.
+
+## Full local matrix and browser verification
+
+The checked-in supplementary R fixture covers all sixteen HCA metric/linkage combinations on tied and non-tied matrices, with exact merge orientation/order and tolerant heights; both PAM and DIANA metrics are also covered. All 26 parity/support tests pass. The separately required two-mean Mahalanobis utility is ported and tested. Silhouette computation now checks cancellation, and the legacy Ward.D2 metadata path rejects inconsistent options.
+
+The final source/plot/browser pass completed ten real API-backed cases in 3.31 seconds; the partition SVG was also inspected visually. Progress subscriptions have cleanup tests for late Tauri listener/watch completion. Review found that the desktop shell had no project-opening command despite adapter support; native folder selection is being wired so Phase 6 is usable from the desktop shell before declaring implementation finished.

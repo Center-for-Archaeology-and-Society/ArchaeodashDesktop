@@ -1733,14 +1733,31 @@ pub fn dense_euclidean(x: &[Vec<f64>], n: usize, p: usize) -> Vec<Vec<f64>> {
 /// [`silhouette_mean`]: `NaN` for the trivial clusterings `k <= 1` or
 /// `k >= n`, `0` for singleton clusters or when `a == b`, else
 /// `(b - a) / max(a, b)`.
+#[allow(clippy::expect_used)] // The private default token is never cancelled.
 pub fn silhouette_widths(dist: &[Vec<f64>], clustering: &[i32], k: usize) -> Vec<f64> {
+    silhouette_widths_cancellable(dist, clustering, k, &CancellationToken::default())
+        .expect("default cancellation token cannot be cancelled")
+}
+
+/// Cancellation-aware row silhouette computation. Checks the pairwise
+/// accumulation once per bounded batch of observation rows.
+pub fn silhouette_widths_cancellable(
+    dist: &[Vec<f64>],
+    clustering: &[i32],
+    k: usize,
+    cancel: &CancellationToken,
+) -> Result<Vec<f64>, DomainError> {
+    cancel.check()?;
     let n = clustering.len();
     if k <= 1 || k >= n {
-        return vec![f64::NAN; n];
+        return Ok(vec![f64::NAN; n]);
     }
     let mut counts = vec![0usize; k];
     let mut di_c = vec![vec![0.0f64; k]; n];
     for i in 0..n {
+        if i % 16 == 0 {
+            cancel.check()?;
+        }
         let ci = (clustering[i] - 1) as usize;
         counts[ci] += 1;
         for j in (i + 1)..n {
@@ -1749,51 +1766,67 @@ pub fn silhouette_widths(dist: &[Vec<f64>], clustering: &[i32], k: usize) -> Vec
             di_c[j][ci] += dist[i][j];
         }
     }
-    (0..n)
-        .map(|i| {
-            let ci = (clustering[i] - 1) as usize;
-            let mut compute_si = true;
-            for j in 0..k {
-                if j == ci {
-                    if counts[j] == 1 {
-                        compute_si = false;
-                        break;
-                    }
-                    di_c[i][j] /= (counts[j] - 1) as f64;
-                } else {
-                    di_c[i][j] /= counts[j] as f64;
+    let mut widths = Vec::with_capacity(n);
+    for i in 0..n {
+        if i % 16 == 0 {
+            cancel.check()?;
+        }
+        let ci = (clustering[i] - 1) as usize;
+        let mut compute_si = true;
+        for j in 0..k {
+            if j == ci {
+                if counts[j] == 1 {
+                    compute_si = false;
+                    break;
                 }
-            }
-            if !compute_si {
-                // `cluster::silhouette` assigns singleton observations width 0.
-                return 0.0;
-            }
-            let ai = di_c[i][ci];
-            let mut bi = if ci == 0 { di_c[i][1] } else { di_c[i][0] };
-            for j in 1..k {
-                if j != ci && bi > di_c[i][j] {
-                    bi = di_c[i][j];
-                }
-            }
-            if bi == ai {
-                0.0
+                di_c[i][j] /= (counts[j] - 1) as f64;
             } else {
-                (bi - ai) / bi.max(ai)
+                di_c[i][j] /= counts[j] as f64;
             }
-        })
-        .collect()
+        }
+        if !compute_si {
+            // `cluster::silhouette` assigns singleton observations width 0.
+            widths.push(0.0);
+            continue;
+        }
+        let ai = di_c[i][ci];
+        let mut bi = if ci == 0 { di_c[i][1] } else { di_c[i][0] };
+        for j in 1..k {
+            if j != ci && bi > di_c[i][j] {
+                bi = di_c[i][j];
+            }
+        }
+        if bi == ai {
+            widths.push(0.0);
+        } else {
+            widths.push((bi - ai) / bi.max(ai));
+        }
+    }
+    Ok(widths)
 }
 
 /// Mean silhouette width over a 1-based clustering (`cluster::sildist`,
 /// averaged as in the legacy `silhouette_mean` helper). Returns NaN for the
 /// trivial clusterings `k <= 1` or `k >= n`, like `silhouette.default`.
+#[allow(clippy::expect_used)] // The private default token is never cancelled.
 pub fn silhouette_mean(dist: &[Vec<f64>], clustering: &[i32], k: usize) -> f64 {
+    silhouette_mean_cancellable(dist, clustering, k, &CancellationToken::default())
+        .expect("default cancellation token cannot be cancelled")
+}
+
+pub fn silhouette_mean_cancellable(
+    dist: &[Vec<f64>],
+    clustering: &[i32],
+    k: usize,
+    cancel: &CancellationToken,
+) -> Result<f64, DomainError> {
+    cancel.check()?;
     if k <= 1 || k >= clustering.len() || clustering.is_empty() {
-        return f64::NAN;
+        return Ok(f64::NAN);
     }
-    let widths = silhouette_widths(dist, clustering, k);
+    let widths = silhouette_widths_cancellable(dist, clustering, k, cancel)?;
     let total: f64 = widths.iter().sum();
-    total / clustering.len() as f64
+    Ok(total / clustering.len() as f64)
 }
 
 #[cfg(test)]

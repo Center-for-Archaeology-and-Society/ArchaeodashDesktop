@@ -1211,6 +1211,31 @@ mod tests {
         // Ephemeral: the group file is byte-identical afterwards.
         assert_eq!(std::fs::read(dir.join(&path)).expect("read group"), before);
 
+        let pam_diagnostics = service
+            .cluster_diagnostics(&ClusterDiagnosticsRequest {
+                path: path.clone(),
+                columns: vec!["as".into(), "fe".into()],
+                transformation: None,
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                metric: ClusterDistanceMetricDto::Manhattan,
+                minkowski_p: 2.0,
+                linkage: ClusterLinkageDto::Average,
+                diagnostic_method: archaeodash_contracts::ClusterDiagnosticMethodDto::Pam,
+                max_k: 4,
+                seed: 20260914,
+            })
+            .expect("PAM Manhattan diagnostics");
+        assert_eq!(
+            pam_diagnostics.diagnostic_method,
+            archaeodash_contracts::ClusterDiagnosticMethodDto::Pam
+        );
+        assert_eq!(pam_diagnostics.metric, ClusterDistanceMetricDto::Manhattan);
+        assert_eq!(pam_diagnostics.wss.len(), 4);
+        assert_eq!(pam_diagnostics.silhouette.len(), 3);
+
         // max_k above the n - 1 and 20 ceilings clamps instead of failing.
         let clamped = service
             .cluster_diagnostics(&ClusterDiagnosticsRequest {
@@ -1886,6 +1911,39 @@ mod tests {
                     && row.rowid == "duplicate"
             }), "each observation remains correlated with its UUID-backed match despite duplicate visible and legacy IDs");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_legacy_rowid_display_id_falls_back_to_ordinal_not_uuid() {
+        let (service, dir, path) = service_with_merged_group();
+        let file = dir.join(&path);
+        let mut data = read_group_file(&file).expect("read group");
+        let rowid = data.profile.roles.legacy_rowid.clone();
+        let ids: Vec<String> = data.rows.iter().map(|row| row.uuid.to_string()).collect();
+        for row in &mut data.rows {
+            row.legacy_rowid = None;
+        }
+        write_group_rows(&file, data.profile, &data.rows).expect("write missing rowids");
+        let response = service
+            .euclidean_matches(&EuclideanMatchesRequest {
+                path,
+                columns: vec!["as".into(), "fe".into()],
+                transformation: None,
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                projection_groups: None,
+                group_column: "Site".into(),
+                id_column: rowid,
+                limit: 1,
+                within_group: true,
+            })
+            .expect("matches with ordinal display IDs");
+        assert!(!response.rows.is_empty());
+        assert!(response.rows.iter().all(|row| !ids.contains(&row.id)));
+        assert!(response.rows.iter().any(|row| row.id == "1"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -7,6 +7,7 @@ pub mod cancellation;
 pub mod cluster;
 pub mod explore;
 pub mod lda;
+pub mod mahalanobis_mean;
 pub mod membership;
 pub mod pca;
 pub mod umap;
@@ -19,8 +20,8 @@ pub use cluster::{
     cluster_diagnostics, dense_euclidean, diana, diana_with_metric, diana_with_metric_cancellable,
     hclust, hclust_cancellable, hclust_ward_d2, hclust_ward_d2_cancellable, kmeans,
     kmeans_cancellable, pam, pam_with_metric, pam_with_metric_cancellable, silhouette_mean,
-    silhouette_widths, ClusterDiagnostics, Diana, DistanceMetric, Hclust, Kmeans, LinkageMethod,
-    Pam,
+    silhouette_mean_cancellable, silhouette_widths, silhouette_widths_cancellable,
+    ClusterDiagnostics, Diana, DistanceMetric, Hclust, Kmeans, LinkageMethod, Pam,
 };
 pub use explore::{
     compositional_profile, crosstab_count, crosstab_value_summary, histogram, missing_profile,
@@ -28,6 +29,7 @@ pub use explore::{
     ProfileRow,
 };
 pub use lda::{lda, Lda, LEGACY_LDA_TOL};
+pub use mahalanobis_mean::calculate_mahalanobis_distance;
 pub use membership::{
     calc_e_distance, calc_e_distance_cancellable, get_eligible, group_mem_probs,
     group_mem_probs_tracked, group_mem_probs_tracked_cancellable, EuclideanMatch, MembershipMethod,
