@@ -600,8 +600,10 @@ mod tests {
     use archaeodash_data_io::{ColumnRoles, GroupRow, ImportRecipe};
     use archaeodash_storage::{assert_measured_values_preserved, FileInput, PlannedOutput};
     use std::collections::HashSet;
+    use std::process::{Child, Command, Stdio};
     use std::sync::mpsc;
-    use std::time::Duration;
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     fn profile(group_id: &str) -> GroupProfile {
         GroupProfile {
@@ -735,6 +737,90 @@ mod tests {
         assert!(read_rx.recv_timeout(Duration::from_secs(3)).is_ok());
         drop(reader_guard);
         reader.join().expect("reader joins");
+    }
+
+    // Invoked by process_read_waits_for_exclusive_project_lock in a separate
+    // test process. The marker means the child is about to call the real store
+    // read API; it then blocks there until the parent drops its exclusive lock.
+    #[test]
+    fn process_reader_child() {
+        let Some(root) = std::env::var_os("ARCHAEODASH_LOCK_CHILD_ROOT") else {
+            return;
+        };
+        let ready = std::env::var_os("ARCHAEODASH_LOCK_CHILD_READY").expect("ready marker path");
+        fs::write(ready, b"ready").expect("write child ready marker");
+        FsGroupFileStore::new(root)
+            .expect("child store")
+            .read_group("groups/process-lock.parquet")
+            .expect("read group after exclusive lock releases");
+    }
+
+    struct ChildCleanup(Child);
+
+    impl Drop for ChildCleanup {
+        fn drop(&mut self) {
+            if self.0.try_wait().ok().flatten().is_none() {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+    }
+
+    #[test]
+    fn process_read_waits_for_exclusive_project_lock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write_initial(
+            &root.join("groups/process-lock.parquet"),
+            "process-lock",
+            &[row(Uuid::now_v7(), 1.0, None)],
+        );
+        let store = FsGroupFileStore::new(root).expect("store");
+        let writer_guard = store.lock_exclusive().expect("exclusive lock");
+        let ready = root.join("child-ready");
+        let child = Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", "tests::process_reader_child", "--nocapture"])
+            .env("ARCHAEODASH_LOCK_CHILD_ROOT", root)
+            .env("ARCHAEODASH_LOCK_CHILD_READY", &ready)
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn child test process");
+        let mut child = ChildCleanup(child);
+
+        let start_deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            if let Some(status) = child.0.try_wait().expect("check child status") {
+                panic!("child exited before attempting read: {status}");
+            }
+            assert!(
+                Instant::now() < start_deadline,
+                "child did not become ready"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        // The readiness marker is written immediately before read_group.
+        // Give that call time to enter its blocking lock acquisition.
+        thread::sleep(Duration::from_millis(200));
+        assert!(
+            child.0.try_wait().expect("check child status").is_none(),
+            "child read completed while exclusive lock was held"
+        );
+        drop(writer_guard);
+
+        let finish_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.0.try_wait().expect("check child status") {
+                assert!(status.success(), "child read failed: {status}");
+                break;
+            }
+            assert!(
+                Instant::now() < finish_deadline,
+                "child read did not finish after release"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]

@@ -160,6 +160,6 @@ not a portable threshold.
   goldens and the available procedure 13 model/component tests. It does not run
   the entire 14-procedure suite through one production-like end-to-end path.
 - Broader native workflow/assignment acceptance and cross-platform timing/peak-memory acceptance remain open; the initial native smoke workflow passed in the linked test-drive checkpoint. Procedure 13 has two local browser measurements above, with no portable timing or peak-memory threshold.
-- Filesystem reads, multi-group planning snapshots, project candidate scans, and application import publication now coordinate with store transactions through `.archaeodash/project.lock`. This protects cooperating application/store users; uncoordinated external-writer acceptance remains unresolved, and footer resource preflight does not remove races with a program that ignores the lock.
+- Filesystem reads, multi-group planning snapshots, project candidate scans, and application import publication now coordinate with store transactions through `.archaeodash/project.lock`. A child-process regression confirms reads wait behind a store-held exclusive lock on Linux. This protects cooperating application/store users; uncoordinated external-writer acceptance remains unresolved, and footer resource preflight does not remove races with a program that ignores the lock.
 - Service limits are fixed at 1,000 rows for pairwise clustering workloads;
   the wider backend probe does not change or validate that service policy.
