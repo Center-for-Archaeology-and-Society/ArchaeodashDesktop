@@ -89,3 +89,5 @@ Up: [[../../Vault/Index]]
 - [[Phase_6_Procedure_13_Browser_Render_2026-09-29]]
 - [[Filesystem_Cross_Process_Read_Lock_2026-09-30]]
 - [[Phase_6_Native_Assignment_Walkthrough_2026-09-30]]
+
+- [[Phase_6_Repeatable_Acceptance_Evidence_2026-09-30]]
