@@ -89,6 +89,9 @@ jobs:
           PHASE6_BASE_URL=http://127.0.0.1:4173 \
             pnpm test:e2e:phase6 2>&1 | tee artifacts/phase6-browser/phase6.log
 
+          VISUALIZE_ASSIGNMENT_BASE_URL=http://127.0.0.1:4173 \
+            pnpm test:e2e:visualize-assignment 2>&1 | tee artifacts/phase6-browser/visualize-assignment.log
+
           if [ "$RUN_MULTIPLOT_BENCHMARK" = true ]; then
             args=()
             if [ -n "$MAX_MULTIPLOT_ELAPSED_MS" ]; then args+=(--max-elapsed-ms "$MAX_MULTIPLOT_ELAPSED_MS"); fi

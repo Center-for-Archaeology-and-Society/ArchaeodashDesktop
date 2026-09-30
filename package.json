@@ -13,7 +13,8 @@
     "typecheck": "pnpm -r typecheck",
     "test:e2e:phase6": "node scripts/e2e/phase6.mjs",
     "bench:e2e:multiplot-100k": "node scripts/e2e/multiplot-100k.mjs",
-    "test:e2e:import": "node scripts/e2e/import.mjs"
+    "test:e2e:import": "node scripts/e2e/import.mjs",
+    "test:e2e:visualize-assignment": "node scripts/e2e/visualize-assignment.mjs"
   },
   "devDependencies": {
     "amaro": "^1.2.1",

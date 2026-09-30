@@ -23,7 +23,7 @@ jobs:
       - name: Test performance measurement helpers
         run: python -B -m unittest discover -s scripts -p test_benchmark_phase6.py
       - name: Test numerical analysis and golden parity crates
-        run: cargo test -p archaeodash-analysis -p archaeodash-parity
+        run: cargo test -p archaeodash-analysis -p archaeodash-parity --all-targets
 
   filesystem-lock-process:
     name: Filesystem lock process regression (${{ matrix.os }})

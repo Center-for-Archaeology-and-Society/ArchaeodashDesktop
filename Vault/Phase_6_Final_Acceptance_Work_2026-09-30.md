@@ -37,3 +37,19 @@ An isolated native X11 display was made available by extracting temporary test
 tools without system installation. Native inspection found assignment controls
 underneath the Plotly canvas because WebKit collapsed the holder. An explicit
 450-pixel scatter height now reserves layout space; native retesting is underway.
+
+The native retest passed on the rebuilt Linux app. Pointer lasso selected AID669;
+the UI committed D1→D2 and cleared selection. Source/destination counts changed
+104→103 and 50→51. Read-only comparison of complete Parquet rows against before
+snapshots confirmed stable identity, all 33 measured values and descriptive
+fields unchanged, and every other source/destination row unchanged. After
+close/relaunch and native project reopening, Explore's accessible table showed
+103 source rows without AID669 and 51 destination rows with it exactly once.
+
+The new real-pointer browser regression passed: holder height 450px, controls
+below the chart, one selected point, full row preserved after assignment, hidden
+UUIDs, and durable membership after page reload. It is wired into browser CI.
+The final web suite passed 97 tests; analysis/parity with all targets passed 66,
+including the example cancellation test. Native production assets and binary
+built successfully. Hosted cross-platform results, Windows peak memory, and
+ratified portable performance limits remain open; no broader sign-off is claimed.

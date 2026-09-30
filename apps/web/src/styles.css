@@ -307,6 +307,13 @@ body {
   border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
 }
 
+/* Reserve Plotly's default figure height before its canvas mounts. WebKit can
+   otherwise collapse this holder and overlap the assignment controls. */
+.visualize-scatter {
+  width: 100%;
+  height: 450px;
+}
+
 /* Multiplot grid (Section 9.4): disjoint X/Y pairs, static SVG panels. */
 .multiplot-grid {
   display: flex;
