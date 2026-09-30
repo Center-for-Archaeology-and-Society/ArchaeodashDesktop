@@ -1,12 +1,18 @@
 # Phase 6 Native Assignment Walkthrough — 2026-09-30
 
-The desktop test-drive guide now describes a separate disposable-project check
-for moving one selected analytical unit between existing group files through
-the native **Visualize & Assign** workflow. It checks the visible sample ID,
-measured values, source/destination row counts, and persistence after reopening.
+The prepared walkthrough has now passed in the actual Linux GTK/WebKit Tauri
+window on an isolated X11 display. A real pointer lasso selected one INAA unit,
+AID669, and the UI committed a D1-to-D2 move. The source changed 104→103 and the
+destination 50→51; a read-only Parquet comparison preserved the hidden identity,
+all 33 measured values, every descriptive field, and all other rows. After
+close/relaunch and native folder reopening, Explore showed 103 source rows with
+the unit absent and 51 destination rows with it present once.
 
-The walkthrough is prepared but not run. Browser/HTTP assignment tests and
-Tauri adapter tests do not establish live WebView acceptance. Record OS and
-observed results from a real native run before closing this gate.
+The run exposed collapsed WebKit plot sizing that covered assignment controls.
+An explicit scatter height fixes layout; awaited Plotly rendering and stable
+callback references fix related lifecycle handling. A real-pointer Chromium
+regression is included in CI. Linux native acceptance is now evidenced;
+Windows/macOS and portable performance acceptance remain open.
 
-Related: [[Initial_Desktop_Test_Drive_2026-09-28]], [[Phase_6_Procedure_13_Browser_Render_2026-09-29]], [[Phase_6_Remaining_Controls_Jobs_2026-09-28]].
+See [desktop test-drive guide](../docs/operations/desktop-test-drive.md) for the
+replay steps and native screenshot. Related: [[Phase_6_Final_Acceptance_Work_2026-09-30]], [[Phase_6_Remaining_Controls_Jobs_2026-09-28]].

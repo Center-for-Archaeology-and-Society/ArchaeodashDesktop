@@ -30,3 +30,10 @@ The API example and production web build passed. The real browser flow passed
 in 3,360 ms, and the optional multiplot check passed in 3,016 ms with all 99,960
 points (8,330 per panel). YAML parsing, Node syntax checks, and whitespace checks
 passed. CI execution on hosted runners remains pending.
+
+Later on 2026-09-30, explicit caller-supplied performance-budget checks and
+actual Linux native assignment/reopen verification landed. The cancellation
+probe now requires the correct error code, and real missing-value fallback is
+covered end to end. See [[Phase_6_Final_Acceptance_Work_2026-09-30]] for updated
+results; the earlier unverified-native and generic-cancellation notes above are
+historical. Other-platform and portable-budget acceptance remain open.

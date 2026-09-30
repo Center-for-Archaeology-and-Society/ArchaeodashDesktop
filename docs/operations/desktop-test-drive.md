@@ -98,7 +98,7 @@ pointer/keyboard selection and the save/reopen walkthrough passed without that
 failure. This initial smoke result is not a native stability or accessibility
 certification; wider native and cross-platform testing remains necessary.
 
-## Phase 6 native assignment check — prepared, not yet verified
+## Phase 6 native assignment check — verified on Linux, 2026-09-30
 
 Use a separate disposable project so the basic import/export walkthrough stays
 unchanged. Run these from the repository root; choose another new path if this
@@ -122,7 +122,26 @@ In the native app, open that project and:
    the move. Confirm D1 lost one row and D2 gained one row.
 5. Close and reopen the project, then repeat the source/destination checks.
 
-This is a prepared manual acceptance path, not evidence that native assignment
-has passed. Record the OS, result, and any failure before treating the broader
-native assignment gate as accepted. Automated browser assignment coverage is
-separate and does not verify the Tauri WebView path.
+The actual GTK/WebKit Tauri window passed this path on an isolated Linux X11
+display. Pointer lasso selected AID669, the native UI moved it from D1 to D2,
+and the app reported **Assignment committed** with the selection cleared.
+D1 changed from 104 to 103 rows; D2 changed from 50 to 51. A read-only Parquet
+comparison against snapshots confirmed the same hidden identity, all 33 original
+measured values, all descriptive fields, and every other row unchanged. After
+closing and relaunching the app and reopening the project through the native
+folder picker, Explore's accessibility tree contained 103 source rows without
+AID669 and 51 destination rows with AID669 exactly once.
+
+This test exposed a WebKit layout defect: the plot holder collapsed and the
+canvas covered the assignment controls. An explicit 450-pixel holder now keeps
+those controls below the plot. The Plotly wrapper also awaits rendering before
+attaching selection handlers, retains current callbacks without restarting the
+plot on every selection, and exposes rendering failures visibly.
+
+![Native assignment committed with selection cleared](images/desktop-assignment-committed.png)
+
+The separate `pnpm test:e2e:visualize-assignment` regression uses a real Chromium
+mouse gesture against the API/production web build, verifies layout and full row
+preservation, and reloads the datasets. It runs in browser CI. The native result
+above verifies Linux WebKit only; Windows/macOS native acceptance and portable
+performance budgets remain open.

@@ -6,7 +6,7 @@ This checkpoint re-runs the Section 15.4 procedures 9–11 and 13 that are
 represented in the current tree, records a reproducible release benchmark, and
 checks the new cooperative cancellation hooks. It is evidence for these
 procedures and the supported 1,000-row service limit; it is not a Phase 6 exit
-sign-off. The web smoke path passes; native desktop end-to-end acceptance and cross-platform performance acceptance remain open.
+sign-off. The web smoke path passes; Linux native assignment/reopen now passes; acceptance on other desktop platforms and cross-platform performance remains open.
 
 ## Reproduction environment
 
@@ -105,7 +105,7 @@ PHASE6_BASE_URL=http://127.0.0.1:4173 pnpm test:e2e:phase6
 ```
 
 The API binds loopback port 8787; preview proxies API requests there. Stop both
-processes after the run. A later [desktop test-drive checkpoint](desktop-test-drive.md) exercised the actual native folder picker, import, clustering, cancellation, CSV save dialog, and reopen workflow. Broader native assignment/performance acceptance is still open.
+processes after the run. A later [desktop test-drive checkpoint](desktop-test-drive.md) exercised the actual native folder picker, import, clustering, cancellation, CSV save dialog, and reopen workflow. Linux native assignment was subsequently verified as described below; other-platform and performance acceptance remain open.
 
 ### Procedure 13 browser render benchmark
 
@@ -159,7 +159,7 @@ not a portable threshold.
 - This re-run covers the currently registered Section 15.4 procedure 9–11
   goldens and the available procedure 13 model/component tests. It does not run
   the entire 14-procedure suite through one production-like end-to-end path.
-- Broader native workflow/assignment acceptance and cross-platform timing/peak-memory acceptance remain open; the desktop test-drive guide now includes a manual one-unit move check for the Tauri WebView, but it has not been run. The initial native smoke workflow passed in the linked test-drive checkpoint. Procedure 13 has two local browser measurements above, with no portable timing or peak-memory threshold.
+- Native assignment/reopen passes on Linux (see the later checkpoint below); acceptance on other desktop platforms and cross-platform timing/peak-memory remain open. The initial native smoke workflow passed in the linked test-drive checkpoint. Procedure 13 has two local browser measurements above, with no portable timing or peak-memory threshold.
 - Filesystem reads, multi-group planning snapshots, project candidate scans, and application import publication now coordinate with store transactions through `.archaeodash/project.lock`. A child-process regression confirms reads wait behind a store-held exclusive lock on Linux. This protects cooperating application/store users; uncoordinated external-writer acceptance remains unresolved, and footer resource preflight does not remove races with a program that ignores the lock.
 - Service limits are fixed at 1,000 rows for pairwise clustering workloads;
   the wider backend probe does not change or validate that service policy.
@@ -169,7 +169,7 @@ not a portable threshold.
 The main CI workflow now runs the numerical analysis and golden-parity crates
 on Ubuntu, macOS, and Windows. The separate `Phase 6 browser E2E` workflow
 builds the API harness and production web app, starts a disposable project,
-waits for readiness, and runs the eleven-case browser flow on Linux. Its manual
+waits for readiness, and runs the browser acceptance flow on Linux. Its manual
 workflow input also enables the 99,960-point multiplot benchmark. Logs are
 retained as workflow artifacts, including on failure.
 
@@ -192,11 +192,67 @@ triggered and captures a separate artifact on all three desktop CI platforms.
 
 These workflows are infrastructure for evidence collection. Hosted runs are
 pending; timing and memory thresholds have not been accepted. The native
-WebView assignment gate remains separate and unverified.
+WebView assignment gate is separate; the later Linux checkpoint below now verifies it on this host.
 
 Local integration verification on 2026-09-30 passed the API example build,
-production web build, and eleven-case browser flow (3,360 ms). The third local
+production web build, and browser acceptance flow (3,360 ms). The third local
 multiplot run rendered all 99,960 points in 3,016 ms. The numerical capture
 completed in 1.181 seconds with process peak RSS of 19,386,368 bytes on Linux;
 these are observations, not accepted performance budgets. Process success,
 nonzero-exit, and failed-launch capture checks also passed.
+
+## Remaining-gate work (2026-09-30)
+
+The application fallback fixture now genuinely requests Hotelling with a missing
+measurement and checks effective Mahalanobis method, fallback reason, best-group
+selection, and projected-group metadata against an explicit Mahalanobis result.
+A twelfth real browser case verifies that fallback notice and distance labels,
+while checking unchanged source rows and hidden UUIDs. It passed with the full
+browser flow in 3,608 ms. The Rust workspace passed 230 tests; 95 web tests,
+client tests, typechecks, formatting, and affected-library Clippy passed before
+the subsequent native plot repair.
+
+The cancellation benchmark now recognizes only `analysis_cancelled`; successful
+work finishing before cancellation is labelled separately, and unrelated errors
+fail the benchmark. This supersedes the earlier caveat about its generic error
+flag.
+
+Both performance runners now support explicit caller-supplied budgets:
+
+```sh
+python3 scripts/benchmark-phase6.py --output /tmp/phase6-budget.json \
+  --max-elapsed-seconds "$PHASE6_MAX_SECONDS" \
+  --max-peak-rss-bytes "$PHASE6_MAX_RSS_BYTES"
+node scripts/e2e/multiplot-100k.mjs --output /tmp/multiplot-budget.json \
+  --max-elapsed-ms "$MULTIPLOT_MAX_MS"
+```
+
+Supply positive limits appropriate to the target environment; omitting the
+options records `not_configured`, not acceptance. Missing requested memory
+measurements fail the budget check. Workflow-dispatch inputs expose the same
+options, and browser artifacts now include JSON. Deliberately tiny numerical
+and browser limits were tested: both exited nonzero and retained failed checks.
+The browser's normal capture still verified all 99,960 points. No default
+portable time or memory threshold has been ratified. Windows peak memory remains
+unavailable because in-flight samples cannot establish the complete-process peak.
+
+### Native assignment and final local checks
+
+The actual Linux GTK/WebKit Tauri window passed a real lasso-and-move from D1
+to D2, then normal close/relaunch and native project reopening. The source had
+104→103 rows, destination 50→51, and the selected unit retained its hidden
+identity and all 33 measured values. Full Parquet row comparisons verified every
+other row unchanged. Reopened Explore tables confirmed absence in the source
+and exactly one occurrence in the destination. The [test-drive guide](desktop-test-drive.md)
+contains the screenshot and replay steps.
+
+The run exposed a collapsed WebKit scatter holder that covered assignment
+controls; explicit height now reserves the canvas space. Awaited Plotly rendering,
+current callback references, and visible render errors improve the selection
+lifecycle. A separate Chromium pointer-gesture assignment regression now checks
+layout, exact row preservation, hidden UUIDs, and reload through browser CI.
+After these changes, all 97 web tests and web typechecking passed, as did 66
+analysis/parity tests with all targets (including the cancellation example test).
+The production web and native binary builds passed. Remaining platform and
+performance acceptance is listed in `IMPLEMENTATION.md`; Linux evidence does
+not establish Windows/macOS behavior or a portable performance budget.
