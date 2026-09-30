@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import platform
 import subprocess
@@ -23,6 +24,48 @@ ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE = "phase6_bench"
 
 
+def evaluate_budgets(
+    benchmark: dict[str, object],
+    max_elapsed_seconds: float | None = None,
+    max_peak_rss_bytes: int | None = None,
+) -> dict[str, object]:
+    """Evaluate only caller-supplied limits; missing measurements are unavailable."""
+    checks: dict[str, object] = {}
+    for name, limit, metric in (
+        ("elapsed_seconds", max_elapsed_seconds, "elapsed_seconds"),
+        ("peak_resident_memory_bytes", max_peak_rss_bytes, "peak_resident_memory_bytes"),
+    ):
+        if limit is None:
+            continue
+        measured = benchmark.get(metric)
+        status = "passed" if isinstance(measured, (int, float)) and measured <= limit else (
+            "failed" if isinstance(measured, (int, float)) else "unavailable"
+        )
+        checks[name] = {"limit": limit, "measured": measured, "status": status}
+    if not checks:
+        status = "not_configured"
+    else:
+        status = "passed" if all(
+            isinstance(check, dict) and check.get("status") == "passed"
+            for check in checks.values()
+        ) else "failed"
+    return {"status": status, "checks": checks}
+
+
+def positive_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive number")
+    return parsed
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def run_measured(executable: Path) -> tuple[int, str, str, float, int | None, str | None]:
     """Run the example and collect wait4 resource usage where available."""
     start = time.perf_counter()
@@ -30,7 +73,7 @@ def run_measured(executable: Path) -> tuple[int, str, str, float, int | None, st
         proc = subprocess.run([str(executable)], capture_output=True, text=True)
         elapsed = time.perf_counter() - start
         if os.name == "nt":
-            reason = "Peak RSS collection is unavailable on Windows with Python stdlib APIs."
+            reason = "Peak working-set collection is not implemented on Windows; no threshold was evaluated."
         else:
             reason = "This platform's Python runtime does not expose wait4/fork resource collection."
         return proc.returncode, proc.stdout, proc.stderr, elapsed, None, reason
@@ -69,6 +112,8 @@ def run_measured(executable: Path) -> tuple[int, str, str, float, int | None, st
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("phase6-benchmark.json"))
+    parser.add_argument("--max-elapsed-seconds", type=positive_float, help="Optional caller-supplied runtime limit.")
+    parser.add_argument("--max-peak-rss-bytes", type=positive_int, help="Optional caller-supplied peak-memory limit.")
     args = parser.parse_args()
 
     build_cmd = [
@@ -114,6 +159,7 @@ def main() -> int:
             "timing_included_in_runtime": False,
         },
         "benchmark": None,
+        "budgets": {"status": "not_configured", "checks": {}},
     }
     rustc = subprocess.run(["rustc", "--version"], capture_output=True, text=True)
     environment = result["environment"]
@@ -129,7 +175,8 @@ def main() -> int:
             "stdout": stdout,
             "stderr": stderr,
             "peak_resident_memory_bytes": peak_bytes,
-            "peak_resident_memory_scope": "whole child process; may include forked Python launcher overhead before exec",
+            "peak_resident_memory_metric": "peak RSS" if peak_bytes is not None else None,
+            "peak_resident_memory_scope": "whole child process; may include forked Python launcher overhead before exec" if peak_bytes is not None else None,
             "peak_resident_memory_unavailable_reason": unavailable,
         }
         if peak_bytes is None and unavailable is None:
@@ -148,13 +195,18 @@ def main() -> int:
         }
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    print(args.output, file=sys.stderr)
     benchmark = result["benchmark"]
     if build.returncode != 0:
+        result["budgets"] = evaluate_budgets({}, args.max_elapsed_seconds, args.max_peak_rss_bytes)
+        args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        print(args.output, file=sys.stderr)
         return build.returncode
     assert isinstance(benchmark, dict)
-    return int(benchmark["exit_code"])
+    budgets = evaluate_budgets(benchmark, args.max_elapsed_seconds, args.max_peak_rss_bytes)
+    result["budgets"] = budgets
+    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    print(args.output, file=sys.stderr)
+    return int(benchmark["exit_code"]) or (1 if budgets["status"] == "failed" else 0)
 
 
 if __name__ == "__main__":

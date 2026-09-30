@@ -25,3 +25,15 @@ fallback notice, source-row preservation, and hidden UUIDs. All twelve browser
 cases passed in 3,608 ms; 95 web tests, the Rust workspace suite, formatting,
 and affected-library Clippy passed locally. Cancellation probes now distinguish
 the exact cancellation code, work finishing first, and unexpected errors.
+
+Performance runners now accept explicit optional time/memory limits and retain
+structured results on failure. Focused tests passed; deliberately tiny budgets
+failed as expected (numerical 1.212 s / 19,742,720 bytes; browser 2,931 ms against
+1 ms). An unconfigured browser run passed at 2,864 ms with 99,960 points. These
+validate enforcement, not approval of a portable budget. Windows peak memory
+remains unavailable rather than reporting an incomplete sampled peak.
+
+An isolated native X11 display was made available by extracting temporary test
+tools without system installation. Native inspection found assignment controls
+underneath the Plotly canvas because WebKit collapsed the holder. An explicit
+450-pixel scatter height now reserves layout space; native retesting is underway.

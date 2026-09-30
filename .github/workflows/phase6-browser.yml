@@ -11,6 +11,10 @@ on:
         type: boolean
         required: false
         default: false
+      max_multiplot_elapsed_ms:
+        description: Optional measured render-time limit in ms (requires benchmark enabled)
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -50,6 +54,7 @@ jobs:
       - name: Run Phase 6 browser flow${{ inputs.run_multiplot_benchmark && ' and multiplot benchmark' || '' }}
         env:
           RUN_MULTIPLOT_BENCHMARK: ${{ inputs.run_multiplot_benchmark || 'false' }}
+          MAX_MULTIPLOT_ELAPSED_MS: ${{ inputs.max_multiplot_elapsed_ms }}
         run: |
           set -euo pipefail
           mkdir -p artifacts/phase6-browser
@@ -85,8 +90,10 @@ jobs:
             pnpm test:e2e:phase6 2>&1 | tee artifacts/phase6-browser/phase6.log
 
           if [ "$RUN_MULTIPLOT_BENCHMARK" = true ]; then
+            args=()
+            if [ -n "$MAX_MULTIPLOT_ELAPSED_MS" ]; then args+=(--max-elapsed-ms "$MAX_MULTIPLOT_ELAPSED_MS"); fi
             MULTIPLOT_BASE_URL=http://127.0.0.1:4173 \
-              pnpm bench:e2e:multiplot-100k 2>&1 | tee artifacts/phase6-browser/multiplot-100k.log
+              node scripts/e2e/multiplot-100k.mjs --output artifacts/phase6-browser/multiplot-100k.json "${args[@]}" 2>&1 | tee artifacts/phase6-browser/multiplot-100k.log
           fi
 
       - name: Preserve browser CI logs

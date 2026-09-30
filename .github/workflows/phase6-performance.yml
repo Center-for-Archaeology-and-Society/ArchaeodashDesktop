@@ -2,6 +2,15 @@ name: Phase 6 numerical performance evidence
 
 on:
   workflow_dispatch:
+    inputs:
+      max_elapsed_seconds:
+        description: Optional whole-benchmark time limit in seconds (blank collects evidence only)
+        type: string
+        default: ''
+      max_peak_rss_bytes:
+        description: Optional process peak resident-memory limit in bytes
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -22,8 +31,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Test measurement and budget helpers
+        run: python -B -m unittest discover -s scripts -p test_benchmark_phase6.py
       - name: Capture release benchmark
-        run: python scripts/benchmark-phase6.py --output artifacts/phase6-benchmark.json
+        shell: bash
+        env:
+          MAX_ELAPSED_SECONDS: ${{ inputs.max_elapsed_seconds }}
+          MAX_PEAK_RSS_BYTES: ${{ inputs.max_peak_rss_bytes }}
+        run: |
+          args=()
+          if [ -n "$MAX_ELAPSED_SECONDS" ]; then args+=(--max-elapsed-seconds "$MAX_ELAPSED_SECONDS"); fi
+          if [ -n "$MAX_PEAK_RSS_BYTES" ]; then args+=(--max-peak-rss-bytes "$MAX_PEAK_RSS_BYTES"); fi
+          python scripts/benchmark-phase6.py --output artifacts/phase6-benchmark.json "${args[@]}"
       - name: Preserve measurements
         if: always()
         uses: actions/upload-artifact@v4
