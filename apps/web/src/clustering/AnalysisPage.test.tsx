@@ -26,10 +26,13 @@ test('Euclidean results hide internal keys and bound the initially rendered tabl
 test('membership fallback visibly labels distances and renders missing cells', () => {
   const html = renderToStaticMarkup(<ResultTable result={{ kind: 'membership', data: {
     analytical_uuids: ['hidden-membership-uuid'], path: 'hidden-path', revision_id: 'hidden-revision', effective_method: 'mahalanobis',
+    requested_method: 'hotellings', fallback_reason: 'hotellings_computation_failed',
     eligible_groups: ['A'], ids: ['sample'], groups: ['A'], probabilities: [[null]],
     best_group: [null], best_value: [null], in_group: [false],
   } }} />);
   assert.match(html, /Mahalanobis distances \(lower is closer\)/);
+  assert.match(html, /role="status">Hotelling probabilities were unavailable/);
+  assert.match(html, /hotellings computation failed/);
   assert.match(html, /Unavailable/);
   assert.doesNotMatch(html, /hidden-path|hidden-revision/);
 });

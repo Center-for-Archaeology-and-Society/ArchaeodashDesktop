@@ -82,6 +82,27 @@ try {
   await page.getByRole('button', { name: 'Run analysis', exact: true }).click();
   await page.getByRole('region', { name: 'Analysis results', exact: true }).waitFor();
   assert.match(await page.locator('body').innerText(), /Source: umap/);
+  // Missing chemistry must expose the real Hotelling-to-Mahalanobis fallback.
+  const fallbackCsv = 'ANID,Group,Ti\n' + Array.from({ length: 12 }, (_, i) =>
+    `F${i},${i < 6 ? 'A' : 'B'},${i === 2 ? '' : i + 1}\n`).join('');
+  const fallbackUpload = await fetch(`${base}/api/v1/files?path=${tag}-fallback.csv`, { method: 'POST', body: fallbackCsv });
+  assert.ok(fallbackUpload.ok, await fallbackUpload.text());
+  const fallbackImport = await api('imports/commit', { source: `${tag}-fallback.csv`, group_column: 'Group', visible_id_column: 'ANID', elemental_columns: ['Ti'], destination_dir: `${tag}-fallback` });
+  const fallbackMerge = await api('groups/merge', { sources: fallbackImport.groups.map(g => g.path), new_group_name: 'Fallback' });
+  const fallbackPath = fallbackMerge.outputs[0].path;
+  const fallbackBefore = await api(`groups/rows?path=${encodeURIComponent(fallbackPath)}`, undefined, 'GET');
+  await page.goto(`${base}/probabilities`);
+  await page.getByLabel(/^Dataset/).selectOption(fallbackPath);
+  await page.getByLabel(/^Method/).selectOption('hotellings');
+  await page.getByRole('button', { name: 'Run analysis', exact: true }).click();
+  const fallbackResult = page.getByRole('region', { name: 'Analysis results', exact: true });
+  await fallbackResult.waitFor();
+  assert.match(await fallbackResult.innerText(), /Mahalanobis distances \(lower is closer\)/);
+  assert.match(await fallbackResult.innerText(), /Hotelling probabilities were unavailable/);
+  assert.match(await fallbackResult.innerText(), /hotellings computation failed/);
+  assert.match(await fallbackResult.innerText(), /12 result rows/);
+  assert.deepEqual(await api(`groups/rows?path=${encodeURIComponent(fallbackPath)}`, undefined, 'GET'), fallbackBefore);
+  for (const row of fallbackBefore.rows) assert.ok(!(await page.locator('body').innerText()).includes(row.analytical_uuid));
   // Record a two-way partition through one reviewed transaction.
   await page.goto(`${base}/cluster`);
   await page.getByLabel(/^Dataset/).selectOption(path);
@@ -103,5 +124,5 @@ try {
   assert.deepEqual(order([...first.rows, ...second.rows]), order(original.rows));
   for (const row of original.rows) assert.ok(!(await page.locator('body').innerText()).includes(row.analytical_uuid));
   assert.deepEqual(pageErrors, []);
-  console.log(JSON.stringify({ status: 'passed', elapsed_ms: Date.now() - begin, cases: ['PCA HCA Manhattan Average', 'transformed ratio PCA and component bounds', 'cut and expanded dendrogram', 'PAM Manhattan diagnostics', 'UMAP cancellation', 'immutable source', 'hidden UUIDs', 'LDA membership and projection groups', 'UMAP nearest matches', 'partition color modes', 'reviewed two-group recording with immutable rows'] }, null, 2));
+  console.log(JSON.stringify({ status: 'passed', elapsed_ms: Date.now() - begin, cases: ['PCA HCA Manhattan Average', 'transformed ratio PCA and component bounds', 'cut and expanded dendrogram', 'PAM Manhattan diagnostics', 'UMAP cancellation', 'immutable source', 'hidden UUIDs', 'LDA membership and projection groups', 'visible Hotelling fallback with immutable source', 'UMAP nearest matches', 'partition color modes', 'reviewed two-group recording with immutable rows'] }, null, 2));
 } catch (error) { console.error(await page.locator('body').innerText()); throw error; } finally { await browser.close(); }

@@ -1751,7 +1751,7 @@ mod tests {
     }
 
     #[test]
-    fn membership_falls_back_to_mahalanobis_and_reports_effective_method() {
+    fn membership_mahalanobis_request_reports_effective_method() {
         let (service, _dir, path) = membership_fixture();
         let response = service
             .membership_probabilities(&MembershipProbabilitiesRequest {
@@ -1774,6 +1774,79 @@ mod tests {
         // diagonal comparison against the own group is well defined but the
         // table shape stays one cell per (row, eligible group).
         assert_eq!(response.probabilities.len(), 24);
+    }
+
+    #[test]
+    fn membership_hotellings_fallback_reports_method_and_matches_mahalanobis() {
+        let (service, dir, path) = membership_fixture();
+        let file = dir.join(&path);
+        let mut source = read_group_file(&file).expect("read fixture");
+        // A real missing measurement triggers the legacy na.fail path for
+        // Hotelling, which retries the complete probability table by
+        // Mahalanobis distance.
+        source.rows[0].elemental[0] = None;
+        write_group_rows(&file, source.profile, &source.rows).expect("write missing value");
+
+        let request = MembershipProbabilitiesRequest {
+            transformation: None,
+            source: AnalysisSourceDto::Elements,
+            pc_count: None,
+            source_group_column: None,
+            umap_seed: None,
+            projection_groups: None,
+            path: path.clone(),
+            columns: vec!["as".into(), "fe".into(), "co".into(), "zn".into()],
+            group_column: "Site".into(),
+            id_column: "anid".into(),
+            method: MembershipMethodDto::Hotellings,
+        };
+        let fallback = service
+            .membership_probabilities(&request)
+            .expect("fallback membership");
+        assert_eq!(fallback.requested_method, MembershipMethodDto::Hotellings);
+        assert_eq!(fallback.effective_method, MembershipMethodDto::Mahalanobis);
+        assert_eq!(
+            fallback.fallback_reason.as_deref(),
+            Some("hotellings_computation_failed")
+        );
+        assert_eq!(fallback.eligible_groups, vec!["A", "B", "C"]);
+        assert_eq!(fallback.probabilities.len(), 24);
+
+        // The fallback returns Mahalanobis probabilities and uses that method
+        // when selecting the best group, matching an explicit request.
+        let mut direct_request = request.clone();
+        direct_request.method = MembershipMethodDto::Mahalanobis;
+        let direct = service
+            .membership_probabilities(&direct_request)
+            .expect("explicit Mahalanobis membership");
+        assert_eq!(fallback.probabilities, direct.probabilities);
+        assert_eq!(fallback.best_group, direct.best_group);
+        assert_eq!(fallback.best_value, direct.best_value);
+
+        // Projection restricts eligible probability columns while preserving
+        // all source rows and marks excluded groups in projection metadata.
+        let mut projected_request = request;
+        projected_request.projection_groups = Some(vec!["A".into(), "C".into()]);
+        let projected = service
+            .membership_probabilities(&projected_request)
+            .expect("projected fallback membership");
+        assert_eq!(projected.effective_method, MembershipMethodDto::Mahalanobis);
+        assert_eq!(
+            projected.fallback_reason.as_deref(),
+            Some("hotellings_computation_failed")
+        );
+        assert_eq!(projected.eligible_groups, vec!["A", "C"]);
+        assert_eq!(projected.probabilities.len(), 24);
+        assert!(projected.probabilities.iter().all(|row| row.len() == 2));
+        assert!(projected
+            .projection_included
+            .iter()
+            .any(|included| !included));
+        assert!(projected
+            .projection_included
+            .iter()
+            .any(|included| *included));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

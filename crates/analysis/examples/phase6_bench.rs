@@ -36,6 +36,16 @@ fn measure<T>(label: &str, f: impl FnOnce() -> T) -> T {
     out
 }
 
+fn cancellation_status(result: &Result<(), DomainError>) -> Result<&'static str, &DomainError> {
+    match result {
+        Err(DomainError::Validation { code, .. }) if code == "analysis_cancelled" => {
+            Ok("cancelled")
+        }
+        Ok(()) => Ok("completed before cancellation"),
+        Err(error) => Err(error),
+    }
+}
+
 fn cancel_probe(
     label: &str,
     work: impl FnOnce(CancellationToken) -> Result<(), DomainError> + Send + 'static,
@@ -47,11 +57,37 @@ fn cancel_probe(
     let requested = Instant::now();
     token.cancel();
     let result = worker.join().expect("worker panicked");
+    let status = cancellation_status(&result)
+        .unwrap_or_else(|error| panic!("{label} cancellation probe failed: {error}"));
     println!(
-        "{label} cancellation latency: {:.3}ms (cancelled={})",
+        "{label} cancellation latency: {:.3}ms ({status})",
         requested.elapsed().as_secs_f64() * 1_000.0,
-        result.is_err()
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancellation_probe_only_counts_the_cancellation_error_code() {
+        assert_eq!(
+            cancellation_status(&Err(DomainError::validation(
+                "analysis_cancelled",
+                "stopped"
+            )))
+            .expect("recognized cancellation"),
+            "cancelled"
+        );
+        assert_eq!(
+            cancellation_status(&Ok(())).expect("completed result"),
+            "completed before cancellation"
+        );
+        assert!(matches!(cancellation_status(&Err(DomainError::validation(
+            "cluster_resource_limit",
+            "too large"
+        ))), Err(DomainError::Validation { code, .. }) if code == "cluster_resource_limit"));
+    }
 }
 
 fn main() {
