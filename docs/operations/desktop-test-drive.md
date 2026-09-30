@@ -97,3 +97,32 @@ select-popup item terminated a WebKit content process. The subsequent ordinary
 pointer/keyboard selection and the save/reopen walkthrough passed without that
 failure. This initial smoke result is not a native stability or accessibility
 certification; wider native and cross-platform testing remains necessary.
+
+## Phase 6 native assignment check — prepared, not yet verified
+
+Use a separate disposable project so the basic import/export walkthrough stays
+unchanged. Run these from the repository root; choose another new path if this
+one already exists:
+
+```sh
+scripts/prepare-desktop-test-project.sh /tmp/archaeodash-desktop-assignment-drive
+scripts/run-desktop.sh
+```
+
+In the native app, open that project and:
+
+1. Open **Visualize & Assign** and select `groups/D1.parquet`.
+2. Lasso a single visible point. Confirm the status reads `1 selected` and note
+   its visible sample ID and measured values in **Selected rows**. If the lasso
+   selects more than one row, clear the selection and retry.
+3. Set **Target group** to `groups/D2.parquet` and choose **Assign 1 unit**.
+   Confirm the app reports **Assignment committed** and clears the selection.
+4. Open the source and destination in **Explore**. Verify the sample ID is gone
+   from D1, appears once in D2, and retains the measured values recorded before
+   the move. Confirm D1 lost one row and D2 gained one row.
+5. Close and reopen the project, then repeat the source/destination checks.
+
+This is a prepared manual acceptance path, not evidence that native assignment
+has passed. Record the OS, result, and any failure before treating the broader
+native assignment gate as accepted. Automated browser assignment coverage is
+separate and does not verify the Tauri WebView path.
