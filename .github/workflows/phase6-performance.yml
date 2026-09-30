@@ -1,0 +1,33 @@
+name: Phase 6 numerical performance evidence
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    name: Numerical timing and memory (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Capture release benchmark
+        run: python scripts/benchmark-phase6.py --output artifacts/phase6-benchmark.json
+      - name: Preserve measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase6-performance-${{ matrix.os }}-${{ github.run_id }}
+          path: artifacts/phase6-benchmark.json
+          if-no-files-found: warn
