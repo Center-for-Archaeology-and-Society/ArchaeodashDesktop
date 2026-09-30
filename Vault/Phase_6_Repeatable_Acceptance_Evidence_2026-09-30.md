@@ -26,4 +26,7 @@ process peak RSS. This single run includes process launch overhead and has no
 accepted threshold. Success, nonzero exit, and launch-failure capture checks
 passed. The existing benchmark cancellation text is preserved verbatim; its
 `cancelled` flag means an error was returned, not a separately checked error code.
-Browser integration verification is pending.
+The API example and production web build passed. The real browser flow passed
+in 3,360 ms, and the optional multiplot check passed in 3,016 ms with all 99,960
+points (8,330 per panel). YAML parsing, Node syntax checks, and whitespace checks
+passed. CI execution on hosted runners remains pending.

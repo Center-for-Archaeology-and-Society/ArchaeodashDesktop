@@ -1,0 +1,98 @@
+name: Phase 6 browser E2E
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_multiplot_benchmark:
+        description: Run the 15,000-row / 99,960-point interactive multiplot benchmark
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  phase6-browser:
+    name: Real API and production preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build API example and production web app
+        run: |
+          cargo build --locked -p archaeodash-api --example local
+          pnpm --filter @archaeodash/web build
+
+      - name: Install Chromium for Playwright
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run Phase 6 browser flow${{ inputs.run_multiplot_benchmark && ' and multiplot benchmark' || '' }}
+        env:
+          RUN_MULTIPLOT_BENCHMARK: ${{ inputs.run_multiplot_benchmark || 'false' }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/phase6-browser
+          project_dir="$(mktemp -d)"
+          (exec ./target/debug/examples/local "$project_dir") >artifacts/phase6-browser/api.log 2>&1 &
+          api_pid=$!
+          (cd apps/web && exec node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port 4173 --strictPort) >artifacts/phase6-browser/web.log 2>&1 &
+          web_pid=$!
+          cleanup() {
+            kill "$web_pid" "$api_pid" 2>/dev/null || true
+            wait "$web_pid" "$api_pid" 2>/dev/null || true
+            rm -rf "$project_dir"
+          }
+          trap cleanup EXIT
+
+          ready=false
+          for attempt in $(seq 1 60); do
+            if kill -0 "$api_pid" 2>/dev/null && kill -0 "$web_pid" 2>/dev/null \
+              && curl --fail --silent --max-time 1 http://127.0.0.1:8787/healthz >/dev/null \
+              && curl --fail --silent --max-time 1 http://127.0.0.1:4173/ >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            echo "API or production preview did not become ready within the bounded readiness window" >&2
+            cat artifacts/phase6-browser/api.log artifacts/phase6-browser/web.log >&2
+            exit 1
+          fi
+
+          PHASE6_BASE_URL=http://127.0.0.1:4173 \
+            pnpm test:e2e:phase6 2>&1 | tee artifacts/phase6-browser/phase6.log
+
+          if [ "$RUN_MULTIPLOT_BENCHMARK" = true ]; then
+            MULTIPLOT_BASE_URL=http://127.0.0.1:4173 \
+              pnpm bench:e2e:multiplot-100k 2>&1 | tee artifacts/phase6-browser/multiplot-100k.log
+          fi
+
+      - name: Preserve browser CI logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase6-browser-${{ github.run_id }}
+          path: artifacts/phase6-browser/
+          if-no-files-found: ignore

@@ -159,7 +159,44 @@ not a portable threshold.
 - This re-run covers the currently registered Section 15.4 procedure 9–11
   goldens and the available procedure 13 model/component tests. It does not run
   the entire 14-procedure suite through one production-like end-to-end path.
-- Broader native workflow/assignment acceptance and cross-platform timing/peak-memory acceptance remain open; the desktop test-drive guide now includes a manual one-unit move check for the Tauri WebView, but it has not been run. the initial native smoke workflow passed in the linked test-drive checkpoint. Procedure 13 has two local browser measurements above, with no portable timing or peak-memory threshold.
+- Broader native workflow/assignment acceptance and cross-platform timing/peak-memory acceptance remain open; the desktop test-drive guide now includes a manual one-unit move check for the Tauri WebView, but it has not been run. The initial native smoke workflow passed in the linked test-drive checkpoint. Procedure 13 has two local browser measurements above, with no portable timing or peak-memory threshold.
 - Filesystem reads, multi-group planning snapshots, project candidate scans, and application import publication now coordinate with store transactions through `.archaeodash/project.lock`. A child-process regression confirms reads wait behind a store-held exclusive lock on Linux. This protects cooperating application/store users; uncoordinated external-writer acceptance remains unresolved, and footer resource preflight does not remove races with a program that ignores the lock.
 - Service limits are fixed at 1,000 rows for pairwise clustering workloads;
   the wider backend probe does not change or validate that service policy.
+
+## Repeatable CI evidence (2026-09-30)
+
+The main CI workflow now runs the numerical analysis and golden-parity crates
+on Ubuntu, macOS, and Windows. The separate `Phase 6 browser E2E` workflow
+builds the API harness and production web app, starts a disposable project,
+waits for readiness, and runs the eleven-case browser flow on Linux. Its manual
+workflow input also enables the 99,960-point multiplot benchmark. Logs are
+retained as workflow artifacts, including on failure.
+
+For numerical timing and process peak memory, run:
+
+```sh
+python3 scripts/benchmark-phase6.py --output /tmp/phase6-benchmark.json
+```
+
+The runner builds the release example before timing it. JSON retains environment,
+build status, benchmark output, elapsed time, exit status, and process peak RSS
+where available. This measures the complete numerical benchmark process, not
+individual algorithms, the native app, file loading, IPC, or browser memory.
+Peak RSS can include the forked Python launcher before exec. Cancellation text
+is retained verbatim from the example; its error flag is not an independent
+assertion of the cancellation error code.
+Windows peak memory is explicitly unavailable; no value is inferred from another
+platform. The `Phase 6 numerical performance evidence` workflow is manually
+triggered and captures a separate artifact on all three desktop CI platforms.
+
+These workflows are infrastructure for evidence collection. Hosted runs are
+pending; timing and memory thresholds have not been accepted. The native
+WebView assignment gate remains separate and unverified.
+
+Local integration verification on 2026-09-30 passed the API example build,
+production web build, and eleven-case browser flow (3,360 ms). The third local
+multiplot run rendered all 99,960 points in 3,016 ms. The numerical capture
+completed in 1.181 seconds with process peak RSS of 19,386,368 bytes on Linux;
+these are observations, not accepted performance budgets. Process success,
+nonzero-exit, and failed-launch capture checks also passed.

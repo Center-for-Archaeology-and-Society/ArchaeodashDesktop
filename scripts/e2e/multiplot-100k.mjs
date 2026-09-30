@@ -62,7 +62,7 @@ try {
   await page.waitForFunction(() => {
     const panels = [...document.querySelectorAll('.multiplot-panel-plotly')];
     return panels.length === 12 && panels.every((panel) => panel.dataset.renderState === 'complete');
-  }, { timeout: 180_000 });
+  }, undefined, { timeout: 180_000 });
   const result = await page.locator('.multiplot-panel-plotly').evaluateAll((panels) => ({
     panelCount: panels.length,
     pointCount: panels.reduce((sum, panel) => {
