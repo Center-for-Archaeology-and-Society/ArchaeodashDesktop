@@ -366,7 +366,9 @@ mod tests {
         assert_eq!(hooper.rows[0].descriptive[1].as_deref(), Some("[blank]"));
 
         // Scan discovers both as ready-to-add, sorted by path. `scan_project`
-        // returns absolute paths under the project root.
+        // returns absolute canonical paths under the project root; canonicalize
+        // the expectation because macOS /tmp is a symlink (/var -> /private/var).
+        let root = std::fs::canonicalize(dir.path()).expect("canonical project root");
         let scanned = service.scan().expect("scan");
         assert_eq!(scanned.len(), 2);
         assert_eq!(scanned[0].path, root.join("groups/Baca.parquet"));
