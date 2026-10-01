@@ -40,6 +40,28 @@ Native Tauri acceptance on macOS and Windows desktop builds and an agreed
 portable performance budget remain open. Hosted numerical, browser, lock,
 and lint/test evidence is no longer a blocker.
 
+## Cross-platform desktop workspace tests (2026-10-01)
+
+A new `Desktop workspace tests` CI matrix runs the full workspace — including
+the Tauri desktop shell compile against `web/dist` — on macOS and Windows.
+Two real portability defects surfaced and were fixed:
+
+- `import.rs` compared `FsGroupFileStore` scan paths against a non-canonical
+  tempdir path; macOS resolves `/var/folders` through `/private/var`, so the
+  store's canonicalized root no longer matched. The test now canonicalizes the
+  expected root (`4a85d02`).
+- `tauri-build` requires `icons/icon.ico` to generate the Windows resource
+  file; a multi-size ICO (16–256 px) derived from the existing placeholder
+  color was added (`4a85d02`).
+
+After the fixes, CI on `4a85d02` is fully green: all three platforms pass
+numerical parity, lock regressions, and the desktop workspace tests, plus
+Rust fmt/clippy/tests on Linux and the TypeScript build/tests.
+
+This is compile-and-test evidence only; interactive native assignment
+walkthroughs on macOS/Windows and a ratified portable performance budget
+remain open Phase 6 gates.
+
 Related: [[Phase_6_Repeatable_Acceptance_Evidence_2026-09-30]],
 [[Phase_6_Final_Acceptance_Work_2026-09-30]],
 [[Phase_6_Remaining_Controls_Jobs_2026-09-28]].

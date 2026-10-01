@@ -190,9 +190,16 @@ Windows peak memory is explicitly unavailable; no value is inferred from another
 platform. The `Phase 6 numerical performance evidence` workflow is manually
 triggered and captures a separate artifact on all three desktop CI platforms.
 
-These workflows are infrastructure for evidence collection. Hosted runs are
-pending; timing and memory thresholds have not been accepted. The native
-WebView assignment gate is separate; the later Linux checkpoint below now verifies it on this host.
+These workflows are infrastructure for evidence collection. Hosted runs on
+`4a85d02` are green across all jobs: numerical parity and lock regressions on
+Ubuntu/macOS/Windows, Rust fmt/clippy/full workspace tests (with web assets
+built first and runner disk freed), TypeScript build/tests, and the browser
+E2E flow. A `Desktop workspace tests` matrix now compiles and tests the full
+workspace, including the Tauri desktop shell, on macOS and Windows; it exposed
+and fixed a macOS canonical-path comparison in the import scan test and a
+missing Windows `icon.ico` resource. Timing and memory thresholds have not
+been accepted. The native WebView assignment gate is separate; the later Linux
+checkpoint below verifies it on this host.
 
 Local integration verification on 2026-09-30 passed the API example build,
 production web build, and browser acceptance flow (3,360 ms). The third local
