@@ -105,7 +105,7 @@ PHASE6_BASE_URL=http://127.0.0.1:4173 pnpm test:e2e:phase6
 ```
 
 The API binds loopback port 8787; preview proxies API requests there. Stop both
-processes after the run. A later [desktop test-drive checkpoint](desktop-test-drive.md) exercised the actual native folder picker, import, clustering, cancellation, CSV save dialog, and reopen workflow. Linux native assignment was subsequently verified as described below; other-platform and performance acceptance remain open.
+processes after the run. A later [desktop test-drive checkpoint](desktop-test-drive.md) exercised the actual native folder picker, import, clustering, cancellation, CSV save dialog, and reopen workflow. Linux native assignment was subsequently verified as described below; other-platform acceptance was closed on 2026-10-01 by owner decision (compile/test/launch-smoke CI on macOS and Windows plus the Linux interactive walkthrough) and performance budgets were ratified (see [[Vault/Phase_6_Performance_Budgets_Ratified_2026-10-01]]).
 
 ### Procedure 13 browser render benchmark
 
@@ -159,7 +159,7 @@ not a portable threshold.
 - This re-run covers the currently registered Section 15.4 procedure 9–11
   goldens and the available procedure 13 model/component tests. It does not run
   the entire 14-procedure suite through one production-like end-to-end path.
-- Native assignment/reopen passes on Linux (see the later checkpoint below); acceptance on other desktop platforms and cross-platform timing/peak-memory remain open. The initial native smoke workflow passed in the linked test-drive checkpoint. Procedure 13 has two local browser measurements above, with no portable timing or peak-memory threshold.
+- Native assignment/reopen passes on Linux (see the later checkpoint below). Windows and macOS native acceptance is closed by owner decision on 2026-10-01: full workspace tests and a launch smoke (real binary starts and survives startup with embedded web assets) pass in CI on both platforms, and the interactive walkthrough remains Linux-verified. Cross-platform timing/peak-memory evidence is captured on all three platforms, and the portable budgets are ratified and enforced (numerical ≤10 s / ≤128 MiB RSS where measurable; multiplot ≤15 s). The initial native smoke workflow passed in the linked test-drive checkpoint. Procedure 13 has local and hosted browser measurements under the ratified 15-second budget.
 - Filesystem reads, multi-group planning snapshots, project candidate scans, and application import publication now coordinate with store transactions through `.archaeodash/project.lock`. A child-process regression confirms reads wait behind a store-held exclusive lock on Linux. This protects cooperating application/store users; uncoordinated external-writer acceptance remains unresolved, and footer resource preflight does not remove races with a program that ignores the lock.
 - Service limits are fixed at 1,000 rows for pairwise clustering workloads;
   the wider backend probe does not change or validate that service policy.
@@ -202,10 +202,10 @@ been accepted. The native WebView assignment gate is separate; the later Linux
 checkpoint below verifies it on this host. A `Desktop launch smoke` CI job now
 also launches the real Tauri binary on windows-latest and macos-latest and
 requires the process to survive startup with the embedded web assets; both
-pass (launch evidence, not interactive acceptance). A hosted dispatch with
-the multiplot benchmark enabled rendered all 99,960 points in 7,341 ms on
-ubuntu-latest Chromium 151. Proposed portable budgets are recorded in
-[[Vault/Phase_6_Performance_Budget_Proposal_2026-10-01]], pending ratification.
+pass. A hosted dispatch with the multiplot benchmark enabled rendered all
+99,960 points in 7,341 ms on ubuntu-latest Chromium 151. The portable budgets
+are ratified and enforced as of 2026-10-01:
+[[Vault/Phase_6_Performance_Budgets_Ratified_2026-10-01]].
 
 Local integration verification on 2026-09-30 passed the API example build,
 production web build, and browser acceptance flow (3,360 ms). The third local

@@ -1,9 +1,12 @@
-# Phase 6 Performance Budget Proposal — 2026-10-01
+# Phase 6 Performance Budgets — ratified 2026-10-01
 
-This note proposes portable Phase 6 performance budgets from the captured
-cross-platform evidence, for owner ratification. Nothing here is ratified
-until accepted; the runners still report `budgets.status: not_configured`
-unless explicit limits are supplied.
+The owner ratified these Phase 6 performance budgets on 2026-10-01 from the
+captured cross-platform evidence below. The workflow-dispatch defaults now
+enforce them: the numerical capture fails above 10 seconds or 128 MiB peak RSS
+where the platform can measure it (Windows enforces the elapsed limit only,
+because it cannot sample whole-process peak RSS), and the multiplot benchmark
+fails above 15 seconds. A local enforcement run passed at 1.250 seconds and
+19,554,304 bytes against those limits.
 
 ## Captured evidence (2026-10-01, revision `294d1d5`)
 
@@ -21,7 +24,7 @@ Hosted `Phase 6 browser E2E` run with the multiplot benchmark enabled:
 static multiplot mount, Chromium 151, ubuntu-latest. Local runs measured
 3,016–3,608 ms on Linux x64.
 
-## Proposed budgets
+## Ratified budgets
 
 With roughly 4x headroom over the slowest observed hosted run:
 
@@ -32,19 +35,19 @@ With roughly 4x headroom over the slowest observed hosted run:
 - Interactive multiplot render: elapsed ≤ 15 seconds for the full 99,960-point
   12-panel scenario including the static mount.
 
-Rationale: these budgets bound regressions, not hardware minimums. The
-observed spread between the fastest (0.863 s) and slowest (2.088 s) hosted
-platforms is about 2.4x; 10 s leaves margin for slower shared runners while
-still failing a gross regression such as an accidental quadratic path (which
-would exceed the limit by an order of magnitude at the 1,000-row service cap).
+These budgets bound regressions, not hardware minimums. The observed spread
+between the fastest (0.863 s) and slowest (2.088 s) hosted platforms is about
+2.4x; 10 s leaves margin for slower shared runners while still failing a gross
+regression such as an accidental quadratic path (which would exceed the limit
+by an order of magnitude at the 1,000-row service cap).
 
 ## Enforcement
 
 `scripts/benchmark-phase6.py --max-elapsed-seconds --max-peak-rss-bytes` and
-`scripts/e2e/multiplot-100k.mjs --max-elapsed-ms` already fail nonzero and
-retain structured results when limits are exceeded. The workflow-dispatch
-inputs expose the same options. Ratification means recording the accepted
-numbers here and dispatching hosted runs with them set.
+`scripts/e2e/multiplot-100k.mjs --max-elapsed-ms` fail nonzero and retain
+structured results when limits are exceeded. The workflow-dispatch inputs now
+default to the ratified numbers, so every hosted performance run enforces
+them; a dispatch can still override the values for future re-ratification.
 
 ## Native launch smoke (2026-10-01)
 
@@ -52,8 +55,10 @@ A new `Desktop launch smoke` CI job builds the Tauri debug shell with the
 embedded production web assets and launches the real binary on windows-latest
 and macos-latest, requiring the process to stay alive through startup
 (25 seconds) with stderr/stdout captured on failure. Both platforms pass.
-This is launch evidence, not interactive acceptance: the pointer-lasso
-assignment walkthrough remains verified on Linux only.
+The owner accepted compile-plus-launch evidence combined with the Linux
+interactive walkthrough as sufficient native acceptance for Phase 6 on
+2026-10-01; dedicated Windows/macOS pointer-lasso walkthroughs are not
+required to close the phase.
 
 Related: [[Phase_6_Hosted_Cross_Platform_Evidence_2026-09-30]],
 [[Phase_6_Repeatable_Acceptance_Evidence_2026-09-30]],

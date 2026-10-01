@@ -62,6 +62,13 @@ This is compile-and-test evidence only; interactive native assignment
 walkthroughs on macOS/Windows and a ratified portable performance budget
 remain open Phase 6 gates.
 
+Update 2026-10-01: a `Desktop launch smoke` CI job now also starts the real
+Tauri binary on macOS and Windows and requires it to survive startup. The
+owner ratified the portable performance budgets (numerical ≤10 s / ≤128 MiB
+RSS where measurable, multiplot ≤15 s) and accepted the native-platform
+evidence, closing the remaining Phase 6 gates. See
+[[Phase_6_Performance_Budgets_Ratified_2026-10-01]].
+
 Related: [[Phase_6_Repeatable_Acceptance_Evidence_2026-09-30]],
 [[Phase_6_Final_Acceptance_Work_2026-09-30]],
 [[Phase_6_Remaining_Controls_Jobs_2026-09-28]].

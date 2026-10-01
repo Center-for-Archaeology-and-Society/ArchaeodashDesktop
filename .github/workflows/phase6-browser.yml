@@ -12,9 +12,9 @@ on:
         required: false
         default: false
       max_multiplot_elapsed_ms:
-        description: Optional measured render-time limit in ms (requires benchmark enabled)
+        description: Measured render-time limit in ms (ratified budget 15000)
         type: string
-        default: ''
+        default: '15000'
 
 permissions:
   contents: read

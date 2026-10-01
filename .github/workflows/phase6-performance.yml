@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       max_elapsed_seconds:
-        description: Optional whole-benchmark time limit in seconds (blank collects evidence only)
+        description: Whole-benchmark time limit in seconds (ratified budget 10)
         type: string
-        default: ''
+        default: '10'
       max_peak_rss_bytes:
-        description: Optional process peak resident-memory limit in bytes
+        description: Process peak resident-memory limit in bytes (ratified budget 128 MiB; Windows cannot measure peak RSS)
         type: string
-        default: ''
+        default: '134217728'
 
 permissions:
   contents: read
@@ -37,7 +37,10 @@ jobs:
         shell: bash
         env:
           MAX_ELAPSED_SECONDS: ${{ inputs.max_elapsed_seconds }}
-          MAX_PEAK_RSS_BYTES: ${{ inputs.max_peak_rss_bytes }}
+          # Windows cannot sample whole-process peak RSS; requesting a memory
+          # limit there would fail on the missing measurement, so the ratified
+          # Windows budget is the elapsed limit only.
+          MAX_PEAK_RSS_BYTES: ${{ runner.os == 'Windows' && '' || inputs.max_peak_rss_bytes }}
         run: |
           args=()
           if [ -n "$MAX_ELAPSED_SECONDS" ]; then args+=(--max-elapsed-seconds "$MAX_ELAPSED_SECONDS"); fi
