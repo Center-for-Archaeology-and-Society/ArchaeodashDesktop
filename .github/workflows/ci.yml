@@ -108,6 +108,81 @@ jobs:
       - name: Test full workspace including the Tauri desktop shell
         run: cargo test --workspace
 
+  desktop-launch-smoke:
+    name: Desktop launch smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            binary: target/debug/archaeodash-desktop
+          - os: windows-latest
+            binary: target/debug/archaeodash-desktop.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Free runner disk space
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dirs = @('C:\Program Files\Android', 'C:\Program Files (x86)\Android', 'C:\HostedToolCache\windows\CodeQL')
+          foreach ($d in $dirs) {
+            if (Test-Path $d) { Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue }
+          }
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Build web assets embedded in the desktop shell
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm -r build
+      - name: Build the desktop binary
+        run: cargo build --locked -p archaeodash-desktop-app
+      - name: Launch smoke (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/desktop-smoke.log"
+          "./${{ matrix.binary }}" >"$log" 2>&1 &
+          pid=$!
+          sleep 25
+          if ! kill -0 "$pid" 2>/dev/null; then
+            echo "Desktop process exited during startup" >&2
+            cat "$log" >&2
+            exit 1
+          fi
+          echo "Desktop process stayed alive for 25 seconds; terminating."
+          kill "$pid" 2>/dev/null || true
+          for attempt in $(seq 1 10); do
+            kill -0 "$pid" 2>/dev/null || exit 0
+            sleep 1
+          done
+          kill -9 "$pid" 2>/dev/null || true
+          cat "$log"
+      - name: Launch smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'desktop-smoke.log'
+          $err = Join-Path $env:RUNNER_TEMP 'desktop-smoke.err.log'
+          $p = Start-Process -FilePath '${{ matrix.binary }}' -PassThru -RedirectStandardOutput $log -RedirectStandardError $err
+          Start-Sleep -Seconds 25
+          if ($p.HasExited) {
+            Write-Host '::error::Desktop process exited during startup'
+            Get-Content $log, $err
+            exit 1
+          }
+          Write-Host 'Desktop process stayed alive for 25 seconds; terminating.'
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Get-Content $log, $err
+
   node:
     name: TypeScript build/test
     runs-on: ubuntu-latest
