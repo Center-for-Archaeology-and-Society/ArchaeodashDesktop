@@ -1,1 +1,4 @@
 *.sh text eol=lf
+# Byte-exact golden/parity fixtures must not be line-ending converted on
+# Windows checkouts (golden #14 asserts literal byte equality).
+fixtures/** -text
