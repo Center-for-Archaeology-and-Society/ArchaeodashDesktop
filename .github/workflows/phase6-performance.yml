@@ -37,14 +37,16 @@ jobs:
         shell: bash
         env:
           MAX_ELAPSED_SECONDS: ${{ inputs.max_elapsed_seconds }}
-          # Windows cannot sample whole-process peak RSS; requesting a memory
-          # limit there would fail on the missing measurement, so the ratified
-          # Windows budget is the elapsed limit only.
-          MAX_PEAK_RSS_BYTES: ${{ runner.os == 'Windows' && '' || inputs.max_peak_rss_bytes }}
+          MAX_PEAK_RSS_BYTES: ${{ inputs.max_peak_rss_bytes }}
         run: |
           args=()
           if [ -n "$MAX_ELAPSED_SECONDS" ]; then args+=(--max-elapsed-seconds "$MAX_ELAPSED_SECONDS"); fi
-          if [ -n "$MAX_PEAK_RSS_BYTES" ]; then args+=(--max-peak-rss-bytes "$MAX_PEAK_RSS_BYTES"); fi
+          # Windows cannot sample whole-process peak RSS; the ratified Windows
+          # budget is the elapsed limit only, and requesting an unmeasurable
+          # memory limit correctly fails the check.
+          if [ -n "$MAX_PEAK_RSS_BYTES" ] && [ "$RUNNER_OS" != "Windows" ]; then
+            args+=(--max-peak-rss-bytes "$MAX_PEAK_RSS_BYTES")
+          fi
           python scripts/benchmark-phase6.py --output artifacts/phase6-benchmark.json "${args[@]}"
       - name: Preserve measurements
         if: always()
