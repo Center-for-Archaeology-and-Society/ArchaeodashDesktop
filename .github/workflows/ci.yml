@@ -74,6 +74,40 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  desktop-cross:
+    name: Desktop workspace tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Free runner disk space
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dirs = @('C:\Program Files\Android', 'C:\Program Files (x86)\Android', 'C:\HostedToolCache\windows\CodeQL')
+          foreach ($d in $dirs) {
+            if (Test-Path $d) { Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue }
+          }
+          Get-PSDrive C | Select-Object Used,Free
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Build web assets for the desktop shell
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm -r build
+      - name: Test full workspace including the Tauri desktop shell
+        run: cargo test --workspace
+
   node:
     name: TypeScript build/test
     runs-on: ubuntu-latest
