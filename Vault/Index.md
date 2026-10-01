@@ -95,3 +95,5 @@ Up: [[../../Vault/Index]]
 - [[Phase_6_Final_Acceptance_Work_2026-09-30]]
 
 - [[Phase_6_Hosted_Cross_Platform_Evidence_2026-09-30]]
+
+- [[Phase_6_Performance_Budget_Proposal_2026-10-01]]

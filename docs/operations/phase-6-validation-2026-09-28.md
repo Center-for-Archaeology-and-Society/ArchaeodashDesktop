@@ -199,7 +199,13 @@ workspace, including the Tauri desktop shell, on macOS and Windows; it exposed
 and fixed a macOS canonical-path comparison in the import scan test and a
 missing Windows `icon.ico` resource. Timing and memory thresholds have not
 been accepted. The native WebView assignment gate is separate; the later Linux
-checkpoint below verifies it on this host.
+checkpoint below verifies it on this host. A `Desktop launch smoke` CI job now
+also launches the real Tauri binary on windows-latest and macos-latest and
+requires the process to survive startup with the embedded web assets; both
+pass (launch evidence, not interactive acceptance). A hosted dispatch with
+the multiplot benchmark enabled rendered all 99,960 points in 7,341 ms on
+ubuntu-latest Chromium 151. Proposed portable budgets are recorded in
+[[Vault/Phase_6_Performance_Budget_Proposal_2026-10-01]], pending ratification.
 
 Local integration verification on 2026-09-30 passed the API example build,
 production web build, and browser acceptance flow (3,360 ms). The third local
