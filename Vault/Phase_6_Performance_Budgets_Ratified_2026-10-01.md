@@ -49,6 +49,14 @@ structured results when limits are exceeded. The workflow-dispatch inputs now
 default to the ratified numbers, so every hosted performance run enforces
 them; a dispatch can still override the values for future re-ratification.
 
+First budget-enforced hosted run on `5cceb57`: all three platforms passed —
+ubuntu 1.557 s / 22,532,096 bytes, macOS arm64 1.752 s / 33,177,600 bytes,
+Windows AMD64 2.786 s with the memory check correctly skipped (elapsed-only).
+The first enforced dispatch caught a workflow bug: an `&&`-`||` conditional
+passed the memory limit through on Windows, where unmeasurable peak RSS
+correctly fails the check; the argument is now gated on `RUNNER_OS` in the
+shell.
+
 ## Native launch smoke (2026-10-01)
 
 A new `Desktop launch smoke` CI job builds the Tauri debug shell with the
