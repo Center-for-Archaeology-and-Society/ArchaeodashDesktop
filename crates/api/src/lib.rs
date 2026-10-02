@@ -49,6 +49,7 @@ use axum::{Json, Router};
 
 pub mod auth;
 pub mod job_events;
+pub mod security_headers;
 
 /// Shared adapter state: one project-scoped import, group, source-file,
 /// transformation, ordination, cluster, and export service.

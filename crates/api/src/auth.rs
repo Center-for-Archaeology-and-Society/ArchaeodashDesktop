@@ -1186,7 +1186,7 @@ mod tests {
             .await
             .expect("body");
         let parsed: SessionResponse = serde_json::from_slice(&bytes).expect("json");
-        assert_eq!(parsed.authenticated, false);
+        assert!(!parsed.authenticated);
 
         // Old password no longer works; new one does.
         let old_login = post_json(
