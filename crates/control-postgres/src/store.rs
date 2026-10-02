@@ -196,6 +196,39 @@ impl ControlStore {
         .await?;
         Ok(result.rows_affected() == 1)
     }
+    /// Records a rehashed password after a successful login against a legacy
+    /// or below-policy hash (Section 11.1 rehash-on-login). Does not touch
+    /// verification state.
+    pub async fn mark_email_verified(
+        &self,
+        user_id: Uuid,
+        now: SystemTime,
+    ) -> Result<bool, ControlError> {
+        let result =
+            sqlx::query("UPDATE users SET email_verified_at = $2, updated_at = $2 WHERE id = $1")
+                .bind(user_id)
+                .bind(to_offset(now))
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected() == 1)
+    }
+    /// or below-policy hash (Section 11.1 rehash-on-login). Does not touch
+    /// verification state.
+    pub async fn update_password_hash(
+        &self,
+        user_id: Uuid,
+        password_hash: &str,
+        now: SystemTime,
+    ) -> Result<bool, ControlError> {
+        let result =
+            sqlx::query("UPDATE users SET password_hash = $2, updated_at = $3 WHERE id = $1")
+                .bind(user_id)
+                .bind(password_hash)
+                .bind(to_offset(now))
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected() == 1)
+    }
 
     /// Creates a session for the digest of a freshly presented opaque token.
     pub async fn create_session(

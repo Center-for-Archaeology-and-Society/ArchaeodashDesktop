@@ -9,6 +9,8 @@ description = "Axum routes, middleware, and problem responses."
 
 [dependencies]
 archaeodash-application = { workspace = true }
+archaeodash-auth = { workspace = true }
+archaeodash-control-postgres = { workspace = true }
 archaeodash-contracts = { workspace = true }
 archaeodash-data-io = { workspace = true }
 archaeodash-domain = { workspace = true }
@@ -20,11 +22,14 @@ tower-http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 futures-util = "0.3"
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 http-body-util = "0.1"
 tempfile = "3"
-uuid = { workspace = true }
 
 [lints]
 workspace = true

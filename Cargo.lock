@@ -83,7 +83,9 @@ name = "archaeodash-api"
 version = "0.1.0"
 dependencies = [
  "archaeodash-application",
+ "archaeodash-auth",
  "archaeodash-contracts",
+ "archaeodash-control-postgres",
  "archaeodash-data-io",
  "archaeodash-domain",
  "archaeodash-storage",
@@ -92,7 +94,9 @@ dependencies = [
  "http-body-util",
  "serde",
  "serde_json",
+ "sqlx",
  "tempfile",
+ "thiserror 2.0.20",
  "tokio",
  "tower",
  "tower-http 0.7.1",

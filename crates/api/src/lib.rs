@@ -47,6 +47,7 @@ use axum::response::IntoResponse;
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 
+pub mod auth;
 pub mod job_events;
 
 /// Shared adapter state: one project-scoped import, group, source-file,

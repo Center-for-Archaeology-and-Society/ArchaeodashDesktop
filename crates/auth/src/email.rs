@@ -12,7 +12,7 @@
 //! - The sendmail adapter never passes recipient addresses through a shell;
 //!   the message is written to the command's stdin.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 /// A plain-text account email (verification link, reset link, notice).
@@ -48,12 +48,16 @@ pub enum SendOutcome {
     Stored,
 }
 
-/// Delivery abstraction over the three Section 11.1 adapters.
+/// Delivery abstraction over the three Section 11.1 adapters. Object-safe
+/// via boxed futures so configuration picks an adapter at runtime
+/// (`Arc<dyn EmailSender>`).
 pub trait EmailSender: Send + Sync {
     fn send(
         &self,
         message: EmailMessage,
-    ) -> impl std::future::Future<Output = Result<SendOutcome, EmailError>> + Send;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<SendOutcome, EmailError>> + Send + '_>,
+    >;
 }
 
 /// Masks the local part of an email for logs: `user@example.com` becomes
@@ -101,9 +105,9 @@ pub fn build_action_link(
 /// Development sink: stores messages for inspection; never delivers.
 /// Construction is explicit so production configurations cannot pick it up
 /// by accident.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct DevSinkEmailSender {
-    stored: Mutex<Vec<EmailMessage>>,
+    stored: Arc<Mutex<Vec<EmailMessage>>>,
 }
 
 impl DevSinkEmailSender {
@@ -121,15 +125,22 @@ impl DevSinkEmailSender {
 }
 
 impl EmailSender for DevSinkEmailSender {
-    async fn send(&self, message: EmailMessage) -> Result<SendOutcome, EmailError> {
-        if message.to.is_empty() {
-            return Err(EmailError::InvalidAddress);
-        }
-        self.stored
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(message);
-        Ok(SendOutcome::Stored)
+    fn send(
+        &self,
+        message: EmailMessage,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<SendOutcome, EmailError>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            if message.to.is_empty() {
+                return Err(EmailError::InvalidAddress);
+            }
+            self.stored
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(message);
+            Ok(SendOutcome::Stored)
+        })
     }
 }
 
@@ -173,48 +184,55 @@ impl Default for SendmailEmailSender {
 }
 
 impl EmailSender for SendmailEmailSender {
-    async fn send(&self, message: EmailMessage) -> Result<SendOutcome, EmailError> {
-        if message.to.is_empty() {
-            return Err(EmailError::InvalidAddress);
-        }
-        let rendered = Self::render_rfc5322(&message);
-        let mut child = tokio::process::Command::new(&self.command)
-            .args(&self.args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| EmailError::SendFailed {
+    fn send(
+        &self,
+        message: EmailMessage,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<SendOutcome, EmailError>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            if message.to.is_empty() {
+                return Err(EmailError::InvalidAddress);
+            }
+            let rendered = Self::render_rfc5322(&message);
+            let mut child = tokio::process::Command::new(&self.command)
+                .args(&self.args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|e| EmailError::SendFailed {
+                    mechanism: "sendmail",
+                    detail: Some(Box::new(e)),
+                })?;
+            let Some(mut stdin) = child.stdin.take() else {
+                return Err(EmailError::SendFailed {
+                    mechanism: "sendmail",
+                    detail: None,
+                });
+            };
+            tokio::io::AsyncWriteExt::write_all(&mut stdin, rendered.as_bytes())
+                .await
+                .map_err(|e| EmailError::SendFailed {
+                    mechanism: "sendmail",
+                    detail: Some(Box::new(e)),
+                })?;
+            drop(stdin);
+            let status = child.wait().await.map_err(|e| EmailError::SendFailed {
                 mechanism: "sendmail",
                 detail: Some(Box::new(e)),
             })?;
-        let Some(mut stdin) = child.stdin.take() else {
-            return Err(EmailError::SendFailed {
-                mechanism: "sendmail",
-                detail: None,
-            });
-        };
-        tokio::io::AsyncWriteExt::write_all(&mut stdin, rendered.as_bytes())
-            .await
-            .map_err(|e| EmailError::SendFailed {
-                mechanism: "sendmail",
-                detail: Some(Box::new(e)),
-            })?;
-        drop(stdin);
-        let status = child.wait().await.map_err(|e| EmailError::SendFailed {
-            mechanism: "sendmail",
-            detail: Some(Box::new(e)),
-        })?;
-        if status.success() {
-            Ok(SendOutcome::Sent)
-        } else {
-            Err(EmailError::SendFailed {
-                mechanism: "sendmail",
-                detail: Some(Box::new(std::io::Error::other(format!(
-                    "exit status: {status}"
-                )))),
-            })
-        }
+            if status.success() {
+                Ok(SendOutcome::Sent)
+            } else {
+                Err(EmailError::SendFailed {
+                    mechanism: "sendmail",
+                    detail: Some(Box::new(std::io::Error::other(format!(
+                        "exit status: {status}"
+                    )))),
+                })
+            }
+        })
     }
 }
 
@@ -242,44 +260,51 @@ impl SmtpEmailSender {
 }
 
 impl EmailSender for SmtpEmailSender {
-    async fn send(&self, message: EmailMessage) -> Result<SendOutcome, EmailError> {
-        use lettre::message::Mailbox;
-        use lettre::transport::smtp::authentication::Credentials;
-        use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+    fn send(
+        &self,
+        message: EmailMessage,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<SendOutcome, EmailError>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            use lettre::message::Mailbox;
+            use lettre::transport::smtp::authentication::Credentials;
+            use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
-        let from: Mailbox = self.from.parse().map_err(|_| EmailError::SendFailed {
-            mechanism: "smtp",
-            detail: None,
-        })?;
-        let to: Mailbox = message.to.parse().map_err(|_| EmailError::InvalidAddress)?;
-        let email = Message::builder()
-            .from(from)
-            .to(to)
-            .subject(&message.subject)
-            .body(message.text_body.clone())
-            .map_err(|_| EmailError::SendFailed {
+            let from: Mailbox = self.from.parse().map_err(|_| EmailError::SendFailed {
                 mechanism: "smtp",
                 detail: None,
             })?;
-        let mailer = AsyncSmtpTransport::<Tokio1Executor>::relay(&self.host)
-            .map_err(|e| EmailError::SendFailed {
-                mechanism: "smtp",
-                detail: Some(Box::new(e)),
-            })?
-            .port(self.port)
-            .credentials(Credentials::new(
-                self.username.clone(),
-                self.password.clone(),
-            ))
-            .build();
-        mailer
-            .send(email)
-            .await
-            .map(|_| SendOutcome::Sent)
-            .map_err(|e| EmailError::SendFailed {
-                mechanism: "smtp",
-                detail: Some(Box::new(e)),
-            })
+            let to: Mailbox = message.to.parse().map_err(|_| EmailError::InvalidAddress)?;
+            let email = Message::builder()
+                .from(from)
+                .to(to)
+                .subject(&message.subject)
+                .body(message.text_body.clone())
+                .map_err(|_| EmailError::SendFailed {
+                    mechanism: "smtp",
+                    detail: None,
+                })?;
+            let mailer = AsyncSmtpTransport::<Tokio1Executor>::relay(&self.host)
+                .map_err(|e| EmailError::SendFailed {
+                    mechanism: "smtp",
+                    detail: Some(Box::new(e)),
+                })?
+                .port(self.port)
+                .credentials(Credentials::new(
+                    self.username.clone(),
+                    self.password.clone(),
+                ))
+                .build();
+            mailer
+                .send(email)
+                .await
+                .map(|_| SendOutcome::Sent)
+                .map_err(|e| EmailError::SendFailed {
+                    mechanism: "smtp",
+                    detail: Some(Box::new(e)),
+                })
+        })
     }
 }
 
