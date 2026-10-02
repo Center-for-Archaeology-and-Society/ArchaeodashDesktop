@@ -45,3 +45,10 @@ Note: `ThrottleStore` became an async trait (RPITIT `async fn`) so the SQLx stor
 1. HTTP surface in `crates/api`: the `/auth/*` endpoints from Section 10 (register, verify, login, logout, logout-all, session, password-reset request/confirm) with HttpOnly cookies, CSRF, uniform errors.
 2. Email adapters: SMTP, sendmail, dev sink (Section 11.1).
 3. Headers/CSP, observability, backups, deploy/rollback (rest of Phase 7).
+
+## Email adapters + HTTP surface (commit `6d5f79c`, `6cc5387`)
+
+- `crates/auth/src/email.rs`: object-safe `EmailSender` trait (boxed futures, so runtime adapter selection works), `DevSinkEmailSender` (explicit in-memory sink), `SendmailEmailSender` (stdin pipe, no shell, CRLF header-injection stripping tested), `SmtpEmailSender` (lettre 0.11, rustls, `tokio1-rustls` feature required). `redact_email` masks local parts for logs; `build_action_link` validates base URL scheme/path before appending one-time tokens.
+- `crates/api/src/auth.rs`: the eight `/api/v1/auth/*` routes per Section 10.1 over `AuthState { ControlStore, Arc<dyn EmailSender>, ThrottlePepper, base_url }`. Session cookie HttpOnly/Secure/SameSite=Lax; CSRF cookie SameSite=Strict without HttpOnly, double-submit via `X-CSRF-Token`; login does verify-or-dummy timing parity, unverified/disabled gates, rehash-on-login (store `update_password_hash`), session revocation + fresh issue; password-reset confirm revokes all sessions via the store. `ControlStore::mark_email_verified` added.
+- Verified locally: 27 auth unit tests, 6 control-postgres DB tests, 30 API lib tests (8 DB-backed auth HTTP flows against postgres:16-alpine), fmt + clippy clean on all three crates.
+- **Hosted CI outage**: from `398efca` (docs-only!) onward every job fails in ~4 s with zero steps and no runner — Actions infrastructure/billing failure, not code. Last green run: `2da9820`. Local gates (fmt, targeted clippy -D warnings, full workspace lib tests) verified instead; re-run CI when the account recovers.
