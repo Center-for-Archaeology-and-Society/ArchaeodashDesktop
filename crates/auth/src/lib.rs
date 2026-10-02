@@ -18,6 +18,7 @@
 //! crate (Section 6.5); libsodium hash verification for legacy migration is
 //! Phase 8 work and plugs into [`password::VerifyOutcome::RehashNeeded`].
 
+pub mod email;
 pub mod identity;
 pub mod password;
 pub mod throttle;
