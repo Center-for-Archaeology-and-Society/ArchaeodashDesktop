@@ -6,5 +6,15 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[dependencies]
+archaeodash-auth = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
 [lints]
 workspace = true

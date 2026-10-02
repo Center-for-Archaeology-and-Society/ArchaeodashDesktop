@@ -68,6 +68,8 @@ sha2 = "0.10"
 argon2 = "0.6"
 base64 = "0.23"
 getrandom = "0.4"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "time", "uuid", "migrate", "macros"] }
+time = { version = "0.3", features = ["serde"] }
 
 # Internal crates
 archaeodash-domain = { path = "crates/domain" }

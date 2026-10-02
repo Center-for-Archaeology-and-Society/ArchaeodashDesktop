@@ -15,6 +15,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 hex = "0.4"
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true

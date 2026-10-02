@@ -11,6 +11,7 @@
 
 use getrandom::fill;
 use sha2::{Digest, Sha256};
+use std::future::Future;
 use std::time::{Duration, SystemTime};
 use thiserror::Error;
 
@@ -141,7 +142,8 @@ pub enum ThrottleDecision {
 
 /// Persistence contract for throttle counters. Implementations must be
 /// atomic across replicas (single conditional upsert in PostgreSQL), which
-/// is what makes the limit persistent rather than per-process.
+/// is what makes the limit persistent rather than per-process. Async so the
+/// database-backed store can participate without blocking threads.
 pub trait ThrottleStore: Send + Sync {
     /// Records one attempt against `key` and decides whether it is allowed
     /// within `policy`'s fixed window anchored at `now`.
@@ -150,10 +152,10 @@ pub trait ThrottleStore: Send + Sync {
         key: &[u8; 32],
         policy: ThrottlePolicy,
         now: SystemTime,
-    ) -> ThrottleDecision;
+    ) -> impl Future<Output = ThrottleDecision> + Send;
 
     /// Clears the counter for `key` (successful login/verify/reset).
-    fn clear(&self, key: &[u8; 32]);
+    fn clear(&self, key: &[u8; 32]) -> impl Future<Output = ()> + Send;
 }
 
 /// In-memory fixed-window store for tests and local development. The
@@ -176,7 +178,7 @@ impl InMemoryThrottleStore {
 }
 
 impl ThrottleStore for InMemoryThrottleStore {
-    fn record_and_check(
+    async fn record_and_check(
         &self,
         key: &[u8; 32],
         policy: ThrottlePolicy,
@@ -218,7 +220,9 @@ impl ThrottleStore for InMemoryThrottleStore {
         }
     }
 
-    fn clear(&self, key: &[u8; 32]) {
+    async fn clear(&self, key: &[u8; 32]) {
+        // Poisoning cannot leave the counters unusable: proceed with the
+        // guarded data even if another thread panicked mid-update.
         self.windows
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -282,48 +286,48 @@ mod tests {
         assert_eq!(ThrottlePepper::from_hex("ab"), Err(PepperError::Invalid));
     }
 
-    #[test]
-    fn window_limits_then_resets() {
+    #[tokio::test]
+    async fn window_limits_then_resets() {
         let store = InMemoryThrottleStore::new();
         let pepper = ThrottlePepper::generate().expect("rng");
         let key = pepper.key(ThrottleCategory::ResetByEmail, "a@b.co");
         let policy = ThrottlePolicy::new(3, 60);
         for _ in 0..3 {
             assert_eq!(
-                store.record_and_check(&key, policy, epoch(1000)),
+                store.record_and_check(&key, policy, epoch(1000)).await,
                 ThrottleDecision::Allowed
             );
         }
         assert_eq!(
-            store.record_and_check(&key, policy, epoch(1000)),
+            store.record_and_check(&key, policy, epoch(1000)).await,
             ThrottleDecision::Limited {
                 retry_after: Duration::from_secs(20)
             }
         );
         // Next window resets the counter.
         assert_eq!(
-            store.record_and_check(&key, policy, epoch(1061)),
+            store.record_and_check(&key, policy, epoch(1061)).await,
             ThrottleDecision::Allowed
         );
     }
 
-    #[test]
-    fn clear_restores_allowance() {
+    #[tokio::test]
+    async fn clear_restores_allowance() {
         let store = InMemoryThrottleStore::new();
         let pepper = ThrottlePepper::generate().expect("rng");
         let key = pepper.key(ThrottleCategory::LoginByAccount, "a@b.co");
         let policy = ThrottlePolicy::new(1, 60);
         assert_eq!(
-            store.record_and_check(&key, policy, epoch(0)),
+            store.record_and_check(&key, policy, epoch(0)).await,
             ThrottleDecision::Allowed
         );
         assert!(matches!(
-            store.record_and_check(&key, policy, epoch(0)),
+            store.record_and_check(&key, policy, epoch(0)).await,
             ThrottleDecision::Limited { .. }
         ));
-        store.clear(&key);
+        store.clear(&key).await;
         assert_eq!(
-            store.record_and_check(&key, policy, epoch(0)),
+            store.record_and_check(&key, policy, epoch(0)).await,
             ThrottleDecision::Allowed
         );
     }
