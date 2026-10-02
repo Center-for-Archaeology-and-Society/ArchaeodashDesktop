@@ -116,7 +116,11 @@ name = "archaeodash-auth"
 version = "0.1.0"
 dependencies = [
  "argon2",
- "rand 0.10.2",
+ "base64 0.23.1",
+ "getrandom 0.4.3",
+ "hex",
+ "sha2",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

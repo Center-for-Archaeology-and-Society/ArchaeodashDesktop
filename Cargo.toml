@@ -66,6 +66,8 @@ sha2 = "0.10"
 
 # Auth
 argon2 = "0.6"
+base64 = "0.23"
+getrandom = "0.4"
 
 # Internal crates
 archaeodash-domain = { path = "crates/domain" }
