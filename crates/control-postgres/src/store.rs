@@ -547,17 +547,17 @@ mod tests {
             return;
         };
         let (first, _) = make_user(&store).await;
-        // Same normalized email, different username -> email taken.
-        let other_username = format!("other-{}", unique_suffix());
-        let same_email = format!("MiXeD@{}.Example.COM", first.username);
         let hash = "irrelevant-for-uniqueness";
+        // Same normalized email (case-insensitive), different username ->
+        // EmailTaken.
+        let other_username = format!("other-{}", unique_suffix());
         let err = store
             .create_user(
                 Uuid::now_v7(),
                 &other_username,
                 &other_username,
-                &same_email,
-                normalize_email(&same_email).expect("valid email").as_str(),
+                first.email.to_uppercase().as_str(),
+                normalize_email(&first.email).expect("valid email").as_str(),
                 hash,
                 SystemTime::now(),
             )
