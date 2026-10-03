@@ -38,6 +38,10 @@ pub struct UserRow {
     pub password_hash: String,
     pub email_verified_at: Option<OffsetDateTime>,
     pub disabled_at: Option<OffsetDateTime>,
+    /// Terms/privacy version accepted at registration (Section 10.1
+    /// consent-version validation); `None` for pre-consent-audit accounts.
+    pub consent_version: Option<String>,
+    pub consented_at: Option<OffsetDateTime>,
 }
 
 /// A `sessions` row.
@@ -113,14 +117,17 @@ impl ControlStore {
         email: &str,
         email_normalized: &str,
         password_hash: &str,
+        consent_version: Option<&str>,
         now: SystemTime,
     ) -> Result<UserRow, ControlError> {
         let row = sqlx::query_as::<_, UserRow>(
             "INSERT INTO users (id, username, username_normalized, email, \
-             email_normalized, password_hash, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $7) \
+             email_normalized, password_hash, created_at, updated_at, \
+             consent_version, consented_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $7) \
              RETURNING id, username, username_normalized, email, email_normalized, \
-             password_hash, email_verified_at, disabled_at",
+             password_hash, email_verified_at, disabled_at, consent_version, \
+             consented_at",
         )
         .bind(id)
         .bind(username)
@@ -128,7 +135,8 @@ impl ControlStore {
         .bind(email)
         .bind(email_normalized)
         .bind(password_hash)
-        .bind(to_offset(now))
+        .bind(to_offset(now)) // $7: created_at, updated_at, consented_at
+        .bind(consent_version) // $8
         .fetch_one(&self.pool)
         .await
         .map_err(|e| match e {
@@ -153,7 +161,8 @@ impl ControlStore {
     ) -> Result<Option<UserRow>, ControlError> {
         let row = sqlx::query_as::<_, UserRow>(
             "SELECT id, username, username_normalized, email, email_normalized, \
-             password_hash, email_verified_at, disabled_at \
+             password_hash, email_verified_at, disabled_at, consent_version, \
+             consented_at \
              FROM users WHERE email_normalized = $1",
         )
         .bind(email_normalized)
@@ -168,7 +177,8 @@ impl ControlStore {
     ) -> Result<Option<UserRow>, ControlError> {
         let row = sqlx::query_as::<_, UserRow>(
             "SELECT id, username, username_normalized, email, email_normalized, \
-             password_hash, email_verified_at, disabled_at \
+             password_hash, email_verified_at, disabled_at, consent_version, \
+             consented_at \
              FROM users WHERE username_normalized = $1",
         )
         .bind(username_normalized)
@@ -284,7 +294,8 @@ impl ControlStore {
         };
         let user = sqlx::query_as::<_, UserRow>(
             "SELECT id, username, username_normalized, email, email_normalized, \
-             password_hash, email_verified_at, disabled_at \
+             password_hash, email_verified_at, disabled_at, consent_version, \
+             consented_at \
              FROM users WHERE id = $1 AND disabled_at IS NULL",
         )
         .bind(session.user_id)
@@ -595,6 +606,7 @@ mod tests {
                 &email,
                 normalize_email(&email).expect("valid email").as_str(),
                 &hash,
+                None,
                 SystemTime::now(),
             )
             .await
@@ -628,6 +640,7 @@ mod tests {
                 first.email.to_uppercase().as_str(),
                 normalize_email(&first.email).expect("valid email").as_str(),
                 hash,
+                None,
                 SystemTime::now(),
             )
             .await
@@ -643,6 +656,7 @@ mod tests {
                 &other_email,
                 normalize_email(&other_email).expect("valid email").as_str(),
                 hash,
+                None,
                 SystemTime::now(),
             )
             .await
@@ -858,7 +872,9 @@ mod tests {
                 "email_verified_at",
                 "disabled_at",
                 "created_at",
-                "updated_at"
+                "updated_at",
+                "consent_version",
+                "consented_at"
             ],
             "users table columns drifted from the Section 6.5 spec"
         );

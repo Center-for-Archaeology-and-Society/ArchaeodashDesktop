@@ -38,6 +38,9 @@ use std::time::SystemTime;
 use uuid::Uuid;
 pub const SESSION_COOKIE: &str = "archaeodash_session";
 pub const CSRF_COOKIE: &str = "archaeodash_csrf";
+/// The terms/privacy notice version a registration must accept (Section 10.1:
+/// registration validates the consent version). Bump when the notice changes.
+pub const CONSENT_VERSION: &str = "2026-10";
 pub const CSRF_HEADER: &str = "X-CSRF-Token";
 /// Session lifetime without remember-me (12 hours).
 pub const SESSION_TTL_SECS: u64 = 12 * 60 * 60;
@@ -89,6 +92,13 @@ impl IntoResponse for AuthError {
     }
 }
 
+#[derive(serde::Serialize)]
+pub struct ConsentResponse {
+    pub consent_version: &'static str,
+    pub terms_path: String,
+    pub privacy_path: String,
+}
+
 #[derive(Deserialize)]
 pub struct RegisterRequest {
     pub username: String,
@@ -119,6 +129,16 @@ pub struct PasswordResetRequest {
 pub struct PasswordResetConfirmRequest {
     pub token: String,
     pub new_password: String,
+}
+
+/// `GET /auth/consent` — the current notice version and document paths, no
+/// authentication required (the registration dialog fetches it first).
+async fn consent() -> Json<ConsentResponse> {
+    Json(ConsentResponse {
+        consent_version: CONSENT_VERSION,
+        terms_path: "/legal/terms".to_string(),
+        privacy_path: "/legal/privacy".to_string(),
+    })
 }
 
 /// `GET /auth/session` — minimal principal and CSRF bootstrap state.
@@ -242,6 +262,14 @@ async fn register(
             json_error("invalid_password"),
         )
     })?;
+    // The client must accept the current notice version; stale or missing
+    // consent versions are rejected so acceptance is auditable per account.
+    if req.consent_version != CONSENT_VERSION {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json_error("invalid_consent_version"),
+        ));
+    }
 
     throttled(
         &state,
@@ -281,6 +309,7 @@ async fn register(
             &req.email,
             &email,
             &password_hash,
+            Some(&req.consent_version),
             SystemTime::now(),
         )
         .await
@@ -1519,6 +1548,7 @@ pub fn auth_router(state: AuthState) -> Router {
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/auth/logout-all", post(logout_all))
         .route("/api/v1/auth/session", get(session))
+        .route("/api/v1/auth/consent", get(consent))
         .route(
             "/api/v1/preferences",
             get(preferences_get).put(preferences_set),
@@ -1762,7 +1792,7 @@ mod preference_tests {
             "username": format!("pref-iso-{suffix}"),
             "email": format!("pref-iso-{suffix}@example.com"),
             "password": "correct horse battery staple",
-            "consent_version": "2026-01",
+            "consent_version": CONSENT_VERSION,
         });
         let res = post_json(app2.clone(), "/api/v1/auth/register", register).await;
         assert_eq!(res.status(), StatusCode::ACCEPTED);
@@ -2089,5 +2119,71 @@ mod lifecycle_rehearsal {
             .next()
             .expect("token line")
             .to_string()
+    }
+
+    #[tokio::test]
+    async fn registration_requires_current_consent_version() {
+        let Some((state, sink)) = auth_state().await else {
+            return;
+        };
+        let app = auth_app(state.clone());
+        let suffix = unique_suffix();
+        let register = |consent: &'static str| {
+            let app = app.clone();
+            let username = format!("consent-{suffix}");
+            let email = format!("consent-{suffix}@example.com");
+            async move {
+                post_json(
+                    app,
+                    "/api/v1/auth/register",
+                    serde_json::json!({
+                        "username": username,
+                        "email": email,
+                        "password": "correct horse battery staple",
+                        "consent_version": consent
+                    }),
+                )
+                .await
+            }
+        };
+        // Stale or missing consent version is a 422.
+        let res = register("2020-01").await;
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        // The consent endpoint names the current version.
+        let consent: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(
+                app.clone()
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .uri("/api/v1/auth/consent")
+                            .body(Body::empty())
+                            .map(|mut req| {
+                                req.extensions_mut().insert(ConnectInfo(test_peer()));
+                                req
+                            })
+                            .expect("request"),
+                    )
+                    .await
+                    .expect("infallible")
+                    .into_body(),
+                usize::MAX,
+            )
+            .await
+            .expect("body"),
+        )
+        .expect("consent json");
+        assert_eq!(consent["consent_version"], CONSENT_VERSION);
+        // Current version registers and records the consent version.
+        let res = register(CONSENT_VERSION).await;
+        assert_eq!(res.status(), StatusCode::ACCEPTED);
+        let stored = state
+            .store
+            .find_user_by_normalized_username(&format!("consent-{suffix}"))
+            .await
+            .expect("store")
+            .expect("user exists");
+        assert_eq!(stored.consent_version.as_deref(), Some(CONSENT_VERSION));
+        assert!(stored.consented_at.is_some());
+        let _ = sink;
     }
 }
