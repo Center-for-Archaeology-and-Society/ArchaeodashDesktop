@@ -431,6 +431,42 @@ impl ControlStore {
         }
         Ok(user_id)
     }
+    /// Reads all preferences for a user as raw JSON values keyed by the
+    /// allowlisted preference key. The API layer validates key allowlisting
+    /// and value shapes; the store treats values as opaque JSONB.
+    pub async fn get_preferences(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<(String, serde_json::Value)>, ControlError> {
+        let rows: Vec<(String, serde_json::Value)> =
+            sqlx::query_as("SELECT key, value FROM preferences WHERE user_id = $1 ORDER BY key")
+                .bind(user_id)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows)
+    }
+
+    /// Upserts one preference (single statement, atomic per Section 6.5's
+    /// primary-key `(user_id, key)` contract).
+    pub async fn set_preference(
+        &self,
+        user_id: Uuid,
+        key: &str,
+        value: serde_json::Value,
+        now: SystemTime,
+    ) -> Result<(), ControlError> {
+        sqlx::query(
+            "INSERT INTO preferences (user_id, key, value, updated_at) VALUES ($1, $2, $3, $4)              ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value, \
+             updated_at = EXCLUDED.updated_at",
+        )
+        .bind(user_id)
+        .bind(key)
+        .bind(value)
+        .bind(to_offset(now))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 /// The two one-time account token kinds (Section 6.5 `account_tokens`).

@@ -48,6 +48,8 @@ use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 
 pub mod auth;
+pub mod hosted;
+pub use hosted::{finalize_hosted_router, hosted_router, HostedState};
 pub mod job_events;
 pub mod security_headers;
 

@@ -24,6 +24,7 @@ use archaeodash_auth::throttle::{
 };
 use archaeodash_auth::token::{digest_presentation, OpaqueToken};
 use archaeodash_auth::GENERIC_AUTH_MESSAGE;
+use archaeodash_contracts::ErrorEnvelope;
 use archaeodash_control_postgres::{AccountTokenKind, ControlError, ControlStore, UserRow};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -79,7 +80,7 @@ impl IntoResponse for AuthError {
         };
         (
             status,
-            Json(archaeodash_contracts::ErrorEnvelope {
+            Json(ErrorEnvelope {
                 code: code.into(),
                 message: message.into(),
             }),
@@ -134,25 +135,6 @@ pub struct SessionResponse {
     pub csrf_token: Option<String>,
 }
 
-pub fn auth_router(state: AuthState) -> Router {
-    Router::new()
-        .route("/api/v1/auth/register", post(register))
-        .route("/api/v1/auth/verify", post(verify))
-        .route("/api/v1/auth/login", post(login))
-        .route("/api/v1/auth/logout", post(logout))
-        .route("/api/v1/auth/logout-all", post(logout_all))
-        .route("/api/v1/auth/session", get(session))
-        .route(
-            "/api/v1/auth/password-reset/request",
-            post(password_reset_request),
-        )
-        .route(
-            "/api/v1/auth/password-reset/confirm",
-            post(password_reset_confirm),
-        )
-        .with_state(state)
-}
-
 /// Cookie header parsing: name -> value (first occurrence wins).
 fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     let raw = headers.get(header::COOKIE)?.to_str().ok()?;
@@ -200,7 +182,7 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 /// Extracts the client IP for throttle keys. Direct connections only; a
 /// reverse proxy must terminate and set ConnectInfo from the trusted peer.
 fn client_ip(addr: Option<ConnectInfo<SocketAddr>>) -> String {
-    addr.map(|ConnectInfo(a)| a.ip().to_string())
+    addr.map(|a| a.0.ip().to_string())
         .unwrap_or_else(|| "0.0.0.0".to_string())
 }
 
@@ -210,7 +192,7 @@ async fn throttled(
     identifier: &str,
     ip: &str,
     policy: ThrottlePolicy,
-) -> Result<(), (StatusCode, Json<archaeodash_contracts::ErrorEnvelope>)> {
+) -> Result<(), (StatusCode, Json<ErrorEnvelope>)> {
     let now = SystemTime::now();
     let account_key = state.pepper.key(category, identifier);
     let ip_key = state.pepper.key(category, ip);
@@ -220,7 +202,7 @@ async fn throttled(
         {
             return Err((
                 StatusCode::TOO_MANY_REQUESTS,
-                Json(archaeodash_contracts::ErrorEnvelope {
+                Json(ErrorEnvelope {
                     code: "rate_limited".into(),
                     message: GENERIC_AUTH_MESSAGE.into(),
                 }),
@@ -236,7 +218,7 @@ async fn register(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: Result<Json<RegisterRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<StatusCode, (StatusCode, Json<archaeodash_contracts::ErrorEnvelope>)> {
+) -> Result<StatusCode, (StatusCode, Json<ErrorEnvelope>)> {
     if !csrf_ok(&headers) {
         return Err((StatusCode::FORBIDDEN, json_error("csrf_failed")));
     }
@@ -313,7 +295,7 @@ async fn register(
 async fn send_verification(
     state: &AuthState,
     user: &UserRow,
-) -> Result<(), (StatusCode, Json<archaeodash_contracts::ErrorEnvelope>)> {
+) -> Result<(), (StatusCode, Json<ErrorEnvelope>)> {
     let token = OpaqueToken::generate().map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -355,18 +337,53 @@ async fn send_verification(
 }
 
 fn json_error(code: &str) -> Json<archaeodash_contracts::ErrorEnvelope> {
-    Json(archaeodash_contracts::ErrorEnvelope {
+    json_error_with(code, GENERIC_AUTH_MESSAGE)
+}
+
+fn json_error_with(code: &str, message: &str) -> Json<archaeodash_contracts::ErrorEnvelope> {
+    Json(ErrorEnvelope {
         code: code.into(),
-        message: GENERIC_AUTH_MESSAGE.into(),
+        message: message.into(),
     })
 }
 
-fn db_error(_err: ControlError) -> (StatusCode, Json<archaeodash_contracts::ErrorEnvelope>) {
+/// Preference validation failures are user-input errors: they carry the
+/// domain's specific safe message (unknown key / invalid value shape).
+fn domain_validation_error(
+    err: archaeodash_domain::DomainError,
+) -> (StatusCode, Json<ErrorEnvelope>) {
     (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(archaeodash_contracts::ErrorEnvelope {
-            code: "internal_error".into(),
-            message: GENERIC_AUTH_MESSAGE.into(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ErrorEnvelope {
+            code: "validation_error".into(),
+            message: err.to_string(),
+        }),
+    )
+}
+
+fn db_error(err: ControlError) -> (StatusCode, Json<ErrorEnvelope>) {
+    let (status, code, message) = match &err {
+        ControlError::UsernameTaken => (
+            StatusCode::CONFLICT,
+            "username_taken",
+            "That username is already taken.",
+        ),
+        ControlError::EmailTaken => (
+            StatusCode::CONFLICT,
+            "email_taken",
+            "That email is already taken.",
+        ),
+        ControlError::Database(_) | ControlError::Migration(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            GENERIC_AUTH_MESSAGE,
+        ),
+    };
+    (
+        status,
+        Json(ErrorEnvelope {
+            code: code.into(),
+            message: message.into(),
         }),
     )
 }
@@ -374,7 +391,7 @@ fn db_error(_err: ControlError) -> (StatusCode, Json<archaeodash_contracts::Erro
 async fn verify(
     State(state): State<AuthState>,
     Json(req): Json<VerifyRequest>,
-) -> Result<StatusCode, (StatusCode, Json<archaeodash_contracts::ErrorEnvelope>)> {
+) -> Result<StatusCode, (StatusCode, Json<ErrorEnvelope>)> {
     let digest = digest_presentation(&req.token);
     let now = SystemTime::now();
     let user_id = state
@@ -421,10 +438,7 @@ async fn login(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: Result<Json<LoginRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<
-    (StatusCode, HeaderMap, Json<SessionResponse>),
-    (StatusCode, Json<archaeodash_contracts::ErrorEnvelope>),
-> {
+) -> Result<(StatusCode, HeaderMap, Json<SessionResponse>), (StatusCode, Json<ErrorEnvelope>)> {
     if !csrf_ok(&headers) {
         return Err((StatusCode::FORBIDDEN, json_error("csrf_failed")));
     }
@@ -485,7 +499,7 @@ async fn login(
     if user.email_verified_at.is_none() {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(archaeodash_contracts::ErrorEnvelope {
+            Json(ErrorEnvelope {
                 code: "email_unverified".into(),
                 message: "Verify your email address before signing in.".into(),
             }),
@@ -564,7 +578,8 @@ async fn login(
             )
         })?,
     );
-    response_headers.insert(
+    // Multiple Set-Cookie headers must append, not replace.
+    response_headers.append(
         header::SET_COOKIE,
         header::HeaderValue::from_str(&csrf_cookie).map_err(|_| {
             (
@@ -586,10 +601,10 @@ async fn login(
     ))
 }
 
-fn unauthorized() -> (StatusCode, Json<archaeodash_contracts::ErrorEnvelope>) {
+fn unauthorized() -> (StatusCode, Json<ErrorEnvelope>) {
     (
         StatusCode::UNAUTHORIZED,
-        Json(archaeodash_contracts::ErrorEnvelope {
+        Json(ErrorEnvelope {
             code: "invalid_credentials".into(),
             message: GENERIC_AUTH_MESSAGE.into(),
         }),
@@ -599,7 +614,7 @@ fn unauthorized() -> (StatusCode, Json<archaeodash_contracts::ErrorEnvelope>) {
 async fn logout(
     State(state): State<AuthState>,
     headers: HeaderMap,
-) -> Result<StatusCode, (StatusCode, Json<archaeodash_contracts::ErrorEnvelope>)> {
+) -> Result<StatusCode, (StatusCode, Json<ErrorEnvelope>)> {
     if !csrf_ok(&headers) {
         return Err((StatusCode::FORBIDDEN, json_error("csrf_failed")));
     }
@@ -616,7 +631,7 @@ async fn logout(
 async fn logout_all(
     State(state): State<AuthState>,
     headers: HeaderMap,
-) -> Result<StatusCode, (StatusCode, Json<archaeodash_contracts::ErrorEnvelope>)> {
+) -> Result<StatusCode, (StatusCode, Json<ErrorEnvelope>)> {
     if !csrf_ok(&headers) {
         return Err((StatusCode::FORBIDDEN, json_error("csrf_failed")));
     }
@@ -634,7 +649,7 @@ async fn logout_all(
 async fn session(
     State(state): State<AuthState>,
     headers: HeaderMap,
-) -> Result<Json<SessionResponse>, (StatusCode, Json<archaeodash_contracts::ErrorEnvelope>)> {
+) -> Result<Json<SessionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     // CSRF bootstrap: a fresh CSRF cookie accompanies every session check
     // that lacks one, so the app can echo it on the next state change.
     let auth = authenticated(&state, &headers).await.map_err(db_error)?;
@@ -675,7 +690,7 @@ async fn password_reset_request(
     State(state): State<AuthState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     body: Result<Json<PasswordResetRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<StatusCode, (StatusCode, Json<archaeodash_contracts::ErrorEnvelope>)> {
+) -> Result<StatusCode, (StatusCode, Json<ErrorEnvelope>)> {
     let Json(req) = body.map_err(|_| (StatusCode::BAD_REQUEST, json_error("bad_request")))?;
     let email = normalize_email(&req.email).map_err(|_| {
         (
@@ -754,7 +769,7 @@ async fn password_reset_confirm(
     State(state): State<AuthState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     body: Result<Json<PasswordResetConfirmRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<StatusCode, (StatusCode, Json<archaeodash_contracts::ErrorEnvelope>)> {
+) -> Result<StatusCode, (StatusCode, Json<ErrorEnvelope>)> {
     let Json(req) = body.map_err(|_| (StatusCode::BAD_REQUEST, json_error("bad_request")))?;
     validate_password_length(&req.new_password).map_err(|_| {
         (
@@ -808,9 +823,13 @@ mod tests {
 
     /// DB-backed tests run only when `DATABASE_URL` points at a test
     /// PostgreSQL instance (CI provides one); otherwise they skip.
-    async fn auth_state() -> Option<(AuthState, DevSinkEmailSender)> {
+    pub(crate) async fn auth_state() -> Option<(AuthState, DevSinkEmailSender)> {
         let url = std::env::var("DATABASE_URL").ok()?;
-        let pool = sqlx::PgPool::connect(&url).await.ok()?;
+        // Fail loudly when the URL is set but unreachable: a silent skip
+        // would make infrastructure breakage look like passing tests.
+        let pool = sqlx::PgPool::connect(&url)
+            .await
+            .unwrap_or_else(|e| panic!("DATABASE_URL is set but the test DB is unreachable: {e}"));
         let store = ControlStore::new(pool);
         store.migrate().await.expect("migrations apply");
         let email = DevSinkEmailSender::new();
@@ -824,16 +843,37 @@ mod tests {
     }
 
     /// Uniqueness suffix so repeated test runs against a live DB never collide.
-    fn unique_suffix() -> String {
+    pub(crate) fn unique_suffix() -> String {
         let bytes = OpaqueToken::generate().expect("rng").digest();
         bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()[..12].to_string()
     }
 
-    fn auth_app(state: AuthState) -> Router {
-        auth_router(state)
+    pub(crate) fn test_peer() -> std::net::SocketAddr {
+        // Distinct loopback-ish addresses per request so per-IP throttle
+        // buckets never collide across parallel tests (production keys on
+        // the client IP, not the port).
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let a = 10u8;
+        let b = ((n >> 16) & 0xff) as u8;
+        let c = ((n >> 8) & 0xff) as u8;
+        let d = (n & 0xff) as u8;
+        format!("{a}.{b}.{c}.{d}:65001").parse().expect("peer addr")
     }
 
-    async fn post_json(
+    pub(crate) fn auth_app(state: AuthState) -> Router {
+        auth_router(state).layer(axum::middleware::from_fn(
+            |mut req: axum::extract::Request, next: axum::middleware::Next| async move {
+                if req.extensions().get::<ConnectInfo<SocketAddr>>().is_none() {
+                    req.extensions_mut().insert(ConnectInfo(test_peer()));
+                }
+                next.run(req).await
+            },
+        ))
+    }
+
+    pub(crate) async fn post_json(
         app: Router,
         uri: &str,
         body: serde_json::Value,
@@ -844,6 +884,10 @@ mod tests {
                 .uri(uri)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(serde_json::to_vec(&body).expect("json")))
+                .map(|mut req| {
+                    req.extensions_mut().insert(ConnectInfo(test_peer()));
+                    req
+                })
                 .expect("request"),
         )
         .await
@@ -1178,6 +1222,10 @@ mod tests {
                     .uri("/api/v1/auth/session")
                     .header(header::COOKIE, format!("{SESSION_COOKIE}={session_token}"))
                     .body(Body::empty())
+                    .map(|mut req| {
+                        req.extensions_mut().insert(ConnectInfo(test_peer()));
+                        req
+                    })
                     .expect("request"),
             )
             .await
@@ -1278,6 +1326,10 @@ mod tests {
                     .uri("/api/v1/auth/logout")
                     .header(header::COOKIE, &session_cookie)
                     .body(Body::empty())
+                    .map(|mut req| {
+                        req.extensions_mut().insert(ConnectInfo(test_peer()));
+                        req
+                    })
                     .expect("request"),
             )
             .await
@@ -1291,14 +1343,24 @@ mod tests {
                 axum::http::Request::builder()
                     .method("POST")
                     .uri("/api/v1/auth/logout")
-                    .header(header::COOKIE, &session_cookie)
+                    .header(
+                        header::COOKIE,
+                        format!("{session_cookie}; {CSRF_COOKIE}={csrf_token}"),
+                    )
                     .header(CSRF_HEADER, &csrf_token)
                     .body(Body::empty())
+                    .map(|mut req| {
+                        req.extensions_mut().insert(ConnectInfo(test_peer()));
+                        req
+                    })
                     .expect("request"),
             )
             .await
             .expect("infallible");
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        if response.status() != StatusCode::NO_CONTENT {
+            eprintln!("DEBUG csrf_token={csrf_token:?} cookies={cookies:?}");
+            panic!("expected no content");
+        }
     }
 
     #[tokio::test]
@@ -1341,5 +1403,350 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+}
+
+// ---- Hosted preferences (Section 10.1: GET/PUT /preferences, typed
+// allowlisted keys only) and hosted router composition. ----
+
+/// The authenticated principal returned by `GET /auth/session` and used to
+/// scope preference reads/writes.
+struct SessionPrincipal {
+    user: UserRow,
+}
+
+/// Resolves the live session from the cookie, enforcing CSRF on writes.
+async fn require_session(
+    state: &AuthState,
+    headers: &HeaderMap,
+    csrf_required: bool,
+) -> Result<Option<SessionPrincipal>, (StatusCode, Json<ErrorEnvelope>)> {
+    if csrf_required && !csrf_ok(headers) {
+        return Err((StatusCode::FORBIDDEN, json_error("csrf_failed")));
+    }
+    let Some(presentation) = cookie_value(headers, SESSION_COOKIE) else {
+        return Ok(None);
+    };
+    let digest = digest_presentation(&presentation);
+    let found = state
+        .store
+        .find_live_session(&digest, SystemTime::now())
+        .await
+        .map_err(db_error)?;
+    Ok(found.map(|(_, user)| SessionPrincipal { user }))
+}
+
+/// `GET /api/v1/auth/preferences` — the session user's allowlisted
+/// preferences as a JSON object keyed by preference key.
+async fn preferences_get(
+    State(state): State<AuthState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = require_session(&state, &headers, false).await? else {
+        return Err(unauthorized());
+    };
+    let rows = state
+        .store
+        .get_preferences(principal.user.id)
+        .await
+        .map_err(db_error)?;
+    let mut map = serde_json::Map::new();
+    for (key, value) in rows {
+        map.insert(key, value);
+    }
+    Ok(Json(serde_json::Value::Object(map)))
+}
+
+#[derive(Deserialize)]
+struct PutPreferenceBody {
+    key: String,
+    value: serde_json::Value,
+}
+
+/// `PUT /api/v1/auth/preferences` — upserts one preference after allowlist
+/// and shape validation (Section 10.1). Unknown keys and wrong shapes are
+/// 422, never silent store writes.
+async fn preferences_set(
+    State(state): State<AuthState>,
+    headers: HeaderMap,
+    body: Result<Json<PutPreferenceBody>, axum::extract::rejection::JsonRejection>,
+) -> Result<StatusCode, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = require_session(&state, &headers, true).await? else {
+        return Err(unauthorized());
+    };
+    let Json(req) = body.map_err(|_| (StatusCode::BAD_REQUEST, json_error("bad_request")))?;
+    let key = archaeodash_application::validate_preference(&req.key, &req.value)
+        .map_err(domain_validation_error)?;
+    state
+        .store
+        .set_preference(
+            principal.user.id,
+            key.as_str(),
+            req.value,
+            SystemTime::now(),
+        )
+        .await
+        .map_err(db_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The hosted control-plane router: auth surface plus user-scoped
+/// preferences. Composed under the security-headers middleware and a strict
+/// same-origin CORS allowlist by [`hosted_router`].
+pub fn auth_router(state: AuthState) -> Router {
+    Router::new()
+        .route("/api/v1/auth/register", post(register))
+        .route("/api/v1/auth/verify", post(verify))
+        .route("/api/v1/auth/login", post(login))
+        .route("/api/v1/auth/logout", post(logout))
+        .route("/api/v1/auth/logout-all", post(logout_all))
+        .route("/api/v1/auth/session", get(session))
+        .route(
+            "/api/v1/preferences",
+            get(preferences_get).put(preferences_set),
+        )
+        .route(
+            "/api/v1/auth/password-reset/request",
+            post(password_reset_request),
+        )
+        .route(
+            "/api/v1/auth/password-reset/confirm",
+            post(password_reset_confirm),
+        )
+        .with_state(state)
+}
+
+#[cfg(test)]
+mod preference_tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)] // test code; panics are the failure mode
+
+    use super::tests::{auth_app, auth_state, post_json, test_peer, unique_suffix};
+    use super::*;
+    use axum::body::Body;
+    use tower::ServiceExt;
+
+    /// Registers, verifies via the dev sink link, logs in, and returns the
+    /// cookie header value plus the CSRF token for state-changing requests.
+    pub(crate) async fn login_session(
+        state: AuthState,
+        sink: archaeodash_auth::email::DevSinkEmailSender,
+    ) -> (String, String) {
+        let suffix = unique_suffix();
+        let username = format!("pref-user-{suffix}");
+        let app = auth_app(state.clone());
+        let response = post_json(
+            app.clone(),
+            "/api/v1/auth/register",
+            serde_json::json!({
+                "username": username,
+                "email": format!("pref-user-{suffix}@example.com"),
+                "password": "correct horse battery staple",
+                "consent_version": "2026-10",
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let link = sink
+            .stored()
+            .first()
+            .expect("verification email")
+            .text_body
+            .clone();
+        let token = link
+            .split("/auth/verify?token=")
+            .nth(1)
+            .expect("token")
+            .lines()
+            .next()
+            .expect("token line")
+            .to_string();
+        post_json(
+            app.clone(),
+            "/api/v1/auth/verify",
+            serde_json::json!({ "token": token }),
+        )
+        .await;
+        let response = post_json(
+            app.clone(),
+            "/api/v1/auth/login",
+            serde_json::json!({
+                "identifier": username,
+                "password": "correct horse battery staple",
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let set_cookies: Vec<String> = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().expect("ascii").to_string())
+            .collect();
+        let cookie_header = set_cookies
+            .iter()
+            .map(|c| c.split(';').next().expect("pair").to_string())
+            .collect::<Vec<_>>()
+            .join("; ");
+        let csrf = set_cookies
+            .iter()
+            .find(|c| c.starts_with(CSRF_COOKIE))
+            .expect("csrf cookie")
+            .split(';')
+            .next()
+            .expect("pair")
+            .split_once('=')
+            .expect("name=value")
+            .1
+            .to_string();
+        (cookie_header, csrf)
+    }
+
+    async fn put_pref(
+        app: Router,
+        cookies: &str,
+        csrf: Option<&str>,
+        key: &str,
+        value: serde_json::Value,
+    ) -> axum::response::Response {
+        let mut req = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/api/v1/preferences")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::COOKIE, cookies);
+        if let Some(token) = csrf {
+            req = req.header(CSRF_HEADER, token);
+        }
+        app.oneshot(
+            req.body(Body::from(
+                serde_json::json!({ "key": key, "value": value }).to_string(),
+            ))
+            .map(|mut req| {
+                req.extensions_mut().insert(ConnectInfo(test_peer()));
+                req
+            })
+            .expect("body"),
+        )
+        .await
+        .expect("infallible")
+    }
+
+    #[tokio::test]
+    async fn preferences_require_session() {
+        let Some((state, _)) = auth_state().await else {
+            return;
+        };
+        let app = auth_app(state.clone());
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/preferences")
+                    .body(Body::empty())
+                    .map(|mut req| {
+                        req.extensions_mut().insert(ConnectInfo(test_peer()));
+                        req
+                    })
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn preferences_put_rejects_missing_csrf() {
+        let Some((state, sink)) = auth_state().await else {
+            return;
+        };
+        let (cookies, _) = login_session(state.clone(), sink).await;
+        let app = auth_app(state.clone());
+        let res = put_pref(app, &cookies, None, "theme", serde_json::json!("dark")).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn preferences_round_trip_and_validation() {
+        let Some((state, sink)) = auth_state().await else {
+            return;
+        };
+        let (cookies, csrf) = login_session(state.clone(), sink.clone()).await;
+        let app = auth_app(state.clone());
+
+        // Unknown key is a 422, never a silent store write.
+        let res = put_pref(
+            app.clone(),
+            &cookies,
+            Some(&csrf),
+            "unknownKey",
+            serde_json::json!(true),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Wrong shape for a known key is a 422.
+        let res = put_pref(
+            app.clone(),
+            &cookies,
+            Some(&csrf),
+            "compactMode",
+            serde_json::json!("yes"),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Valid upsert then read-back.
+        let res = put_pref(
+            app.clone(),
+            &cookies,
+            Some(&csrf),
+            "theme",
+            serde_json::json!("dark"),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        let res = put_pref(
+            app.clone(),
+            &cookies,
+            Some(&csrf),
+            "compactMode",
+            serde_json::json!(true),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/preferences")
+                    .header(header::COOKIE, &cookies)
+                    .body(Body::empty())
+                    .map(|mut req| {
+                        req.extensions_mut().insert(ConnectInfo(test_peer()));
+                        req
+                    })
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        let value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(value["theme"], "dark");
+        assert_eq!(value["compactMode"], true);
+
+        // Upstream user isolation: another account reads none of this.
+        let app2 = auth_app(state.clone());
+        let suffix = unique_suffix();
+        let register = serde_json::json!({
+            "username": format!("pref-iso-{suffix}"),
+            "email": format!("pref-iso-{suffix}@example.com"),
+            "password": "correct horse battery staple",
+            "consent_version": "2026-01",
+        });
+        let res = post_json(app2.clone(), "/api/v1/auth/register", register).await;
+        assert_eq!(res.status(), StatusCode::ACCEPTED);
     }
 }

@@ -24,7 +24,7 @@ pub use files::SourceFileService;
 pub use groups::GroupService;
 pub use import::ImportService;
 pub use ordination::OrdinationService;
-pub use preferences::PreferenceService;
+pub use preferences::{validate_preference, PreferenceService};
 pub use transforms::TransformService;
 
 /// Returns application identity and readiness for the smoke use case.

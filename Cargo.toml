@@ -42,6 +42,8 @@ tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "ti
 axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.7", features = ["fs", "trace", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Numerical core (pure-Rust deterministic backend, ADR-0002)
 faer = "0.24"

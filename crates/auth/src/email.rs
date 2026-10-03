@@ -138,7 +138,16 @@ impl EmailSender for DevSinkEmailSender {
             self.stored
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(message);
+                .push(message.clone());
+            // Dev mode only (gated by AUTH_ALLOW_DEV_EMAIL at composition):
+            // surface the action link so a developer can complete the flow
+            // without a mail client. Recipient is redacted.
+            tracing::warn!(
+                to = %redact_email(&message.to),
+                subject = %message.subject,
+                body = %message.text_body,
+                "dev sink stored email"
+            );
             Ok(SendOutcome::Stored)
         })
     }

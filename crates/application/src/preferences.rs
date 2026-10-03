@@ -107,6 +107,21 @@ impl PreferenceService {
     }
 }
 
+/// Validates a hosted preference key/value against the typed allowlist
+/// (Section 10.1: "typed allowlisted preference keys only"). Shared by the
+/// desktop file store and the hosted control-plane routes so the allowlist
+/// and shapes cannot drift.
+pub fn validate_preference(
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<PreferenceKey, DomainError> {
+    let key = PreferenceKey::try_from(key).map_err(|_| {
+        DomainError::validation("preference_key", "unknown preference key".to_string())
+    })?;
+    validate_value(key, value)?;
+    Ok(key)
+}
+
 /// Per-key value-shape validation (Section 10.1 typed allowlist).
 fn validate_value(key: PreferenceKey, value: &serde_json::Value) -> Result<(), DomainError> {
     let shape_error = || {
