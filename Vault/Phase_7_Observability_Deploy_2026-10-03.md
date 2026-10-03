@@ -26,4 +26,4 @@ Commit `41aa5c7` on `master`, following [[Phase_7_Hosted_Composition_2026-10-03]
 
 - Hosted CI verification (blocked: GitHub Actions billing/spending limit — owner action).
 - Threat-model findings sign-off.
-- Auth lifecycle/security e2e suite (browser-level; Phase 6 browser CI is also billing-blocked).
+- Browser-level security e2e suite (Phase 6 browser CI is also billing-blocked); the Section 14.3.1 API-level lifecycle rehearsal is now covered by `full_lifecycle_rehearsal` (commit `c9fb478`).
