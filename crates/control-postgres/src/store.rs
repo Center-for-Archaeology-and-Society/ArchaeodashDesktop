@@ -794,4 +794,73 @@ mod tests {
             ThrottleDecision::Allowed
         );
     }
+
+    /// Section 14.3.2 rehearsal artifact: the control-plane schema contains
+    /// only identity/session/token/throttle/preference tables — no
+    /// analytical, dataframe, source, result, or project content. This is a
+    /// hard schema invariant, so it is enforced by a test against the live
+    /// migrations rather than by inspection.
+    #[tokio::test]
+    async fn schema_contains_no_analytical_content() {
+        let Some((_store, pool)) = migrated_store().await else {
+            return;
+        };
+        let tables: Vec<String> = sqlx::query_scalar(
+            "SELECT table_name FROM information_schema.tables \
+             WHERE table_schema = 'public' AND table_type = 'BASE TABLE' \
+             ORDER BY table_name",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("table listing");
+        let expected: Vec<String> = [
+            "_sqlx_migrations",
+            "account_tokens",
+            "auth_throttles",
+            "preferences",
+            "sessions",
+            "users",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            tables, expected,
+            "control plane must hold only Section 6.5 tables"
+        );
+        // The users table holds identity/contact/auth state only: no column
+        // could carry analytical payloads (a structural, not data, check).
+        let user_columns: Vec<String> = sqlx::query_scalar(
+            "SELECT column_name FROM information_schema.columns \
+             WHERE table_schema = 'public' AND table_name = 'users' \
+             ORDER BY ordinal_position",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("column listing");
+        for column in &user_columns {
+            assert!(
+                !column.contains("dataframe")
+                    && !column.contains("analysis")
+                    && !column.contains("project"),
+                "unexpected analytical-sounding column: {column}"
+            );
+        }
+        assert_eq!(
+            user_columns,
+            [
+                "id",
+                "username",
+                "username_normalized",
+                "email",
+                "email_normalized",
+                "password_hash",
+                "email_verified_at",
+                "disabled_at",
+                "created_at",
+                "updated_at"
+            ],
+            "users table columns drifted from the Section 6.5 spec"
+        );
+    }
 }
