@@ -61,6 +61,8 @@ import type {
 } from '@archaeodash/contracts';
 import {
   TransportError,
+  type AuthService,
+  type ConsentInfo,
   type ExportsService,
   type ExploreService,
   type FilesService,
@@ -70,6 +72,7 @@ import {
   type ClusteringService,
   type AnalysisJobsService,
   type PreferencesService,
+  type SessionInfo,
   type TransformationsService,
   type Transport,
 } from './transport.ts';
@@ -102,6 +105,7 @@ export class HttpTransport implements Transport {
   readonly explore: ExploreService;
   readonly exports: ExportsService;
   readonly preferences: PreferencesService;
+  readonly auth: AuthService;
 
   constructor(
     baseUrl: string = '',
@@ -123,6 +127,7 @@ export class HttpTransport implements Transport {
     this.explore = this.makeExplore();
     this.exports = this.makeExports();
     this.preferences = this.makePreferences();
+    this.auth = this.makeAuth();
   }
 
   private url(path: string, query?: Record<string, string>): string {
@@ -150,6 +155,21 @@ export class HttpTransport implements Transport {
     } else if (options?.raw !== undefined) {
       init.headers = { 'content-type': 'application/octet-stream' };
       init.body = options.raw as unknown as BodyInit;
+    }
+    // CSRF double-submit (Section 11): every state-changing request echoes
+    // the non-HttpOnly csrf cookie back in the X-CSRF-Token header. Guarded
+    // for non-DOM contexts (node tests, Tauri never uses this adapter).
+    if (method !== 'GET' && typeof document !== 'undefined') {
+      const csrf = document.cookie
+        .split(';')
+        .map((pair) => pair.trim())
+        .find((pair) => pair.startsWith('archaeodash_csrf='))
+        ?.split('=')
+        .slice(1)
+        .join('=');
+      if (csrf) {
+        init.headers = { ...init.headers, 'x-csrf-token': csrf };
+      }
     }
     const res = await this.fetchImpl(this.url(path, options?.query), init);
     return this.unwrap<T>(res);
@@ -330,6 +350,54 @@ export class HttpTransport implements Transport {
       get: () => this.request<GetPreferencesResponse>('GET', '/api/v1/preferences'),
       put: async (key: PreferenceKey, value: unknown) => {
         await this.request('PUT', '/api/v1/preferences', { body: { key, value } });
+      },
+    };
+  }
+
+  private makeAuth(): AuthService {
+    return {
+      consent: () => this.request<ConsentInfo>('GET', '/api/v1/auth/consent'),
+      register: async (request) => {
+        await this.request('POST', '/api/v1/auth/register', {
+          body: {
+            username: request.username,
+            email: request.email,
+            password: request.password,
+            consent_version: request.consentVersion,
+          },
+        });
+      },
+      verify: async (token: string) => {
+        await this.request('POST', '/api/v1/auth/verify', { body: { token } });
+      },
+      login: async (request) => {
+        const session = await this.request<SessionInfo>('POST', '/api/v1/auth/login', {
+          body: {
+            identifier: request.identifier,
+            password: request.password,
+            ...(request.rememberDays === undefined
+              ? {}
+              : { remember_days: request.rememberDays }),
+          },
+        });
+        return session;
+      },
+      session: () => this.request<SessionInfo>('GET', '/api/v1/auth/session'),
+      logout: async () => {
+        await this.request('POST', '/api/v1/auth/logout');
+      },
+      logoutAll: async () => {
+        await this.request('POST', '/api/v1/auth/logout-all');
+      },
+      requestPasswordReset: async (email: string) => {
+        await this.request('POST', '/api/v1/auth/password-reset/request', {
+          body: { email },
+        });
+      },
+      confirmPasswordReset: async (request) => {
+        await this.request('POST', '/api/v1/auth/password-reset/confirm', {
+          body: { token: request.token, new_password: request.newPassword },
+        });
       },
     };
   }

@@ -103,6 +103,8 @@ export class TauriTransport implements Transport {
   readonly explore: ExploreService;
   readonly exports: ExportsService;
   readonly preferences: PreferencesService;
+  // Hosted-account operations do not exist in desktop mode; `auth` stays
+  // absent so callers can branch on `transport.auth === undefined`.
 
   constructor(invoke: InvokeLike, listen?: ListenLike) {
     this.invoke = invoke;

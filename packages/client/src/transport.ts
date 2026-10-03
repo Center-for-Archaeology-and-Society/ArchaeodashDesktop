@@ -161,6 +161,48 @@ export interface PreferencesService {
   put(key: PreferenceKey, value: unknown): Promise<void>;
 }
 
+/** Current terms/privacy notice version the registration dialog must accept. */
+export interface ConsentInfo {
+  consentVersion: string;
+  termsPath: string;
+  privacyPath: string;
+}
+
+/** Minimal session principal returned by `GET /auth/session`. */
+export interface SessionInfo {
+  authenticated: boolean;
+  username?: string;
+  email?: string;
+  emailVerified?: boolean;
+  csrfToken?: string;
+}
+
+/**
+ * Hosted-account service (Section 10.1). Password reset and registration
+ * issue emails through the server; the client never handles raw tokens
+ * beyond carrying the link's token for the verify/reset calls.
+ */
+export interface AuthService {
+  consent(): Promise<ConsentInfo>;
+  register(request: {
+    username: string;
+    email: string;
+    password: string;
+    consentVersion: string;
+  }): Promise<void>;
+  verify(token: string): Promise<void>;
+  login(request: {
+    identifier: string;
+    password: string;
+    rememberDays?: number;
+  }): Promise<SessionInfo>;
+  session(): Promise<SessionInfo>;
+  logout(): Promise<void>;
+  logoutAll(): Promise<void>;
+  requestPasswordReset(email: string): Promise<void>;
+  confirmPasswordReset(request: { token: string; newPassword: string }): Promise<void>;
+}
+
 export interface Transport {
   readonly kind: 'http' | 'tauri';
   appInfo(): Promise<AppInfo>;
@@ -175,6 +217,8 @@ export interface Transport {
   readonly explore: ExploreService;
   readonly exports: ExportsService;
   readonly preferences: PreferencesService;
+  /** Hosted-account operations; absent in desktop (Tauri) mode. */
+  readonly auth?: AuthService;
 }
 
 /** Normalizes any backend rejection into a TransportError. */

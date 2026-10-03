@@ -159,3 +159,107 @@ test('http: error envelopes pass through; non-JSON errors synthesize http_<statu
     (err: unknown) => err instanceof TransportError && err.envelope.code === 'http_404',
   );
 });
+
+test('http: auth service hits Section 10.1 routes and sends the CSRF header on writes', async () => {
+  const calls: { url: URL; method: string; headers: Record<string, string>; body: unknown }[] = [];
+  const transport: HttpTransport = new HttpTransport('', async (input, init) => {
+    const url = new URL(String(input), 'http://test.local');
+    let payload: unknown = null;
+    if (typeof init?.body === 'string') payload = JSON.parse(init.body);
+    calls.push({
+      url,
+      method: init?.method ?? 'GET',
+      headers: (init?.headers ?? {}) as Record<string, string>,
+      body: payload,
+    });
+    return new Response(JSON.stringify({ authenticated: false }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+  // No document in this environment: no CSRF cookie can be read, so writes
+  // go out without the header (the browser context supplies it).
+  assert.equal(typeof document, 'undefined');
+
+  await transport.auth.consent();
+  assert.equal(calls.at(-1)?.url.pathname, '/api/v1/auth/consent');
+
+  await transport.auth.register({
+    username: 'user',
+    email: 'user@example.com',
+    password: 'correct horse battery staple',
+    consentVersion: '2026-10',
+  });
+  assert.equal(calls.at(-1)?.url.pathname, '/api/v1/auth/register');
+  assert.deepEqual(calls.at(-1)?.body, {
+    username: 'user',
+    email: 'user@example.com',
+    password: 'correct horse battery staple',
+    consent_version: '2026-10',
+  });
+
+  await transport.auth.verify('tok-123');
+  assert.equal(calls.at(-1)?.url.pathname, '/api/v1/auth/verify');
+  assert.deepEqual(calls.at(-1)?.body, { token: 'tok-123' });
+
+  const session = await transport.auth.login({
+    identifier: 'user',
+    password: 'correct horse battery staple',
+    rememberDays: 90,
+  });
+  assert.equal(calls.at(-1)?.url.pathname, '/api/v1/auth/login');
+  assert.deepEqual(calls.at(-1)?.body, {
+    identifier: 'user',
+    password: 'correct horse battery staple',
+    remember_days: 90,
+  });
+  assert.equal(session.authenticated, false);
+
+  await transport.auth.session();
+  assert.equal(calls.at(-1)?.url.pathname, '/api/v1/auth/session');
+
+  await transport.auth.logout();
+  assert.equal(calls.at(-1)?.url.pathname, '/api/v1/auth/logout');
+
+  await transport.auth.logoutAll();
+  assert.equal(calls.at(-1)?.url.pathname, '/api/v1/auth/logout-all');
+
+  await transport.auth.requestPasswordReset('user@example.com');
+  assert.equal(calls.at(-1)?.url.pathname, '/api/v1/auth/password-reset/request');
+  assert.deepEqual(calls.at(-1)?.body, { email: 'user@example.com' });
+
+  await transport.auth.confirmPasswordReset({ token: 'tok', newPassword: 'pw' });
+  assert.equal(calls.at(-1)?.url.pathname, '/api/v1/auth/password-reset/confirm');
+  assert.deepEqual(calls.at(-1)?.body, { token: 'tok', new_password: 'pw' });
+
+  // Every auth write used POST (state-changing methods carry CSRF when a
+  // cookie is present; GETs never do).
+  for (const call of calls) {
+    if (call.method === 'GET') {
+      assert.equal(call.headers['x-csrf-token'], undefined);
+    }
+  }
+});
+
+test('http: CSRF header echoes the archaeodash_csrf cookie on writes', async () => {
+  const seen: (string | undefined)[] = [];
+  const transport = new HttpTransport('', async (input, init) => {
+    const url = new URL(String(input), 'http://test.local');
+    seen.push((init?.headers as Record<string, string>)?.['x-csrf-token']);
+    return new Response(null, { status: 204 });
+  });
+  // Simulate the browser cookie jar (non-HttpOnly csrf + HttpOnly session is
+  // invisible to document.cookie; only csrf reaches the header).
+  const original = globalThis.document;
+  (globalThis as { document?: unknown }).document = {
+    cookie: 'archaeodash_session=secret; archaeodash_csrf=csrf-token-1',
+  } as unknown as typeof document;
+  try {
+    await transport.preferences.put('theme', 'dark');
+    await transport.preferences.get();
+  } finally {
+    (globalThis as { document?: unknown }).document = original;
+  }
+  assert.equal(seen[0], 'csrf-token-1');
+  assert.equal(seen[1], undefined);
+});
