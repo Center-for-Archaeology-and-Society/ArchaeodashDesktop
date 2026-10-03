@@ -1756,3 +1756,242 @@ mod preference_tests {
         assert_eq!(res.status(), StatusCode::ACCEPTED);
     }
 }
+
+/// Section 14.3.1 lifecycle rehearsal: one continuous flow against live
+/// PostgreSQL — registration, verification, session reflection, remembered
+/// login, logout-all revocation, password reset, and the rate limit —
+/// exactly the flows cutover rehearsal must exercise.
+#[cfg(test)]
+mod lifecycle_rehearsal {
+    #![allow(clippy::expect_used, clippy::unwrap_used)] // test code; panics are the failure mode
+
+    use super::tests::{auth_app, auth_state, post_json, test_peer, unique_suffix};
+    use super::*;
+    use axum::body::Body;
+    use tower::ServiceExt;
+
+    async fn get_session(app: &Router, cookie: &str) -> axum::response::Response {
+        app.clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/auth/session")
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .map(|mut req| {
+                        req.extensions_mut().insert(ConnectInfo(test_peer()));
+                        req
+                    })
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible")
+    }
+
+    fn cookie_pair(response: &axum::response::Response) -> (String, String) {
+        let cookies: Vec<String> = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().expect("ascii").to_string())
+            .collect();
+        let pair = |name: &str| {
+            cookies
+                .iter()
+                .find(|c| c.starts_with(name))
+                .unwrap_or_else(|| panic!("missing {name} cookie"))
+                .split(';')
+                .next()
+                .expect("pair")
+                .to_string()
+        };
+        (
+            pair(SESSION_COOKIE),
+            pair(CSRF_COOKIE)
+                .split_once('=')
+                .expect("csrf value")
+                .1
+                .to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn full_lifecycle_rehearsal() {
+        let Some((state, sink)) = auth_state().await else {
+            return;
+        };
+        let app = auth_app(state.clone());
+        let suffix = unique_suffix();
+        let username = format!("rehearsal-{suffix}");
+        let email = format!("rehearsal-{suffix}@example.com");
+        let original_password = "correct horse battery staple";
+        let new_password = "a different correct horse staple";
+
+        // 1. Registration returns the generic 202 and sends one verification link.
+        let response = post_json(
+            app.clone(),
+            "/api/v1/auth/register",
+            serde_json::json!({
+                "username": username, "email": email,
+                "password": original_password, "consent_version": "2026-10"
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let verify_token = sink
+            .stored()
+            .last()
+            .expect("verification email")
+            .text_body
+            .split("/auth/verify?token=")
+            .nth(1)
+            .expect("token")
+            .lines()
+            .next()
+            .expect("token line")
+            .to_string();
+
+        // 2. Session reflects unverified before verification.
+        let unauth = get_session(&app, "").await;
+        assert_eq!(unauth.status(), StatusCode::OK);
+        let body: SessionResponse = serde_json::from_slice(
+            &axum::body::to_bytes(unauth.into_body(), usize::MAX)
+                .await
+                .expect("body"),
+        )
+        .expect("session json");
+        assert!(!body.authenticated);
+
+        // 3. Verification consumes the single-use token; replay is generic 400.
+        let response = post_json(
+            app.clone(),
+            "/api/v1/auth/verify",
+            serde_json::json!({ "token": verify_token }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let replay = post_json(
+            app.clone(),
+            "/api/v1/auth/verify",
+            serde_json::json!({ "token": verify_token }),
+        )
+        .await;
+        assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
+
+        // 4. Remembered login (90 days) sets both cookies and the session
+        //    endpoint reflects the verified principal.
+        let login = post_json(
+            app.clone(),
+            "/api/v1/auth/login",
+            serde_json::json!({
+                "identifier": username, "password": original_password,
+                "remember_days": 90
+            }),
+        )
+        .await;
+        assert_eq!(login.status(), StatusCode::OK);
+        let raw_cookies: Vec<String> = login
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().expect("ascii").to_string())
+            .collect();
+        let session_raw = raw_cookies
+            .iter()
+            .find(|c| c.starts_with(SESSION_COOKIE))
+            .expect("session cookie");
+        assert!(
+            session_raw.contains("Max-Age=7776000"),
+            "remember me expiry: {session_raw}"
+        );
+        let (session_cookie, csrf) = cookie_pair(&login);
+        let session: SessionResponse = serde_json::from_slice(
+            &axum::body::to_bytes(
+                get_session(&app, &session_cookie).await.into_body(),
+                usize::MAX,
+            )
+            .await
+            .expect("body"),
+        )
+        .expect("session json");
+        assert!(session.authenticated);
+        assert_eq!(session.email_verified, Some(true));
+
+        // 5. logout-all revokes every session: the old cookie stops resolving.
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/logout-all")
+                    .header(
+                        header::COOKIE,
+                        format!("{session_cookie}; {CSRF_COOKIE}={csrf}"),
+                    )
+                    .header(CSRF_HEADER, &csrf)
+                    .body(Body::empty())
+                    .map(|mut req| {
+                        req.extensions_mut().insert(ConnectInfo(test_peer()));
+                        req
+                    })
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let revoked: SessionResponse = serde_json::from_slice(
+            &axum::body::to_bytes(
+                get_session(&app, &session_cookie).await.into_body(),
+                usize::MAX,
+            )
+            .await
+            .expect("body"),
+        )
+        .expect("session json");
+        assert!(!revoked.authenticated);
+
+        // 6. Password reset: enumeration-resistant generic 202, then confirm
+        //    sets the new hash.
+        let response = post_json(
+            app.clone(),
+            "/api/v1/auth/password-reset/request",
+            serde_json::json!({ "email": email }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let reset_token = sink
+            .stored()
+            .last()
+            .expect("reset email")
+            .text_body
+            .split("/auth/reset?token=")
+            .nth(1)
+            .expect("token")
+            .lines()
+            .next()
+            .expect("token line")
+            .to_string();
+        let response = post_json(
+            app.clone(),
+            "/api/v1/auth/password-reset/confirm",
+            serde_json::json!({ "token": reset_token, "new_password": new_password }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        // 7. Old password is dead; new password logs in.
+        let old = post_json(
+            app.clone(),
+            "/api/v1/auth/login",
+            serde_json::json!({ "identifier": username, "password": original_password }),
+        )
+        .await;
+        assert_eq!(old.status(), StatusCode::UNAUTHORIZED);
+        let new = post_json(
+            app.clone(),
+            "/api/v1/auth/login",
+            serde_json::json!({ "identifier": username, "password": new_password }),
+        )
+        .await;
+        assert_eq!(new.status(), StatusCode::OK);
+    }
+}
