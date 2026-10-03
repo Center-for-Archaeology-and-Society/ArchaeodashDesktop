@@ -1,0 +1,70 @@
+# Hosted control-plane stack (Section 13.2 deployment disposition): the Rust
+# API, the PostgreSQL identity/contact control plane, and a durable local
+# user-file store declared explicitly. This file is the small/self-hosted
+# single-host mode (Section 6 item 6); S3-compatible object storage is the
+# production default and replaces the bind-mounted volume per deployment.
+#
+# Secrets are injected by the orchestrator environment, never committed. The
+# compose file references an `.env` beside it (git-ignored) that must define:
+#   POSTGRES_PASSWORD, AUTH_PEPPER (64 hex chars), AUTH_BASE_URL,
+#   AUTH_EMAIL_MODE (sendmail|smtp|dev), and the SMTP variables when
+#   AUTH_EMAIL_MODE=smtp (AUTH_SMTP_HOST/PORT/USERNAME/PASSWORD/FROM).
+# AUTH_ALLOW_DEV_EMAIL must be unset in any non-local deployment.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: archaeodash_control
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - db-backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d archaeodash_control"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Not published on the host: only the API service reaches the database.
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/container/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/archaeodash_control
+      AUTH_PEPPER: ${AUTH_PEPPER:?set AUTH_PEPPER in .env}
+      AUTH_BASE_URL: ${AUTH_BASE_URL:?set AUTH_BASE_URL in .env}
+      AUTH_EMAIL_MODE: ${AUTH_EMAIL_MODE:-sendmail}
+      AUTH_SMTP_HOST: ${AUTH_SMTP_HOST:-}
+      AUTH_SMTP_PORT: ${AUTH_SMTP_PORT:-}
+      AUTH_SMTP_USERNAME: ${AUTH_SMTP_USERNAME:-}
+      AUTH_SMTP_PASSWORD: ${AUTH_SMTP_PASSWORD:-}
+      AUTH_SMTP_FROM: ${AUTH_SMTP_FROM:-}
+      AUTH_BIND: 0.0.0.0:8080
+      AUTH_LOG_FORMAT: json
+      # Migrations run as an explicit deployment step (Section 6.5), never as
+      # ad hoc DDL from user sessions; the container entrypoint applies them
+      # once per start and exits non-zero if the schema check fails after.
+      AUTH_APPLY_MIGRATIONS: "1"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - file-store:/data/user-files
+    healthcheck:
+      test:
+        - CMD
+        - /usr/local/bin/healthcheck
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  db-data:
+  db-backups:
+  file-store:

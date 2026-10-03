@@ -849,15 +849,21 @@ mod tests {
     }
 
     pub(crate) fn test_peer() -> std::net::SocketAddr {
-        // Distinct loopback-ish addresses per request so per-IP throttle
-        // buckets never collide across parallel tests (production keys on
-        // the client IP, not the port).
+        // Distinct addresses per request so per-IP throttle buckets never
+        // collide across parallel tests or across repeated runs against a
+        // shared live database (production keys on the client IP): the base
+        // octets come from a per-process random prefix.
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
+        static BASE: std::sync::OnceLock<[u8; 2]> = std::sync::OnceLock::new();
+        let base = *BASE.get_or_init(|| {
+            let mut bytes = [0u8; 2];
+            let _ = getrandom::fill(&mut bytes);
+            bytes
+        });
         let n = N.fetch_add(1, Ordering::Relaxed);
         let a = 10u8;
-        let b = ((n >> 16) & 0xff) as u8;
-        let c = ((n >> 8) & 0xff) as u8;
+        let (b, c) = (base[0], base[1]);
         let d = (n & 0xff) as u8;
         format!("{a}.{b}.{c}.{d}:65001").parse().expect("peer addr")
     }

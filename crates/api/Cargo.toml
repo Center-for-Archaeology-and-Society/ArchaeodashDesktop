@@ -27,6 +27,7 @@ futures-util = "0.3"
 sqlx = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
+getrandom = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

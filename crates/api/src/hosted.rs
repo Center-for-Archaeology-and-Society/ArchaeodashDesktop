@@ -10,6 +10,7 @@ use axum::extract::State;
 use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::Response;
+use axum::routing::get;
 use axum::Router;
 use std::sync::Arc;
 
@@ -82,15 +83,6 @@ pub fn hosted_router(state: HostedState) -> Router {
     apply_security_headers(app)
 }
 
-use axum::routing::get;
-
-/// Applies the enforced security headers to a composed hosted router.
-/// Kept as a named step so deployment wiring reads as the Section 11.3
-/// checklist: headers, then serve.
-pub fn finalize_hosted_router(router: Router) -> Router {
-    apply_security_headers(router)
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -98,6 +90,7 @@ mod tests {
     use super::*;
     use archaeodash_auth::throttle::ThrottlePepper;
     use axum::body::Body;
+    use axum::http::header;
     use tower::ServiceExt;
 
     /// Builds a hosted router over a lazily-connected pool: middleware and
@@ -197,6 +190,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_logs_route_template_status_latency_no_pii() {
+        // Section 12: structured per-request logs keyed by route template and
+        // status only — never usernames, emails, or file/project names.
+        let state = hosted_test_router().await;
+        let buffer: std::sync::Arc<std::sync::Mutex<Vec<u8>>> = std::sync::Arc::default();
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_level(false)
+            .with_target(false)
+            .with_writer(move || log_capture::LogWriter(writer.clone()))
+            .finish();
+        let dispatch = tracing::subscriber::set_default(subscriber);
+        let sensitive = "pref-user-shouldneverappear@example.com";
+        let _ = finalize_hosted_router(hosted_router(state.clone()))
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/register")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "username": "shouldneverappear",
+                            "email": sensitive,
+                            "password": "correct horse battery staple",
+                            "consent_version": "2026-10"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        drop(dispatch);
+        let logs = String::from_utf8(buffer.lock().expect("log lock").clone()).expect("utf8 logs");
+        assert!(logs.contains("route=/api/v1/auth/register"), "logs: {logs}");
+        assert!(logs.contains("method=POST"), "logs: {logs}");
+        // The DB may or may not be reachable in unit-test mode; the log line
+        // must exist with some status and a latency measurement either way.
+        let status_log = logs
+            .lines()
+            .find(|l| l.contains("route=/api/v1/auth/register"))
+            .expect("register log line");
+        assert!(status_log.contains("status="), "logs: {logs}");
+        assert!(status_log.contains("latency_ms="), "logs: {logs}");
+        assert!(!logs.contains("shouldneverappear"), "PII leaked: {logs}");
+        assert!(!logs.contains("correct horse"), "PII leaked: {logs}");
+        // Unmatched paths log a safe template, never the raw path.
+        let _ = finalize_hosted_router(hosted_router(state))
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/not-a-route/secret-name-123")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        let logs = String::from_utf8(buffer.lock().expect("log lock").clone()).expect("utf8 logs");
+        assert!(!logs.contains("secret-name-123"), "raw path leaked: {logs}");
+    }
+
+    #[tokio::test]
     async fn health_ready_reflects_schema_currentness() {
         let state = hosted_test_router().await;
         let app = hosted_router(state);
@@ -221,5 +276,77 @@ mod tests {
             res.headers().get(REQUEST_ID_HEADER).is_some(),
             "correlation id on readiness"
         );
+    }
+}
+
+/// Request observability (Section 12): one structured log line per request
+/// with the matched route template, method, status, and wall-clock latency.
+/// Labels carry only route templates and status codes — never usernames,
+/// emails, uploaded filenames, or raw group/project names.
+async fn observe_request(request: Request<axum::body::Body>, next: Next) -> Response {
+    let method = request.method().clone();
+    let route = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(axum::extract::MatchedPath::as_str)
+        .unwrap_or("unmatched")
+        .to_owned();
+    let start = std::time::Instant::now();
+    let response = next.run(request).await;
+    let latency_ms = start.elapsed().as_millis() as u64;
+    let status = response.status().as_u16();
+    let request_id = response
+        .headers()
+        .get(REQUEST_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-")
+        .to_owned();
+    tracing::info!(
+        route = %route,
+        method = %method,
+        status,
+        latency_ms,
+        request_id = %request_id,
+        "request"
+    );
+    response
+}
+
+/// Composes the full hosted middleware stack, innermost first:
+/// request-id assignment, then request logging (sees the assigned ID),
+/// then security headers on every response.
+pub fn finalize_hosted_router(router: Router) -> Router {
+    apply_security_headers(router.layer(middleware::from_fn(observe_request)))
+}
+
+#[cfg(test)]
+mod log_capture {
+    //! `MakeWriter` over a shared buffer so tests can assert on emitted log
+    //! lines without a global subscriber.
+    #![allow(clippy::expect_used)] // test code; panics are the failure mode
+    use std::io;
+    use std::sync::{Arc, Mutex};
+
+    /// Owned-`Arc` sink so the `MakeWriter` closure returns an `io::Write`.
+    #[derive(Clone)]
+    pub(crate) struct LogWriter(pub(crate) Arc<Mutex<Vec<u8>>>);
+
+    impl tracing_subscriber::fmt::MakeWriter<'_> for LogWriter {
+        type Writer = LogWriter;
+
+        fn make_writer(&self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    impl io::Write for LogWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().expect("log lock").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 }

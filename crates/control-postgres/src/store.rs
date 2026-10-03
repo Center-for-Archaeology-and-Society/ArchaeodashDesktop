@@ -770,7 +770,12 @@ mod tests {
         // A second store over the same database stands in for another replica.
         let replica = ControlStore::new(pool);
         let pepper = ThrottlePepper::from_hex(&hex_encode(&[7u8; 32])).expect("pepper");
-        let key = pepper.key(ThrottleCategory::LoginByAccount, "shared@client");
+        // Unique per run so a shared test database never carries leftover
+        // counts into the fixed window.
+        let key = pepper.key(
+            ThrottleCategory::LoginByAccount,
+            &format!("shared-{}@client", Uuid::now_v7()),
+        );
         let now = SystemTime::now();
         for _ in 0..LOGIN_PER_ACCOUNT.max_attempts {
             assert_eq!(

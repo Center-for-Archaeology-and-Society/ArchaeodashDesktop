@@ -1,0 +1,12 @@
+#!/bin/sh
+# Container healthcheck (Section 12): liveness is process/HTTP only, readiness
+# is the API's own fail-closed schema check. Exit codes drive orchestrator
+# restart policy; this script never restarts or mutates anything itself.
+set -eu
+LIVE=$(wget -q -O /dev/null --server-response "http://127.0.0.1:${AUTH_BIND_PORT:-8080}/api/v1/health/live" 2>&1 | awk '/HTTP\//{print $2}' | tail -n1)
+READY=$(wget -q -O /dev/null --server-response "http://127.0.0.1:${AUTH_BIND_PORT:-8080}/api/v1/health/ready" 2>&1 | awk '/HTTP\//{print $2}' | tail -n1)
+[ "$LIVE" = "200" ] || exit 1
+# Ready failing (503) means the schema check failed: keep the container up so
+# logs show why, but report unhealthy to the orchestrator.
+[ "$READY" = "200" ] || exit 1
+exit 0
