@@ -100,3 +100,4 @@ Up: [[../../Vault/Index]]
 
 - [[Phase_7_Auth_Primitives_2026-10-01]]
 - [[Phase_7_Hosted_Composition_2026-10-03]]
+- [[Phase_7_Observability_Deploy_2026-10-03]]
