@@ -22,7 +22,7 @@ use archaeodash_auth::throttle::{
     LOGIN_PER_ACCOUNT, LOGIN_PER_IP, RESET_PER_ACCOUNT, RESET_PER_EMAIL, VERIFY_PER_ACCOUNT,
     VERIFY_PER_EMAIL,
 };
-use archaeodash_auth::token::{digest_presentation, OpaqueToken};
+use archaeodash_auth::token::{digest_presentation, OpaqueToken, REMEMBER_ME_DAY_CHOICES};
 use archaeodash_auth::GENERIC_AUTH_MESSAGE;
 use archaeodash_contracts::ErrorEnvelope;
 use archaeodash_control_postgres::{AccountTokenKind, ControlError, ControlStore, UserRow};
@@ -530,6 +530,18 @@ async fn login(
             .await
             .map_err(db_error)?;
     }
+    // Remember-me is an explicit choice limited to the Section 17.1 day
+    // choices (30 or 90); anything else is a 422, never a silent clamp.
+    let remember_days = match req.remember_days {
+        None => None,
+        Some(d) if REMEMBER_ME_DAY_CHOICES.contains(&d) => Some(d),
+        Some(_) => {
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json_error("invalid_remember_days"),
+            ))
+        }
+    };
     let token = OpaqueToken::generate().map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -542,7 +554,7 @@ async fn login(
             Uuid::now_v7(),
             user.id,
             &token.digest(),
-            req.remember_days,
+            remember_days,
             SystemTime::now(),
         )
         .await
@@ -1030,7 +1042,7 @@ mod tests {
 
     #[tokio::test]
     async fn wrong_password_is_generic_unauthorized() {
-        let Some((state, _sink)) = auth_state().await else {
+        let Some((state, sink)) = auth_state().await else {
             return;
         };
         let suffix = unique_suffix();
@@ -1067,7 +1079,7 @@ mod tests {
 
     #[tokio::test]
     async fn login_missing_account_is_generic_and_timing_uniform() {
-        let Some((state, _sink)) = auth_state().await else {
+        let Some((state, sink)) = auth_state().await else {
             return;
         };
         let app = auth_app(state);
@@ -1371,7 +1383,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_rejects_invalid_identity_and_duplicate_usernames() {
-        let Some((state, _sink)) = auth_state().await else {
+        let Some((state, sink)) = auth_state().await else {
             return;
         };
         let suffix = unique_suffix();
@@ -1767,6 +1779,7 @@ mod lifecycle_rehearsal {
 
     use super::tests::{auth_app, auth_state, post_json, test_peer, unique_suffix};
     use super::*;
+    use archaeodash_auth::email::DevSinkEmailSender;
     use axum::body::Body;
     use tower::ServiceExt;
 
@@ -1993,5 +2006,88 @@ mod lifecycle_rehearsal {
         )
         .await;
         assert_eq!(new.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn remember_days_outside_30_or_90_is_rejected() {
+        // Section 15 item 10: remember-me is an explicit choice among the
+        // documented day choices; arbitrary tenures are a 422, and the
+        // session issued is the 12-hour default when omitted.
+        let Some((state, sink)) = auth_state().await else {
+            return;
+        };
+        let suffix = unique_suffix();
+        let username = format!("rehearsal-{suffix}");
+        let app = auth_app(state.clone());
+        let response = post_json(
+            app.clone(),
+            "/api/v1/auth/register",
+            serde_json::json!({
+                "username": username,
+                "email": format!("rehearsal-{suffix}@example.com"),
+                "password": "correct horse battery staple",
+                "consent_version": "2026-10"
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let token = sink_last_token(&sink, "/auth/verify?token=");
+        post_json(
+            app.clone(),
+            "/api/v1/auth/verify",
+            serde_json::json!({ "token": token }),
+        )
+        .await;
+
+        for bad in [1u64, 36500] {
+            let response = post_json(
+                app.clone(),
+                "/api/v1/auth/login",
+                serde_json::json!({
+                    "identifier": username,
+                    "password": "correct horse battery staple",
+                    "remember_days": bad
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        }
+
+        // Omitted remember_days defaults to the 12-hour session cookie.
+        let response = post_json(
+            app,
+            "/api/v1/auth/login",
+            serde_json::json!({
+                "identifier": username,
+                "password": "correct horse battery staple"
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let session_raw = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().expect("ascii").to_string())
+            .find(|c| c.starts_with(SESSION_COOKIE))
+            .expect("session cookie");
+        assert!(session_raw.contains("Max-Age=43200"), "{session_raw}");
+    }
+
+    /// Extracts the newest action token of the given link kind from the dev sink.
+    fn sink_last_token(sink: &DevSinkEmailSender, marker: &str) -> String {
+        sink.stored()
+            .iter()
+            .rev()
+            .find(|m| m.text_body.contains(marker))
+            .expect("email with link")
+            .text_body
+            .split(marker)
+            .nth(1)
+            .expect("token")
+            .lines()
+            .next()
+            .expect("token line")
+            .to_string()
     }
 }
