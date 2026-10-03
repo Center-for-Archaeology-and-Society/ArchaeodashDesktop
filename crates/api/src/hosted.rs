@@ -97,7 +97,7 @@ mod tests {
     /// header tests run without a database (readiness then degrades to 503),
     /// and with `DATABASE_URL` the readiness test exercises the real schema
     /// check.
-    async fn hosted_test_router() -> HostedState {
+    pub(crate) async fn hosted_test_router() -> HostedState {
         let url = std::env::var("DATABASE_URL")
             .unwrap_or_else(|_| "postgres://nobody:nopass@127.0.0.1:9/nodb".to_string());
         let pool = sqlx::PgPool::connect_lazy(&url).expect("lazy pool builds");
@@ -347,6 +347,38 @@ mod log_capture {
 
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod header_hygiene {
+    // 2026-02-20 audit findings: no server technology/version disclosure on
+    // hosted responses (the legacy Shiny stack leaked X-Powered-By and
+    // Server version headers).
+
+    use super::tests::hosted_test_router;
+    use super::*;
+    use axum::body::Body;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn responses_disclose_no_server_technology() {
+        let state = hosted_test_router().await;
+        let res = hosted_router(state)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/health/live")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        for header in ["server", "x-powered-by"] {
+            assert!(
+                res.headers().get(header).is_none(),
+                "{header} must not be emitted"
+            );
         }
     }
 }
