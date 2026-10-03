@@ -20,6 +20,9 @@ tauri-build = "2"
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "=2.6.0"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
 archaeodash-application = { workspace = true }
 archaeodash-contracts = { workspace = true }
 archaeodash-desktop = { workspace = true }

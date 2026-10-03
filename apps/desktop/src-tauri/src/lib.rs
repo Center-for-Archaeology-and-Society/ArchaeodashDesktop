@@ -1,6 +1,8 @@
 //! Tauri 2 desktop shell. Commands delegate to the `archaeodash-desktop`
 //! crate (crates/desktop), which calls the shared application use cases.
 
+use tauri::Manager;
+
 use archaeodash_contracts::{
     ApplyTransformationRequest, BatchRatioRequest, BatchTransferUnitsRequest,
     ClusterDiagnosticsRequest, ClusterFitRequest, DeleteGroupRequest, DuplicateGroupRequest,
@@ -19,6 +21,7 @@ use std::sync::Mutex;
 
 mod export_files;
 mod job_events;
+mod logging;
 mod projects;
 mod source_files;
 
@@ -631,6 +634,17 @@ fn preferences_set(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            // Rotating desktop logs (Section 12). The worker guard must
+            // outlive the process for flush-on-drop; the app runs until
+            // exit, so forgetting it is the documented pattern.
+            let log_dir = app.path().app_log_dir().ok();
+            if let Some(guard) = logging::init(log_dir.as_deref()) {
+                std::mem::forget(guard);
+            }
+            tracing::info!(version = env!("CARGO_PKG_VERSION"), "desktop app starting");
+            Ok(())
+        })
         .manage(Mutex::new(DesktopState::empty()))
         .invoke_handler(tauri::generate_handler![
             app_info,
