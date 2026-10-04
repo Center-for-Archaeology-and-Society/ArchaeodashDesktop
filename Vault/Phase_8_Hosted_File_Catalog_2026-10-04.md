@@ -93,6 +93,11 @@ exports `HostedProjectsService`/`HostedFilesService`. Web tests 101
 green, tsc clean, vite build green; live smoke of the full vertical
 (register → login → project → upload → list) passed.
 
+**Quota route (Section 10.2, commit `b6bd95b`):** `GET /api/v1/quota`
+exposes the signed-in user's storage accounting (logical/reserved bytes,
+file count, effective limit; zeros before first upload) and the web
+Projects page shows live usage, refreshed after create/upload/delete.
+
 ## Remaining in the hosted data plane
 
 Per-project manifest/transformations/results sub-namespaces (Section 6.4)
