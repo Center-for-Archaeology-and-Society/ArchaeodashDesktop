@@ -98,6 +98,20 @@ exposes the signed-in user's storage accounting (logical/reserved bytes,
 file count, effective limit; zeros before first upload) and the web
 Projects page shows live usage, refreshed after create/upload/delete.
 
+**Restore drill updated for the new tables (commit `0b433ad`):** the
+drill's schema check still counted the original 5 control-plane tables,
+so a complete restore of a current database now fails as "incomplete
+(5/8)". Fixed to 8 (adds `projects`, `files`, `storage_quotas`), aligned
+the backup/restore scripts on `AUTH_FILE_STORE_DIR` (alias
+`USER_FILE_STORE_DIR`), and fixed the manifest path parse (sha256sum
+text mode is `<hash>␠␠<path>`; the old cut left a leading space so every
+drift check mis-opened the file). Verified live: backup of a store with
+a real uploaded object, restore into a fresh DB passes the 8-table +
+manifest checks, a corrupted object fails with `file-store drift`, and
+the restored DB passes the API readiness gate with
+`AUTH_APPLY_MIGRATIONS` unset while serving the restored project
+(login 200, project listing intact).
+
 ## Remaining in the hosted data plane
 
 Per-project manifest/transformations/results sub-namespaces (Section 6.4)
