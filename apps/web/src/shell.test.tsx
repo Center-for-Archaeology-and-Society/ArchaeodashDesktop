@@ -115,7 +115,7 @@ test('home route renders the project entry guidance', () => {
 
 test('account page renders the signed-out sign-in form in hosted mode', () => {
   const auth: AuthService = {
-    consent: async () => ({ consentVersion: '2026-10', termsPath: '/legal/terms', privacyPath: '/legal/privacy' }),
+    consent: async () => ({ consent_version: '2026-10', terms_path: '/legal/terms', privacy_path: '/legal/privacy' }),
     register: async () => {},
     verify: async () => {},
     login: async () => ({ authenticated: false }),
@@ -158,7 +158,7 @@ test('verify and reset link pages handle a missing token without calling the API
   const verifyCalls: string[] = [];
   const resetCalls: string[] = [];
   const auth: AuthService = {
-    consent: async () => ({ consentVersion: '2026-10', termsPath: '/legal/terms', privacyPath: '/legal/privacy' }),
+    consent: async () => ({ consent_version: '2026-10', terms_path: '/legal/terms', privacy_path: '/legal/privacy' }),
     register: async () => {},
     verify: async (token: string) => {
       verifyCalls.push(token);

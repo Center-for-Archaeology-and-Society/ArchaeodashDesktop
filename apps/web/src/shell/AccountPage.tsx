@@ -4,7 +4,7 @@
  * session/logout. Rendered only when the transport exposes `auth` (hosted
  * HTTP mode); desktop mode has no hosted accounts.
  */
-import { useEffect, useState, type FormEvent, type ReactElement } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import { Link } from 'react-router';
 import type { AuthService, SessionInfo } from '@archaeodash/client';
 
@@ -17,9 +17,15 @@ type Mode = 'signin' | 'register' | 'reset-request' | 'reset-confirm';
 
 /** Maps stable error-envelope codes to user-facing text (uniform messages). */
 function errorText(error: unknown): string {
+  // TransportError carries the server's ErrorEnvelope; plain Errors fall
+  // through to the generic message.
+  const envelope =
+    typeof error === 'object' && error !== null && 'envelope' in error
+      ? (error as { envelope?: { code?: unknown } }).envelope
+      : error;
   const code =
-    typeof error === 'object' && error !== null && 'code' in error
-      ? String((error as { code: unknown }).code)
+    typeof envelope === 'object' && envelope !== null && 'code' in envelope
+      ? String(envelope.code)
       : '';
   switch (code) {
     case 'invalid_credentials':
@@ -71,7 +77,7 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
     void auth
       .consent()
       .then((consent) => {
-        if (!cancelled) setConsentVersion(consent.consentVersion);
+        if (!cancelled) setConsentVersion(consent.consent_version);
       })
       .catch(() => {});
     return () => {
@@ -88,7 +94,10 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
     );
   }
 
-  const submit = (action: (form: HTMLFormElement) => Promise<void>) => {
+  const submit = (
+    action: (form: HTMLFormElement) => Promise<void>,
+    options: { refreshSession?: boolean } = {},
+  ) => {
     return (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       const form = event.currentTarget;
@@ -97,10 +106,14 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
       setNotice('');
       action(form)
         .then(() => {
-          // After sign-in the session cookie is set; re-read the principal.
-          return auth.session().then((info) => {
-            setSession(info);
-            setMode('signin');
+          // Only sign-in sets a session cookie; registration and reset
+          // request/confirm keep the signed-out state.
+          const refreshed =
+            options.refreshSession && auth
+              ? auth.session().then((info) => setSession(info))
+              : Promise.resolve();
+          return refreshed.then(() => {
+            if (options.refreshSession) setMode('signin');
             form.reset();
           });
         })
@@ -116,7 +129,7 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
         <p>
           Signed in as <strong>{session.username}</strong>
           {session.email ? <> ({session.email})</> : null}
-          {session.emailVerified === false ? ' — email not yet verified' : ''}
+          {session.email_verified === false ? ' — email not yet verified' : ''}
         </p>
         {error && <p role="alert">{error}</p>}
         {notice && <p role="status">{notice}</p>}
@@ -171,9 +184,10 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
           {mode === 'signin' && (
             <form
               aria-label="Sign in"
-              onSubmit={submit(async (form) => {
-                const data = new FormData(form);
-                const remember = String(data.get('remember') ?? '');
+              onSubmit={submit(
+                async (form) => {
+                  const data = new FormData(form);
+                  const remember = String(data.get('remember') ?? '');
                 await auth.login({
                   identifier: String(data.get('identifier') ?? ''),
                   password: String(data.get('password') ?? ''),
@@ -181,7 +195,9 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
                     ? { rememberDays: Number(remember) }
                     : {}),
                 });
-              })}
+                },
+                { refreshSession: true },
+              )}
             >
               <h2>Sign in</h2>
               <label>
@@ -359,20 +375,18 @@ export function VerifyEmailPage({ auth }: AccountPageProps): ReactElement {
   const [state, setState] = useState<'working' | 'done' | 'failed'>(
     token ? 'working' : 'failed',
   );
+  // The token is single-use: StrictMode's double-invoked effect (and any
+  // re-render) must not fire the verify call twice, or the second request
+  // would consume... nothing — it would get 'invalid_token' and mask the
+  // success. The ref guards one submission per page load.
+  const verifyStarted = useRef(false);
   useEffect(() => {
-    if (!auth || !token) return;
-    let cancelled = false;
+    if (!auth || !token || verifyStarted.current) return;
+    verifyStarted.current = true;
     auth
       .verify(token)
-      .then(() => {
-        if (!cancelled) setState('done');
-      })
-      .catch(() => {
-        if (!cancelled) setState('failed');
-      });
-    return () => {
-      cancelled = true;
-    };
+      .then(() => setState('done'))
+      .catch(() => setState('failed'));
   }, [auth, token]);
   return (
     <section aria-labelledby="verify-heading">

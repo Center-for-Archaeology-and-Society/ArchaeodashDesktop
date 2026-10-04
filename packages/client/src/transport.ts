@@ -163,9 +163,9 @@ export interface PreferencesService {
 
 /** Current terms/privacy notice version the registration dialog must accept. */
 export interface ConsentInfo {
-  consentVersion: string;
-  termsPath: string;
-  privacyPath: string;
+  consent_version: string;
+  terms_path: string;
+  privacy_path: string;
 }
 
 /** Minimal session principal returned by `GET /auth/session`. */
@@ -173,8 +173,8 @@ export interface SessionInfo {
   authenticated: boolean;
   username?: string;
   email?: string;
-  emailVerified?: boolean;
-  csrfToken?: string;
+  email_verified?: boolean;
+  csrf_token?: string;
 }
 
 /**

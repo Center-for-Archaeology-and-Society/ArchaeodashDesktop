@@ -176,7 +176,8 @@ export class HttpTransport implements Transport {
   }
 
   private async unwrap<T>(res: Response): Promise<T> {
-    if (res.status === 204) return undefined as T;
+    // 202/204 acks (register, verify, logout, reset) have no JSON body.
+    if (res.status === 204 || res.status === 202) return undefined as T;
     if (!res.ok) {
       let envelope: ErrorEnvelope | null = null;
       try {

@@ -51,6 +51,27 @@ The dump and manifest land in the same bundle so control-plane and file-store po
 
 Run the drill against a real backup before any promotion; a backup that has never been restored is a hypothesis.
 
+## Auth/security browser e2e (Phase 7 exit gate)
+
+`scripts/e2e/auth-security.mjs` drives headless Chromium through the real web
+UI against the real hosted API: security headers, HttpOnly/CSRF cookie
+split, register → email-link verify → replay rejection → remembered sign-in
+→ in-page CSRF 403/204 probe → password-reset round trip → old password
+rejected → sign-out-everywhere. Prerequisites:
+
+1. PostgreSQL reachable at `DATABASE_URL` (any disposable database;
+   `AUTH_APPLY_MIGRATIONS=1` applies migrations).
+2. `AUTH_PEPPER` (64 hex characters), `AUTH_EMAIL_MODE=dev`,
+   `AUTH_ALLOW_DEV_EMAIL=1` — the dev sink logs action links, which the
+   script reads from the API process log.
+3. `cargo build -p archaeodash-api --bin hosted`, then `npx vite --port 4173`
+   in `apps/web` (the dev proxy forwards `/api` to `127.0.0.1:8787`).
+4. Playwright chromium (`PLAYWRIGHT_MODULE` overrides the import).
+
+Run: `DATABASE_URL=… AUTH_PEPPER=… node scripts/e2e/auth-security.mjs`
+(prints `auth-security e2e: all assertions passed`; artifacts in
+`scripts/e2e/out/`).
+
 ## Rollback
 
 1. Stop traffic at the proxy (the API is stateless; sessions live in Postgres).
