@@ -34,16 +34,22 @@ echo "watermark: $(cat "${BUNDLE}/watermark.lsn")"
 TABLE_COUNT="$(psql "$TARGET" -Atqc "
   SELECT count(*) FROM information_schema.tables
   WHERE table_schema = 'public'
-    AND table_name IN ('users','sessions','account_tokens','auth_throttles','preferences')
+    AND table_name IN ('users','sessions','account_tokens','auth_throttles',
+                       'preferences','projects','files','storage_quotas')
 ")"
-[ "$TABLE_COUNT" = "5" ] || { echo "restored schema incomplete ($TABLE_COUNT/5 tables)" >&2; exit 1; }
+[ "$TABLE_COUNT" = "8" ] || { echo "restored schema incomplete ($TABLE_COUNT/8 tables)" >&2; exit 1; }
 
-# 5. Optional file-store manifest cross-check: when USER_FILE_STORE_DIR is
-#    set, every manifest entry must still verify.
-if [ -f "${BUNDLE}/file-store-manifest.sha256" ] && [ -n "${USER_FILE_STORE_DIR:-}" ]; then
+# 5. Optional file-store manifest cross-check: when AUTH_FILE_STORE_DIR is
+#    set (USER_FILE_STORE_DIR is the accepted pre-Section-6.4 alias), every
+#    manifest entry must still verify against the live store.
+FILE_STORE_DIR="${AUTH_FILE_STORE_DIR:-${USER_FILE_STORE_DIR:-}}"
+if [ -f "${BUNDLE}/file-store-manifest.sha256" ] && [ -n "$FILE_STORE_DIR" ]; then
   while IFS= read -r line; do
-    SUM="$(echo "$line" | cut -d' ' -f1)"
-    FILE="$USER_FILE_STORE_DIR/$(echo "$line" | cut -d'*' -f2- | sed 's|^\./||')"
+    SUM="${line%% *}"
+    PATH_PART="${line#* }"
+    PATH_PART="${PATH_PART# }"
+    PATH_PART="${PATH_PART#\./}"
+    FILE="$FILE_STORE_DIR/$PATH_PART"
     [ "$(sha256sum "$FILE" | cut -d' ' -f1)" = "$SUM" ] \
       || { echo "file-store drift: $FILE" >&2; exit 1; }
   done < "${BUNDLE}/file-store-manifest.sha256"

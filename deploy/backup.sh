@@ -5,8 +5,9 @@
 # versions. Object-store versioning alone is not a backup.
 #
 # Usage: backup.sh <output-directory>
-# Environment: DATABASE_URL (required), USER_FILE_STORE_DIR (optional; when
+# Environment: DATABASE_URL (required), AUTH_FILE_STORE_DIR (optional; when
 # set, a file-store manifest with per-object SHA-256 is recorded alongside).
+# USER_FILE_STORE_DIR is accepted as the pre-Section-6.4 alias.
 #
 # The dump and manifest are written to a staging directory and renamed into
 # place atomically (single `mv` of the finished bundle directory), so a
@@ -37,8 +38,9 @@ psql "$DATABASE_URL" -Atqc "SELECT pg_current_wal_lsn()" > "${STAGING}/watermark
 # 3. User-file store manifest (names + SHA-256 + mtimes only; file contents
 #    are backed up by the storage layer's own volume/snapshot mechanism —
 #    this manifest is what lets restore detect drift between the two).
-if [ -n "${USER_FILE_STORE_DIR:-}" ]; then
-  (cd "$USER_FILE_STORE_DIR" && find . -type f -print0 | sort -z | xargs -0 sha256sum) \
+FILE_STORE_DIR="${AUTH_FILE_STORE_DIR:-${USER_FILE_STORE_DIR:-}}"
+if [ -n "$FILE_STORE_DIR" ]; then
+  (cd "$FILE_STORE_DIR" && find . -type f -print0 | sort -z | xargs -0 sha256sum) \
     > "${STAGING}/file-store-manifest.sha256"
 fi
 
