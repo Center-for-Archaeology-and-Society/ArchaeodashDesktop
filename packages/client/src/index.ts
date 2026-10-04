@@ -19,6 +19,10 @@ export type {
   AuthService,
   ConsentInfo,
   SessionInfo,
+  HostedProjectsService,
+  HostedFilesService,
+  HostedProjectSummary,
+  HostedFileMeta,
 } from './transport.ts';
 export {
   themes,

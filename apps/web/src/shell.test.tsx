@@ -51,6 +51,7 @@ test('navbar preserves the legacy tab order and labels', () => {
       'Probabilities and Distances',
       'Euclidean Distance',
       'Account',
+      'Projects',
       'Info',
     ],
   );

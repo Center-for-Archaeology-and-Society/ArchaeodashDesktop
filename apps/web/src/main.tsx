@@ -21,6 +21,7 @@ import {
   ResetPasswordPage,
   VerifyEmailPage,
 } from './shell/AccountPage.tsx';
+import { HostedProjectsPage } from './shell/HostedProjectsPage.tsx';
 import { ExplorePage, type ExploreDeps } from './explore/ExplorePage.tsx';
 import { OrdinationPage, type OrdinationDeps } from './ordination/OrdinationPage.tsx';
 import { VisualizePage, type VisualizeDeps } from './visualize/VisualizePage.tsx';
@@ -108,6 +109,15 @@ function routeChildren(deps: ExploreDeps, ordinationDeps: OrdinationDeps, visual
     { path: 'info/terms', element: <TermsPage /> },
     { path: 'info/privacy', element: <PrivacyPage /> },
     { path: 'account', element: <AccountPage auth={transport.auth} /> },
+    {
+      path: 'projects',
+      element: (
+        <HostedProjectsPage
+          projects={transport.hostedProjects}
+          files={transport.hostedFiles}
+        />
+      ),
+    },
     { path: 'auth/verify', element: <VerifyEmailPage auth={transport.auth} /> },
     { path: 'auth/reset', element: <ResetPasswordPage auth={transport.auth} /> },
     { path: '*', element: <HomePage /> },

@@ -22,6 +22,7 @@ export const navRoutes: readonly NavRoute[] = [
   { label: 'Probabilities and Distances', path: '/probabilities' },
   { label: 'Euclidean Distance', path: '/euclidean' },
   { label: 'Account', path: '/account' },
+  { label: 'Projects', path: '/projects' },
   {
     label: 'Info',
     path: '/info',
