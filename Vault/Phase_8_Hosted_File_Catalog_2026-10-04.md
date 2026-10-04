@@ -67,11 +67,21 @@ mount. This slice implements the hosted file data plane end to end.
   warnings (new code; pre-existing test-only `expect/unwrap` lints in
   `--all-targets` were already at ~298 before this slice).
 
+**Follow-up (same day, commit `ce3407f`):** per-user storage quota
+(Section 6.9) is live — migration `0006_storage_quotas.sql`
+(logical/reserved bytes, file count, policy revision per owner),
+`ControlStore::reserve_quota` with an atomic limit guard, `reconcile_quota`
+(Commit/Release/Remove), upload route reserving before staging and
+reconciling on every outcome, delete reconciling tombstoned bytes, and
+`AUTH_QUOTA_BYTES` (default 1 GiB) in the binary, compose stack, and
+runbook. Live e2e: fit → 201, delete → 204 frees quota, over-quota → 413
+`quota_exceeded` with no reserved-byte leakage. 269 workspace tests green.
+
 ## Remaining in the hosted data plane
 
-Quota accounting (`storage_quotas`), the async retention sweep for
-`.trash`/tombstones, and per-project manifest/transformations/results
-sub-namespaces (Sections 6.4/6.9) — each is additive to this catalog.
+The async retention sweep for `.trash`/tombstones and per-project
+manifest/transformations/results sub-namespaces (Section 6.4) — each is
+additive to this catalog.
 
 ## Related
 
