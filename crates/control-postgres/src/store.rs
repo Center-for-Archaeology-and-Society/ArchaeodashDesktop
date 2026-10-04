@@ -94,6 +94,15 @@ pub struct FileRow {
     pub updated_at: OffsetDateTime,
 }
 
+/// A tombstone due for retention cleanup (Section 6.9): the catalog row is
+/// deleted and the caller removes the trash object it names.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct SweptFile {
+    pub file_id: Uuid,
+    pub user_id: Uuid,
+    pub object_key: String,
+}
+
 /// A `sessions` row.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct SessionRow {
@@ -596,9 +605,9 @@ impl ControlStore {
         let result = sqlx::query(
             "INSERT INTO files (file_id, project_id, logical_path, kind, \
              display_filename, object_key, sha256, media_type, extension, \
-             bytes, state, parse_error) \
+             bytes, state, parse_error, deleted_at) \
              SELECT $1, p.project_id, $3, $4, $5, $6, $7, $8, $9, $10, \
-                    $11, $12 \
+                    $11, $12, $14 \
              FROM projects p \
              WHERE p.project_id = $2 AND p.user_id = $13 \
                AND p.deleted_at IS NULL",
@@ -616,6 +625,7 @@ impl ControlStore {
         .bind(&file.state) // $11
         .bind(&file.parse_error) // $12
         .bind(file.user_id) // $13
+        .bind(file.deleted_at) // $14
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() == 1)
@@ -756,6 +766,27 @@ impl ControlStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Retention sweep (Section 6.9): deletes catalog rows tombstoned before
+    /// `cutoff` and returns them with ownership + object key so the caller
+    /// can purge the trash objects. One statement: selection and removal are
+    /// atomic, so a crash between DB delete and FS purge can only orphan an
+    /// inaccessible trash object, never a discoverable one.
+    pub async fn sweep_expired_tombstones(
+        &self,
+        cutoff: OffsetDateTime,
+    ) -> Result<Vec<SweptFile>, ControlError> {
+        let rows: Vec<SweptFile> = sqlx::query_as(
+            "DELETE FROM files f USING projects p \
+             WHERE f.project_id = p.project_id \
+               AND f.deleted_at IS NOT NULL AND f.deleted_at < $1 \
+             RETURNING f.file_id, p.user_id, f.object_key",
+        )
+        .bind(cutoff)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
     }
 
     /// Reads the quota row for observability/tests; `None` before first use.
@@ -1444,5 +1475,91 @@ mod tests {
         let (logical, reserved, count) =
             store.get_quota(user.id).await.expect("quota").expect("row");
         assert_eq!((logical, reserved, count), (0, 0, 0));
+    }
+
+    /// Retention sweep: only tombstones older than the cutoff are purged,
+    /// and the sweep returns ownership + object key for the trash purge.
+    #[tokio::test]
+    async fn sweep_expired_tombstones_scopes_by_cutoff() {
+        let Some((store, _pool)) = migrated_store().await else {
+            return;
+        };
+        let (owner, _) = make_user(&store).await;
+        let project_id = Uuid::now_v7();
+        store
+            .create_project(project_id, owner.id, "sweep", SystemTime::now())
+            .await
+            .expect("create project");
+        let now = SystemTime::now();
+        let old = FileRow {
+            file_id: Uuid::now_v7(),
+            user_id: owner.id,
+            project_id,
+            logical_path: "old.csv".to_string(),
+            kind: "source".to_string(),
+            display_filename: "old.csv".to_string(),
+            object_key: format!(
+                "users/{}/projects/{}/files/{}/1",
+                owner.id,
+                project_id,
+                Uuid::now_v7().simple()
+            ),
+            sha256: "b".repeat(64),
+            media_type: "text/csv".to_string(),
+            extension: "csv".to_string(),
+            bytes: 1,
+            state: "deleted".to_string(),
+            parse_error: None,
+            deleted_at: Some(to_offset(now - Duration::from_secs(48 * 3600))),
+            created_at: to_offset(now),
+            updated_at: to_offset(now),
+        };
+        store.insert_file(&old).await.expect("insert old");
+        let fresh_id = Uuid::now_v7();
+        let mut fresh = old.clone();
+        fresh.file_id = fresh_id;
+        fresh.logical_path = "fresh.csv".to_string();
+        fresh.object_key = format!(
+            "users/{}/projects/{}/files/{}/1",
+            owner.id,
+            project_id,
+            fresh_id.simple()
+        );
+        fresh.deleted_at = None;
+        store.insert_file(&fresh).await.expect("insert fresh");
+        store
+            .soft_delete_file(owner.id, fresh_id, now)
+            .await
+            .expect("tombstone fresh");
+
+        // Cutoff one hour before the deletes: only the 48h-old tombstone is
+        // due (an hour of margin absorbs process/DB clock skew).
+        let swept = store
+            .sweep_expired_tombstones(to_offset(now - Duration::from_secs(3600)))
+            .await
+            .expect("sweep");
+        assert_eq!(swept.len(), 1);
+        assert_eq!(swept[0].file_id, old.file_id);
+        assert_eq!(swept[0].user_id, owner.id);
+        assert_eq!(swept[0].object_key, old.object_key);
+
+        // The fresh tombstone survives (still within the window) and the
+        // path is occupied until purge, so a re-insert of the same path fails.
+        assert!(store
+            .get_file(owner.id, fresh_id)
+            .await
+            .expect("get")
+            .is_none());
+        assert!(store
+            .list_files(owner.id, project_id)
+            .await
+            .expect("list")
+            .is_empty());
+        // Sweeping again finds nothing.
+        assert!(store
+            .sweep_expired_tombstones(to_offset(now - Duration::from_secs(3600)))
+            .await
+            .expect("sweep again")
+            .is_empty());
     }
 }

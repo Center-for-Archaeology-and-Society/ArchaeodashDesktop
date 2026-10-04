@@ -110,12 +110,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             pepper,
             base_url,
         },
-        store,
-        files,
+        store: store.clone(),
+        files: files.clone(),
         quota_bytes,
     };
 
     let app = finalize_hosted_router(hosted_router(state));
+
+    // Retention sweep (Section 6.9): hourly, purges catalog tombstones older
+    // than AUTH_RETENTION_DAYS (default 30) along with their trash objects.
+    // Failures are logged and retried on the next tick; a crash between the
+    // DB delete and the FS purge can only orphan an inaccessible trash file.
+    let retention_days: i64 = std::env::var("AUTH_RETENTION_DAYS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    let sweep_store = store.clone();
+    let sweep_files = files.clone();
+    // (clones taken before the state move below)
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(retention_days);
+            match sweep_store.sweep_expired_tombstones(cutoff).await {
+                Ok(swept) => {
+                    for item in swept {
+                        sweep_files.purge_trash_object(item.user_id, item.file_id);
+                        tracing::info!(file_id = %item.file_id, "retention sweep purged file");
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "retention sweep failed"),
+            }
+        }
+    });
+
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!(%bind, "hosted API listening");
     // Peer addresses feed the throttle keys; without connect info every
