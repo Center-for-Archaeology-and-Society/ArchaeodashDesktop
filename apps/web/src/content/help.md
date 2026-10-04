@@ -1,71 +1,45 @@
----
-title: "ArchaeoDash Help Guide"
-output: 
-  html_document: 
-    toc: true
-    toc_float: true
-    self_contained: false
-    highlight: null
-    theme: flatly
----
-
-<script>
-document.addEventListener("DOMContentLoaded", function () {
-  document.querySelectorAll("a[href]").forEach(function (link) {
-    var href = link.getAttribute("href") || "";
-    if (/^(https?:|mailto:)/i.test(href)) {
-      link.setAttribute("target", "_blank");
-      link.setAttribute("rel", "noopener noreferrer");
-    }
-  });
-});
-</script>
+# ArchaeoDash Help Guide
 
 ## About
 
-ArchaeoDash was developed in R Shiny to facilitate the analysis of elemental data (for example portable X-ray fluorescence (PXRF) and Neutron Activation Analysis (NAA)). It includes tools for data management, ordination, clustering, distance-based matching, and group assignment.
+ArchaeoDash facilitates the analysis of elemental data (for example portable X-ray fluorescence (PXRF) and Neutron Activation Analysis (NAA)). It includes tools for data management, ordination, clustering, distance-based matching, and group assignment.
 
-This app was originally developed by Matthew Peeples and Andrew Upton and has been extensively redesigned by Robert Bischoff in consultation with Jeffrey Ferguson.
+ArchaeoDash was originally developed in R Shiny by Matthew Peeples and Andrew Upton and has been extensively redesigned by Robert Bischoff in consultation with Jeffrey Ferguson.
 
-We recommend creating an account to reduce data loss risk. If the app times out, reloads, or encounters an error while not logged in, temporary work may be lost.
+## Two Modes of Operation
 
-## Accounts and Sessions
+ArchaeoDash runs in two modes:
+
+- **Desktop mode** runs entirely on your computer. You open a project folder from your own storage; your project, group, and source files never leave your machine. No account is required.
+- **Hosted mode (web)** runs in your browser. You sign in with an account so your projects are available across devices. Projects are stored as files in your hosted file store — the account database holds only your identity, security, and preference records, never your analytical data.
+
+Group files are self-describing and remain complete on their own; edits are tracked as revisions, so files stay readable even outside the application. Calculations such as PCA, UMAP, LDA, and clustering are ephemeral unless you explicitly save or export their results.
+
+## Accounts and Sessions (hosted mode)
 
 ### Registration
 
-Click *LOGIN* in the side panel, check *Register as a new user*, and complete the form. You must accept the notice to complete registration, then verify your email from the message sent to you before your first login. If you forget your password, use the *Forgot your password?* link in the login dialog to request a reset email.
+Open the **Account** page, choose *Register as a new user*, and complete the form. You must accept the Terms & Conditions and Privacy Policy notice (the registration shows the current version) and verify your email from the message sent to you before your first sign-in. Verification links are single-use and expire within 24 hours. If you forget your password, use *Forgot your password?* to request a reset email; reset links are also single-use.
 
-### Login
+### Signing in
 
-Click *LOGIN* and enter your username and password.
+On the **Account** page enter your username or email and password. *Stay signed in* offers **For this session only**, **30 days**, or **90 days**. Use *Sign out* to end the session on the current browser, or *Sign out everywhere* to revoke all sessions on every device.
 
-### Cookies and Session Persistence
+### Cookies
 
-If cookies are accepted, ArchaeoDash stores a local remembered-login token to keep you signed in for up to 30 days. You can decline cookies or log out to clear the local remembered-login token.
+ArchaeoDash uses two strictly necessary cookies: a session cookie (HttpOnly, Secure) that authenticates each request and is invisible to page scripts, and a CSRF cookie that the application reads to prevent cross-site request forgery. No advertising, analytics, or third-party cookies are used. See the Privacy Policy for details.
 
 ## Import and Manage Data
 
+### Projects and files
+
+Desktop mode: click **Open Project** (or *Switch Project*) and choose a project folder. Your data lives in files inside that folder.
+
+Hosted mode: your account's project catalog lists your files; select a project and refresh to see its groups.
+
 ### Import Data
 
-Click *BROWSE* to upload data. CSV and XLSX are preferred, and other formats supported by the [rio package in R](https://cran.r-project.org/package=rio) may also work.
-
-If you are logged in:
-
-- Uploaded datasets are stored in your account database area.
-- Select a dataset from *Choose dataset*.
-- The selector defaults to your last opened dataset.
-- Click *Confirm dataset selection* to load that dataset.
-
-If you are not logged in:
-
-- Data is stored in temporary session memory only.
-- Only one dataset can be used at a time.
-
-## Data Manager
-
-### Dataset Management
-
-Use *Manage datasets* to delete selected datasets or merge/rename selected datasets.
+Use **Import data** in the Data Manager and choose a source file (CSV, TSV, or XLSX). The import preview shows normalized names and types; you select the visible ID column, optional group column, measured numeric columns, and how rows should be grouped. Confirming creates one group file per group with provenance recorded.
 
 ### Data Selection and Preparation
 
@@ -75,7 +49,7 @@ Use *Manage datasets* to delete selected datasets or merge/rename selected datas
 - Choose an imputation method if needed.
 - Choose a transformation method if needed.
 
-Click *Press to confirm selections* to apply these choices. Most analyses require this step before they update. A loading indicator is shown while the update runs.
+Confirm the selections to apply them. Most analyses require this step before they update. A loading indicator is shown while the update runs.
 
 ### Transformations
 
@@ -95,19 +69,20 @@ Transformation behavior:
 
 - Selecting a transformation in the *Transformations* dropdown loads it immediately.
 - *Delete* removes the selected transformation.
-- If logged in, transformations are persisted per selected dataset and can be reloaded later.
+
+Saved transformations are revision-checked project artifacts; the analysis views record which transformation produced each result.
 
 If *Run LDA* is selected with fewer than three groups, the app shows a warning because LDA visualization requires at least three groups.
 
 ### Additional Data Manager Tools
 
-- *Reset elements to original* resets element values to original imported values.
+- *Reset elements to original* restores element values to the original imported values.
 - *Add new column* creates a new column with a default value.
-- *Clear workspace* reloads the app session and clears temporary state.
+- *Clear workspace* clears temporary in-session state; saved project files are unchanged.
 
 ## Save Data
 
-Use the export section to download current data products. In most cases, confirm selections first so exported tables reflect current settings.
+Use the export section to download current data products. Exports are explicit: nothing is written to your project files unless you save or export it. In most cases, confirm selections first so exported tables reflect current settings.
 
 ## Explore
 
@@ -115,63 +90,47 @@ This tab has options for exploring the selected data.
 
 ### DATASET
 
-This tab contains a plot displaying the number of missing or zero values for each element column as well as a view of the entire selected dataset. Data can be edited here by double clicking a cell and then clicking off the cell when the data has been changed. Extensive data modification should be done in a spreadsheet editor such as Excel and then uploaded to ArchaeoDash.
-
-When logged in, edits autosave directly to the currently selected dataset in the database.
-
-Warning: editing metadata columns (for example group or descriptive columns) changes database records. Make sure you maintain backups before making bulk edits.
+Use the dataset selector to choose the analysis source (`elements`, `principal components`, `UMAP`, or `linear discriminants`).
 
 ### CROSSTABS
 
-Choose the columns you wish to group data by in column 1 and column2. Select the same column in both drop-down lists if you want to view results by only one column. Then select the type of display in the last drop-down. No result or an error may be returned if the data is not the correct type.
+Produce cross-tabulated counts of two fields, or mean/median/SD of a numeric-convertible second field grouped by the first.
 
 ### UNIVARIATE PLOTS
 
-This tab shows histograms of the element data.
+Per-element histograms and missing-value counts from the original measured predictors.
 
 ### COMPOSITIONAL PLOT PROFILE
 
-This line plot shows the variation in element concentrations across the dataset.
+Compositional profile lines across ordered predictors, colored by current groups where available.
 
 ## VISUALIZE & ASSIGN
 
-Use this tab to visualize data (elements, PCA, UMAP, LDA) and reassign selected points.
-
-In *visualize and select*:
-
-1. Choose data source and x/y variables.
-2. Keep *Use group symbols* enabled to distinguish groups by marker type (symbols repeat automatically for large group counts).
-3. Toggle *Show point labels* and choose a *Label column* (defaults to ANID when available).
-4. Optionally enable *Data Ellipse* and adjust ellipse level.
-5. Select points using lasso/box select.
-6. Enter a new group designation.
-7. Click *Change Group Assignment*.
-
-In *multiplots*:
-
-- Build multiple pair plots.
-- Toggle interactive mode.
-- Save plots to file.
+- Source selector; X/Y selectors with PCA variance labels; reject same axis.
+- Lasso/box selection on plots; double-click clears; selected-row table shows ANID, metadata, and predictors.
+- Metadata field/value filter with `(Missing)` normalization and clear action.
+- Optional data ellipse (0.50–0.99), symbol metadata field, optional labels with ANID/sample ID/row-number fallback.
+- Assignment to an existing group or a new group; changes are recorded with revision checks.
 
 ## ORDINATION
 
 ### PCA
 
-Shows PCA outputs for the current confirmed transformation.
+Principal component analysis with explained-variance reporting; use the scores as analysis sources elsewhere.
 
 ### LDA
 
-Shows LDA outputs for the current confirmed transformation. LDA requires at least three groups.
+Linear discriminant analysis against a chosen grouping column.
 
 ## CLUSTER
 
 Cluster methods available:
 
 - Optimal cluster count diagnostics (elbow and silhouette)
-- Hierarchical agglomerative clustering
-- Hierarchical divisive clustering
+- Hierarchical agglomerative clustering (Ward, complete, average, single)
+- Hierarchical divisive clustering (DIANA)
 - K-means
-- K-medoids
+- K-medoids (PAM)
 
 Cluster analysis can be run using:
 
@@ -180,7 +139,7 @@ Cluster analysis can be run using:
 - UMAP
 - linear discriminants (LDA)
 
-After running a method, use *Record cluster assignments* to add cluster labels back into the dataset. You can choose the output column name. If the column exists, you will be prompted to overwrite it.
+After running a method, record cluster assignments back into a group file with the output column name of your choice; overwriting an existing column prompts for confirmation.
 
 ## PROBABILITIES AND DISTANCES
 
@@ -188,40 +147,20 @@ This tab includes group size summaries and a full membership probabilities table
 
 ### Membership Probabilities Workflow
 
-1. Choose eligible groups and a unique sample ID column.
-2. Choose method and dataset source (`elements`, `principal components`, `UMAP`, or `linear discriminants`).
-3. Click *Calculate*.
-
-The membership table supports filtering and column visibility control.
+1. Choose the analysis source (`elements`, `principal components`, `UMAP`, or `linear discriminants`).
+2. Choose the reference groups.
+3. Compute membership probabilities; export if you want to keep them.
 
 ### Updating Group Assignments from Membership Probabilities
 
-You can update group assignments directly from selected table rows:
-
-1. Select one or more rows in the membership probabilities table.
-2. Click *Assign Best Group* to set each selected row to its `BestGroup`.
-3. Or enter a value in *Enter new group designation* and click *Change Group Assignment*.
-
-These updates write back to the dataset and carry into downstream analyses and saved transformations.
+Reviewed assignments can be recorded back to group files through the explicit destination-mapping step; the app shows the source revision so writes cannot silently overwrite changed files.
 
 ## EUCLIDEAN DISTANCE
 
-Use this tab to identify closest matches by Euclidean distance.
-
-Workflow:
-
-1. Choose dataset source (`elements`, `principal components`, `UMAP`, or `linear discriminants`).
-2. Choose groups to project against.
-3. Choose sample ID and whether to project within group.
-4. Choose the number of nearest matches to return.
-5. Click *Calculate*.
-
-The results table supports reassignment:
-
-- *Assign Match Group* sets selected rows to the matched group.
-- *Change Group Assignment* applies your entered group value to selected rows.
+Compute Euclidean distance matches between analytical units and reference groups, with matches per analytical unit configurable.
 
 ## Notes and Troubleshooting
 
-- If database connection fails, a persistent in-app warning is shown and account-linked storage features may be unavailable.
-- If an analysis returns no results, verify that required inputs are selected and that *Press to confirm selections* has been run after recent data or option changes.
+- Desktop mode keeps everything on your machine: keep your own backups of project folders. Hosted mode keeps operational backups for disaster recovery only — this is not a substitute for your own copies (see the Privacy Policy and Terms).
+- If an analysis returns no results, verify that required inputs are selected and that selections were confirmed after recent data or option changes.
+- If a save fails because the source file changed since it was loaded, reload the file and re-apply the change; the revision check prevents silent overwrites.
