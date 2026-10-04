@@ -54,6 +54,9 @@ services:
       AUTH_APPLY_MIGRATIONS: "1"
       # Section 6.4: per-user object namespace root (opaque UUID keys).
       AUTH_FILE_STORE_DIR: /data/user-files
+      # Section 6.9: per-user logical byte quota (reserve before upload,
+      # reconcile after). Default 1 GiB when unset.
+      AUTH_QUOTA_BYTES: ${AUTH_QUOTA_BYTES:-1073741824}
     ports:
       - "127.0.0.1:8080:8080"
     volumes:

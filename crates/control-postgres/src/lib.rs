@@ -10,7 +10,8 @@
 mod store;
 
 pub use store::{
-    AccountTokenKind, ControlError, ControlStore, FileRow, ProjectRow, SessionRow, UserRow,
+    AccountTokenKind, ControlError, ControlStore, FileRow, ProjectRow, QuotaOutcome, SessionRow,
+    UserRow,
 };
 
 /// Crate version reported by the smoke use case.

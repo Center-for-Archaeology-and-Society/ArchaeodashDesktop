@@ -7,7 +7,7 @@ use crate::auth::{auth_router, AuthState};
 use crate::security_headers::apply_security_headers;
 use archaeodash_contracts::ErrorEnvelope;
 use archaeodash_control_postgres::ControlStore;
-use archaeodash_control_postgres::FileRow;
+use archaeodash_control_postgres::{FileRow, QuotaOutcome};
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::extract::{Path, Query};
@@ -31,6 +31,8 @@ pub struct HostedState {
     /// Per-user object namespace root (Section 6.4). Required for the file
     /// routes; constructed in the binary from `AUTH_FILE_STORE_DIR`.
     pub files: Arc<crate::hosted_files::HostedFileStore>,
+    /// Per-user logical byte quota (Section 6.9); uploads reserve against it.
+    pub quota_bytes: i64,
 }
 
 /// Assigns a request/correlation ID to every response (Section 10): reuse a
@@ -118,7 +120,23 @@ async fn files_upload(
         Ok(id) => id,
         Err(_) => return Err(bad_request("invalid_project_id")),
     };
-    let staged = state
+    // Section 6.9: reserve capacity before any byte is staged; reconcile
+    // (commit or release) after the catalog outcome.
+    if !state
+        .store
+        .reserve_quota(principal.user.id, bytes.len() as i64, state.quota_bytes)
+        .await
+        .map_err(crate::auth::db_error)?
+    {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(ErrorEnvelope {
+                code: "quota_exceeded".into(),
+                message: "Storage quota exceeded for this account.".into(),
+            }),
+        ));
+    }
+    let staged = match state
         .files
         .stage(
             principal.user.id,
@@ -128,7 +146,21 @@ async fn files_upload(
             &bytes,
         )
         .await
-        .map_err(file_error)?;
+    {
+        Ok(staged) => staged,
+        Err(e) => {
+            let _ = state
+                .store
+                .reconcile_quota(
+                    principal.user.id,
+                    QuotaOutcome::Release,
+                    bytes.len() as i64,
+                    0,
+                )
+                .await;
+            return Err(file_error(e));
+        }
+    };
     let row = FileRow {
         file_id: staged.file_id,
         user_id: principal.user.id,
@@ -148,28 +180,57 @@ async fn files_upload(
         updated_at: time::OffsetDateTime::now_utc(),
     };
     match state.store.insert_file(&row).await {
-        Ok(true) => Ok((
-            StatusCode::CREATED,
-            Json(FileMetaResponse {
-                file_id: staged.file_id,
-                project_id,
-                logical_path: staged.logical_path,
-                display_filename: staged.display_filename,
-                size_bytes: staged.bytes,
-                sha256: staged.sha256,
-                media_type: staged.media_type,
-                parse_state: staged.parse_state,
-                parse_error: staged.parse_error,
-            }),
-        )),
+        Ok(true) => {
+            let _ = state
+                .store
+                .reconcile_quota(
+                    principal.user.id,
+                    QuotaOutcome::Commit,
+                    bytes.len() as i64,
+                    1,
+                )
+                .await;
+            Ok((
+                StatusCode::CREATED,
+                Json(FileMetaResponse {
+                    file_id: staged.file_id,
+                    project_id,
+                    logical_path: staged.logical_path,
+                    display_filename: staged.display_filename,
+                    size_bytes: staged.bytes,
+                    sha256: staged.sha256,
+                    media_type: staged.media_type,
+                    parse_state: staged.parse_state,
+                    parse_error: staged.parse_error,
+                }),
+            ))
+        }
         // Foreign/deleted project or path conflict: remove the staged object
         // and report failure without a cross-account existence oracle.
         Ok(false) => {
             state.files.discard_staged(&staged);
+            let _ = state
+                .store
+                .reconcile_quota(
+                    principal.user.id,
+                    QuotaOutcome::Release,
+                    bytes.len() as i64,
+                    0,
+                )
+                .await;
             Err((StatusCode::NOT_FOUND, json_error_envelope("not_found")))
         }
         Err(e) => {
             state.files.discard_staged(&staged);
+            let _ = state
+                .store
+                .reconcile_quota(
+                    principal.user.id,
+                    QuotaOutcome::Release,
+                    bytes.len() as i64,
+                    0,
+                )
+                .await;
             Err(crate::auth::db_error(e))
         }
     }
@@ -279,13 +340,33 @@ async fn files_delete(
     let Some(principal) = crate::auth::require_session(&state.auth, &headers, true).await? else {
         return Err(unauthorized());
     };
+    // Metadata first so the tombstone can reconcile the quota (Section 6.9):
+    // the bytes leave the logical total only when the delete succeeded.
+    let meta = state
+        .files
+        .metadata(&state.store, principal.user.id, file_id)
+        .await
+        .map_err(file_error)?;
     match state
         .files
         .delete(&state.store, principal.user.id, file_id)
         .await
         .map_err(file_error)?
     {
-        Some(_) => Ok(StatusCode::NO_CONTENT),
+        Some(_) => {
+            if let Some(meta) = meta {
+                let _ = state
+                    .store
+                    .reconcile_quota(
+                        principal.user.id,
+                        QuotaOutcome::Remove,
+                        meta.size_bytes as i64,
+                        1,
+                    )
+                    .await;
+            }
+            Ok(StatusCode::NO_CONTENT)
+        }
         None => Err((StatusCode::NOT_FOUND, json_error_envelope("not_found"))),
     }
 }
@@ -441,6 +522,7 @@ mod tests {
                 )
                 .expect("file store"),
             ),
+            quota_bytes: 1_073_741_824,
         };
         (state, sink)
     }
@@ -749,7 +831,7 @@ mod header_hygiene {
 /// Wraps an [`AuthState`]'s shared store into a hosted state with a temp
 /// file store, for file-route tests that log in through the auth helpers.
 #[cfg(test)]
-fn hosted_test_state(state: crate::auth::AuthState) -> HostedState {
+pub(crate) fn hosted_test_state(state: crate::auth::AuthState) -> HostedState {
     HostedState {
         auth: state.clone(),
         store: state.store.clone(),
@@ -759,5 +841,99 @@ fn hosted_test_state(state: crate::auth::AuthState) -> HostedState {
             )
             .expect("file store"),
         ),
+        quota_bytes: 1_073_741_824,
+    }
+}
+
+#[cfg(test)]
+mod quota_tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
+    use super::hosted_test_state;
+    use super::*;
+    use crate::auth::preference_tests::login_session;
+    use crate::auth::tests::{auth_state, test_peer};
+    use axum::body::Body;
+    use axum::extract::ConnectInfo;
+    use tower::ServiceExt;
+
+    /// Resolves the session user's id from the cookie (test helper).
+    async fn whoami(state: &crate::auth::AuthState, cookie: &str) -> Uuid {
+        let presentation = cookie
+            .split(';')
+            .map(str::trim)
+            .find_map(|c| c.strip_prefix(crate::auth::SESSION_COOKIE))
+            .and_then(|c| c.strip_prefix('='))
+            .expect("session cookie")
+            .to_string();
+        let digest = archaeodash_auth::token::digest_presentation(&presentation);
+        let (_, user) = state
+            .store
+            .find_live_session(&digest, std::time::SystemTime::now())
+            .await
+            .expect("session lookup")
+            .expect("live session");
+        user.id
+    }
+
+    #[tokio::test]
+    async fn hosted_upload_enforces_the_per_user_quota() {
+        let Some((state, sink)) = auth_state().await else {
+            return;
+        };
+        let (cookie, csrf) = login_session(state.clone(), sink).await;
+        // 10-byte quota: the 5-byte upload fits, the 20-byte one does not.
+        let mut app_state = hosted_test_state(state);
+        app_state.quota_bytes = 10;
+        let user = whoami(&app_state.auth, &cookie).await;
+        let project = app_state
+            .store
+            .create_project(
+                uuid::Uuid::now_v7(),
+                user,
+                "quota",
+                std::time::SystemTime::now(),
+            )
+            .await
+            .expect("project");
+        let app = hosted_router(app_state);
+        let post = |app: Router, uri: String, body: Vec<u8>, csrf: String, cookie: String| {
+            app.oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header(header::COOKIE, cookie)
+                    .header("x-csrf-token", csrf)
+                    .header(header::CONTENT_TYPE, "text/csv")
+                    .extension(ConnectInfo(test_peer()))
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+        };
+        let res = post(
+            app.clone(),
+            format!("/api/v1/files?project_id={}&path=a.csv", project.project_id),
+            b"a,b\n1\n".to_vec(),
+            csrf.clone(),
+            cookie.clone(),
+        )
+        .await
+        .expect("infallible");
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let res = post(
+            app,
+            format!("/api/v1/files?project_id={}&path=b.csv", project.project_id),
+            vec![0u8; 20],
+            csrf,
+            cookie,
+        )
+        .await
+        .expect("infallible");
+        assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .expect("body");
+        let envelope: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(envelope["code"], "quota_exceeded");
     }
 }

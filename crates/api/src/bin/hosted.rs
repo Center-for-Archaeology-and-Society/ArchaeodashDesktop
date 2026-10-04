@@ -97,6 +97,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let files = Arc::new(
         HostedFileStore::new(file_root).map_err(|e| format!("file store init failed: {e}"))?,
     );
+    // Section 6.9: per-user logical byte quota for upload reservations.
+    // Default 1 GiB — generous for INAA-scale spreadsheets, not unbounded.
+    let quota_bytes: i64 = std::env::var("AUTH_QUOTA_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1_073_741_824);
     let state = HostedState {
         auth: AuthState {
             store: store.clone(),
@@ -106,6 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         store,
         files,
+        quota_bytes,
     };
 
     let app = finalize_hosted_router(hosted_router(state));

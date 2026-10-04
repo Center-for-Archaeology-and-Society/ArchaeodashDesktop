@@ -60,6 +60,17 @@ pub struct ProjectRow {
     pub updated_at: OffsetDateTime,
 }
 
+/// How a reservation resolves (Section 6.9 reserve/reconcile discipline).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuotaOutcome {
+    /// Upload succeeded: reserved bytes become logical bytes.
+    Commit,
+    /// Upload failed: the reservation is returned.
+    Release,
+    /// A live file was deleted: its bytes leave the logical total.
+    Remove,
+}
+
 /// A hosted file catalog row (Section 6.4/6.5): identity, ownership,
 /// logical path, and integrity/state fields. Object bytes live in the file
 /// store under `object_key`; this row is the only catalog.
@@ -681,6 +692,84 @@ impl ControlStore {
         Ok(row.map(|(object_key,)| object_key))
     }
 
+    /// Reserves capacity for an incoming upload (Section 6.9): the quota row
+    /// is created on first use and `reserved_bytes` grows by `add` only when
+    /// the projected total (logical + reserved + add) stays within the limit.
+    /// Returns `false` when the reservation would exceed it. The caller
+    /// reconciles (commits or releases the reservation) after the outcome.
+    pub async fn reserve_quota(
+        &self,
+        user_id: Uuid,
+        add: i64,
+        limit_bytes: i64,
+    ) -> Result<bool, ControlError> {
+        // A first-use insert has no existing row to guard arithmetic, so the
+        // limit check for that path happens here.
+        if add > limit_bytes {
+            return Ok(false);
+        }
+        let result = sqlx::query(
+            "INSERT INTO storage_quotas (user_id, logical_bytes, reserved_bytes, file_count) \
+             VALUES ($1, 0, $2, 0) \
+             ON CONFLICT (user_id) DO UPDATE SET \
+               reserved_bytes = storage_quotas.reserved_bytes + $2, \
+               updated_at = now() \
+             WHERE storage_quotas.logical_bytes + storage_quotas.reserved_bytes + $2 <= $3",
+        )
+        .bind(user_id)
+        .bind(add)
+        .bind(limit_bytes)
+        .execute(&self.pool)
+        .await?;
+        // 0 rows means the conflict-update's arithmetic guard rejected the
+        // reservation for an existing row.
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Reconciles a reservation after the upload outcome (Section 6.9):
+    /// `Commit` moves the reserved bytes into the logical total and counts
+    /// the file; `Release` returns the reservation without counting; `Remove`
+    /// drops a tombstoned file's bytes from the logical total and count.
+    pub async fn reconcile_quota(
+        &self,
+        user_id: Uuid,
+        outcome: QuotaOutcome,
+        bytes: i64,
+        files: i64,
+    ) -> Result<(), ControlError> {
+        let commit = matches!(outcome, QuotaOutcome::Commit);
+        let remove = matches!(outcome, QuotaOutcome::Remove);
+        sqlx::query(
+            "UPDATE storage_quotas SET \
+               logical_bytes = GREATEST( \
+                 logical_bytes + CASE WHEN $2 THEN $3 WHEN $5 THEN -$3 ELSE 0 END, 0), \
+               reserved_bytes = GREATEST(reserved_bytes - $3, 0), \
+               file_count = GREATEST(file_count + CASE WHEN $2 THEN $4 WHEN $5 THEN -$4 ELSE 0 END, 0), \
+               updated_at = now() \
+             WHERE user_id = $1",
+        )
+        .bind(user_id)
+        .bind(commit)
+        .bind(bytes)
+        .bind(files)
+        .bind(remove)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Reads the quota row for observability/tests; `None` before first use.
+    pub async fn get_quota(&self, user_id: Uuid) -> Result<Option<(i64, i64, i64)>, ControlError> {
+        let row: Option<(i64, i64, i64)> = sqlx::query_as(
+            "SELECT logical_bytes, reserved_bytes, file_count \
+             FROM storage_quotas WHERE user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
     /// Upserts one preference (single statement, atomic per Section 6.5's
     /// primary-key `(user_id, key)` contract).
     pub async fn set_preference(
@@ -1062,6 +1151,7 @@ mod tests {
             // store namespace, not PostgreSQL).
             "projects",
             "sessions",
+            "storage_quotas",
             "users",
         ]
         .iter()
@@ -1294,5 +1384,65 @@ mod tests {
             ..row.clone()
         };
         assert!(store.insert_file(&reused).await.expect("insert again"));
+    }
+
+    /// Section 6.9 reserve/reconcile discipline: reservations are bounded by
+    /// the limit, commits move bytes to logical accounting, releases return
+    /// them, and removes drop tombstoned bytes from the logical total.
+    #[tokio::test]
+    async fn quota_reserve_commit_release_and_remove() {
+        let Some((store, _pool)) = migrated_store().await else {
+            return;
+        };
+        let (user, _) = make_user(&store).await;
+        let limit: i64 = 1000;
+
+        // First-use reservation within the limit.
+        assert!(store
+            .reserve_quota(user.id, 600, limit)
+            .await
+            .expect("reserve"));
+        let (logical, reserved, count) =
+            store.get_quota(user.id).await.expect("quota").expect("row");
+        assert_eq!((logical, reserved, count), (0, 600, 0));
+
+        // A second reservation overshoots and is refused, leaving the row.
+        assert!(!store
+            .reserve_quota(user.id, 500, limit)
+            .await
+            .expect("reserve"));
+        let (logical, reserved, _) = store.get_quota(user.id).await.expect("quota").expect("row");
+        assert_eq!((logical, reserved), (0, 600));
+
+        // Commit: reserved bytes become logical; the file is counted.
+        store
+            .reconcile_quota(user.id, QuotaOutcome::Commit, 600, 1)
+            .await
+            .expect("commit");
+        let (logical, reserved, count) =
+            store.get_quota(user.id).await.expect("quota").expect("row");
+        assert_eq!((logical, reserved, count), (600, 0, 1));
+
+        // Release (failed upload): the reservation is returned untouched.
+        assert!(store
+            .reserve_quota(user.id, 100, limit)
+            .await
+            .expect("reserve"));
+        store
+            .reconcile_quota(user.id, QuotaOutcome::Release, 100, 0)
+            .await
+            .expect("release");
+        let (logical, reserved, count) =
+            store.get_quota(user.id).await.expect("quota").expect("row");
+        assert_eq!((logical, reserved, count), (600, 0, 1));
+
+        // Remove (soft delete): bytes leave the logical total.
+        store
+            .reconcile_quota(user.id, QuotaOutcome::Remove, 600, 1)
+            .await
+            .expect("remove");
+        let (logical, reserved, count) =
+            store.get_quota(user.id).await.expect("quota").expect("row");
+        assert_eq!((logical, reserved, count), (0, 0, 0));
     }
 }
