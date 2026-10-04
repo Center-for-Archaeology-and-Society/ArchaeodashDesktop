@@ -263,3 +263,105 @@ test('http: CSRF header echoes the archaeodash_csrf cookie on writes', async () 
   assert.equal(seen[0], 'csrf-token-1');
   assert.equal(seen[1], undefined);
 });
+
+test('http: hosted projects service hits Section 10.2 catalog routes', async () => {
+  const calls: { url: URL; method: string; body: unknown }[] = [];
+  const transport = new HttpTransport('', async (input, init) => {
+    const url = new URL(String(input), 'http://test.local');
+    let payload: unknown = null;
+    if (typeof init?.body === 'string') payload = JSON.parse(init.body);
+    calls.push({ url, method: init?.method ?? 'GET', body: payload });
+    return new Response(
+      JSON.stringify({
+        project_id: '0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa',
+        name: 'Field 2026',
+        created_at: '2026-10-04T00:00:00Z',
+        updated_at: '2026-10-04T00:00:00Z',
+      }),
+      { status: 201, headers: { 'content-type': 'application/json' } },
+    );
+  });
+  const created = await transport.hostedProjects.create('Field 2026');
+  assert.equal(calls.at(-1)?.method, 'POST');
+  assert.equal(calls.at(-1)?.url.pathname, '/api/v1/projects');
+  assert.deepEqual(calls.at(-1)?.body, { name: 'Field 2026' });
+  assert.equal(created.project_id, '0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa');
+
+  await transport.hostedProjects.list();
+  assert.equal(calls.at(-1)?.url.pathname, '/api/v1/projects');
+  assert.equal(calls.at(-1)?.method, 'GET');
+
+  await transport.hostedProjects.get('0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa');
+  assert.equal(
+    calls.at(-1)?.url.pathname,
+    '/api/v1/projects/0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa',
+  );
+
+  await transport.hostedProjects.delete('0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa');
+  assert.equal(calls.at(-1)?.method, 'DELETE');
+});
+
+test('http: hosted files service uploads raw bytes and downloads without envelopes', async () => {
+  const calls: { url: URL; method: string; headers: Record<string, string>; body: unknown }[] = [];
+  let downloadServed = false;
+  const meta = {
+    file_id: '0197bbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb',
+    project_id: '0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa',
+    logical_path: 'sources/INAA.csv',
+    display_filename: 'INAA.csv',
+    size_bytes: 5,
+    sha256: 'a'.repeat(64),
+    media_type: 'text/csv',
+    parse_state: 'parsed',
+    parse_error: null,
+  };
+  const transport = new HttpTransport('', async (input, init) => {
+    const url = new URL(String(input), 'http://test.local');
+    calls.push({
+      url,
+      method: init?.method ?? 'GET',
+      headers: (init?.headers ?? {}) as Record<string, string>,
+      body: init?.body ?? null,
+    });
+    if (url.pathname.endsWith('/download')) {
+      downloadServed = true;
+      return new Response(new Uint8Array([1, 2, 3, 4, 5]), {
+        status: 200,
+        headers: { 'content-type': 'text/csv' },
+      });
+    }
+    return new Response(JSON.stringify(meta), {
+      status: 201,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  const uploaded = await transport.hostedFiles.upload({
+    projectId: '0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa',
+    path: 'sources/INAA.csv',
+    content: new Uint8Array([1, 2, 3, 4, 5]),
+  });
+  assert.equal(calls.at(-1)?.method, 'POST');
+  assert.equal(calls.at(-1)?.url.pathname, '/api/v1/files');
+  assert.equal(calls.at(-1)?.url.searchParams.get('project_id'), '0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa');
+  assert.equal(calls.at(-1)?.url.searchParams.get('path'), 'sources/INAA.csv');
+  assert.deepEqual(Array.from(calls.at(-1)?.body as Uint8Array), [1, 2, 3, 4, 5]);
+  assert.equal(uploaded.logical_path, 'sources/INAA.csv');
+
+  await transport.hostedFiles.list('0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa');
+  assert.equal(calls.at(-1)?.url.searchParams.get('project_id'), '0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa');
+
+  await transport.hostedFiles.metadata('0197bbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb');
+  assert.equal(
+    calls.at(-1)?.url.pathname,
+    '/api/v1/files/0197bbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb',
+  );
+
+  const downloaded = await transport.hostedFiles.download('0197bbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb');
+  assert.ok(downloadServed);
+  assert.deepEqual(Array.from(downloaded.content), [1, 2, 3, 4, 5]);
+  assert.equal(downloaded.meta.file_id, '0197bbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb');
+
+  await transport.hostedFiles.delete('0197bbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb');
+  assert.equal(calls.at(-1)?.method, 'DELETE');
+});

@@ -75,6 +75,10 @@ import {
   type SessionInfo,
   type TransformationsService,
   type Transport,
+  type HostedFilesService,
+  type HostedFileMeta,
+  type HostedProjectsService,
+  type HostedProjectSummary,
 } from './transport.ts';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -106,6 +110,8 @@ export class HttpTransport implements Transport {
   readonly exports: ExportsService;
   readonly preferences: PreferencesService;
   readonly auth: AuthService;
+  readonly hostedProjects: HostedProjectsService;
+  readonly hostedFiles: HostedFilesService;
 
   constructor(
     baseUrl: string = '',
@@ -128,6 +134,8 @@ export class HttpTransport implements Transport {
     this.exports = this.makeExports();
     this.preferences = this.makePreferences();
     this.auth = this.makeAuth();
+    this.hostedProjects = this.makeHostedProjects();
+    this.hostedFiles = this.makeHostedFiles();
   }
 
   private url(path: string, query?: Record<string, string>): string {
@@ -175,21 +183,24 @@ export class HttpTransport implements Transport {
     return this.unwrap<T>(res);
   }
 
+  /** Normalizes a failed Response into a TransportError. */
+  private async toError(res: Response): Promise<TransportError> {
+    let envelope: ErrorEnvelope | null = null;
+    try {
+      envelope = (await res.json()) as ErrorEnvelope;
+    } catch {
+      envelope = null;
+    }
+    if (!envelope || typeof envelope.code !== 'string') {
+      envelope = { code: `http_${res.status}`, message: res.statusText };
+    }
+    return new TransportError(envelope);
+  }
+
   private async unwrap<T>(res: Response): Promise<T> {
     // 202/204 acks (register, verify, logout, reset) have no JSON body.
     if (res.status === 204 || res.status === 202) return undefined as T;
-    if (!res.ok) {
-      let envelope: ErrorEnvelope | null = null;
-      try {
-        envelope = (await res.json()) as ErrorEnvelope;
-      } catch {
-        envelope = null;
-      }
-      if (!envelope || typeof envelope.code !== 'string') {
-        envelope = { code: `http_${res.status}`, message: res.statusText };
-      }
-      throw new TransportError(envelope);
-    }
+    if (!res.ok) throw await this.toError(res);
     return (await res.json()) as T;
   }
 
@@ -351,6 +362,63 @@ export class HttpTransport implements Transport {
       get: () => this.request<GetPreferencesResponse>('GET', '/api/v1/preferences'),
       put: async (key: PreferenceKey, value: unknown) => {
         await this.request('PUT', '/api/v1/preferences', { body: { key, value } });
+      },
+    };
+  }
+
+  private makeHostedProjects(): HostedProjectsService {
+    return {
+      list: () => this.request<{ projects: HostedProjectSummary[] }>('GET', '/api/v1/projects'),
+      create: async (name) =>
+        this.request<HostedProjectSummary>('POST', '/api/v1/projects', {
+          body: { name },
+        }),
+      get: (projectId) =>
+        this.request<HostedProjectSummary>(
+          'GET',
+          `/api/v1/projects/${encodeURIComponent(projectId)}`,
+        ),
+      delete: async (projectId) => {
+        await this.request('DELETE', `/api/v1/projects/${encodeURIComponent(projectId)}`);
+      },
+    };
+  }
+
+  private makeHostedFiles(): HostedFilesService {
+    return {
+      list: (projectId) =>
+        this.request<{ files: HostedFileMeta[] }>('GET', '/api/v1/files', {
+          query: { project_id: projectId },
+        }),
+      upload: async (request) => {
+        const query: Record<string, string> = {
+          project_id: request.projectId,
+          path: request.path,
+        };
+        if (request.filename !== undefined) query.filename = request.filename;
+        return this.request<HostedFileMeta>('POST', '/api/v1/files', {
+          query,
+          raw: request.content,
+        });
+      },
+      metadata: (fileId) =>
+        this.request<HostedFileMeta>('GET', `/api/v1/files/${encodeURIComponent(fileId)}`),
+      download: async (fileId) => {
+        // Metadata and bytes come from the two authorized endpoints; the
+        // bytes response carries no JSON envelope so this bypasses unwrap.
+        const meta = await this.request<HostedFileMeta>(
+          'GET',
+          `/api/v1/files/${encodeURIComponent(fileId)}`,
+        );
+        const res = await this.fetchImpl(
+          this.url(`/api/v1/files/${encodeURIComponent(fileId)}/download`),
+          { method: 'GET' },
+        );
+        if (!res.ok) throw await this.toError(res);
+        return { meta, content: new Uint8Array(await res.arrayBuffer()) };
+      },
+      delete: async (fileId) => {
+        await this.request('DELETE', `/api/v1/files/${encodeURIComponent(fileId)}`);
       },
     };
   }

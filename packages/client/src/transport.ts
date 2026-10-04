@@ -177,6 +177,55 @@ export interface SessionInfo {
   csrf_token?: string;
 }
 
+/** One hosted catalog project (Section 10.2): server timestamps are RFC 3339. */
+export interface HostedProjectSummary {
+  project_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One hosted catalog file row (metadata only; bytes come from download). */
+export interface HostedFileMeta {
+  file_id: string;
+  project_id: string;
+  logical_path: string;
+  display_filename: string;
+  size_bytes: number;
+  sha256: string;
+  media_type: string;
+  parse_state: string;
+  parse_error: string | null;
+}
+
+/**
+ * Hosted project catalog service (Section 10.2). Present only in HTTP
+ * (hosted) mode; desktop projects are directories opened natively.
+ */
+export interface HostedProjectsService {
+  list(): Promise<{ projects: HostedProjectSummary[] }>;
+  create(name: string): Promise<HostedProjectSummary>;
+  get(projectId: string): Promise<HostedProjectSummary>;
+  delete(projectId: string): Promise<void>;
+}
+
+/**
+ * Hosted file service (Section 6.4/10.2): upload into an owned project's
+ * namespace, list/inspect/download/delete by file ID.
+ */
+export interface HostedFilesService {
+  list(projectId: string): Promise<{ files: HostedFileMeta[] }>;
+  upload(request: {
+    projectId: string;
+    path: string;
+    filename?: string;
+    content: Uint8Array;
+  }): Promise<HostedFileMeta>;
+  metadata(fileId: string): Promise<HostedFileMeta>;
+  download(fileId: string): Promise<{ meta: HostedFileMeta; content: Uint8Array }>;
+  delete(fileId: string): Promise<void>;
+}
+
 /**
  * Hosted-account service (Section 10.1). Password reset and registration
  * issue emails through the server; the client never handles raw tokens
@@ -219,6 +268,10 @@ export interface Transport {
   readonly preferences: PreferencesService;
   /** Hosted-account operations; absent in desktop (Tauri) mode. */
   readonly auth?: AuthService;
+  /** Hosted project catalog; absent in desktop (Tauri) mode. */
+  readonly hostedProjects?: HostedProjectsService;
+  /** Hosted per-user file store; absent in desktop (Tauri) mode. */
+  readonly hostedFiles?: HostedFilesService;
 }
 
 /** Normalizes any backend rejection into a TransportError. */
