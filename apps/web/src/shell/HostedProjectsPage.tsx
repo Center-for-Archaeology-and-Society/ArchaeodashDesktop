@@ -5,7 +5,12 @@
  * (hosted HTTP mode); desktop projects are opened directories instead.
  */
 import { useCallback, useEffect, useState, type FormEvent, type ReactElement } from 'react';
-import type { HostedFileMeta, HostedFilesService, HostedProjectsService } from '@archaeodash/client';
+import type {
+  HostedFileMeta,
+  HostedFilesService,
+  HostedProjectsService,
+  QuotaUsage,
+} from '@archaeodash/client';
 
 export interface HostedProjectsPageProps {
   readonly projects?: HostedProjectsService;
@@ -43,6 +48,15 @@ export function HostedProjectsPage({ projects, files }: HostedProjectsPageProps)
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [quota, setQuota] = useState<QuotaUsage | null>(null);
+
+  const refreshQuota = useCallback(() => {
+    if (!projects) return;
+    projects
+      .quota()
+      .then((usage) => setQuota(usage))
+      .catch(() => setQuota(null));
+  }, [projects]);
 
   const refreshProjects = useCallback(() => {
     if (!projects) return;
@@ -75,7 +89,8 @@ export function HostedProjectsPage({ projects, files }: HostedProjectsPageProps)
 
   useEffect(() => {
     refreshProjects();
-  }, [refreshProjects]);
+    refreshQuota();
+  }, [refreshProjects, refreshQuota]);
 
   useEffect(() => {
     if (selected) refreshFiles(selected);
@@ -86,6 +101,13 @@ export function HostedProjectsPage({ projects, files }: HostedProjectsPageProps)
     return (
       <section aria-labelledby="projects-heading">
         <h1 id="projects-heading">Projects</h1>
+      {quota && (
+        <p aria-label="storage usage">
+          {quota.file_count} file{quota.file_count === 1 ? '' : 's'} ·{' '}
+          {quota.logical_bytes.toLocaleString()} of{' '}
+          {quota.limit_bytes.toLocaleString()} bytes used
+        </p>
+      )}
         <p>Hosted projects require a hosted deployment and a signed-in account.</p>
       </section>
     );
@@ -103,6 +125,7 @@ export function HostedProjectsPage({ projects, files }: HostedProjectsPageProps)
         setNotice(`Project “${trimmed}” created.`);
         setError('');
         refreshProjects();
+        refreshQuota();
       })
       .catch((err) => {
         setNotice('');
@@ -132,6 +155,7 @@ export function HostedProjectsPage({ projects, files }: HostedProjectsPageProps)
       .then(() => {
         setError('');
         refreshFiles(selected);
+        refreshQuota();
       })
       .catch((err) => {
         setNotice('');
@@ -148,6 +172,7 @@ export function HostedProjectsPage({ projects, files }: HostedProjectsPageProps)
       .then(() => {
         setError('');
         refreshFiles(selected);
+        refreshQuota();
       })
       .catch((err) => {
         setNotice('');
@@ -159,6 +184,13 @@ export function HostedProjectsPage({ projects, files }: HostedProjectsPageProps)
   return (
     <section aria-labelledby="projects-heading">
       <h1 id="projects-heading">Projects</h1>
+      {quota && (
+        <p aria-label="storage usage">
+          {quota.file_count} file{quota.file_count === 1 ? '' : 's'} ·{' '}
+          {quota.logical_bytes.toLocaleString()} of{' '}
+          {quota.limit_bytes.toLocaleString()} bytes used
+        </p>
+      )}
       {error && (
         <p role="alert" className="form-error">
           {error}

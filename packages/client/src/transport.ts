@@ -198,6 +198,14 @@ export interface HostedFileMeta {
   parse_error: string | null;
 }
 
+/** Per-user storage accounting (Section 6.9). */
+export interface QuotaUsage {
+  logical_bytes: number;
+  reserved_bytes: number;
+  file_count: number;
+  limit_bytes: number;
+}
+
 /**
  * Hosted project catalog service (Section 10.2). Present only in HTTP
  * (hosted) mode; desktop projects are directories opened natively.
@@ -207,6 +215,8 @@ export interface HostedProjectsService {
   create(name: string): Promise<HostedProjectSummary>;
   get(projectId: string): Promise<HostedProjectSummary>;
   delete(projectId: string): Promise<void>;
+  /** Storage accounting for the signed-in user (Section 6.9). */
+  quota(): Promise<QuotaUsage>;
 }
 
 /**

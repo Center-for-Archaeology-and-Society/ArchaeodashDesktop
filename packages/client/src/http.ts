@@ -79,6 +79,7 @@ import {
   type HostedFileMeta,
   type HostedProjectsService,
   type HostedProjectSummary,
+  type QuotaUsage,
 } from './transport.ts';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -381,6 +382,8 @@ export class HttpTransport implements Transport {
       delete: async (projectId) => {
         await this.request('DELETE', `/api/v1/projects/${encodeURIComponent(projectId)}`);
       },
+      quota: () =>
+        this.request<QuotaUsage>('GET', '/api/v1/quota'),
     };
   }
 

@@ -85,6 +85,7 @@ async fn health_ready(
 pub fn hosted_router(state: HostedState) -> Router {
     let auth = auth_router(state.auth.clone());
     let files = Router::new()
+        .route("/api/v1/quota", get(quota_get))
         .route("/api/v1/files", post(files_upload).get(files_list))
         .route(
             "/api/v1/files/{id}",
@@ -102,6 +103,30 @@ pub fn hosted_router(state: HostedState) -> Router {
         .merge(files)
         .layer(middleware::from_fn(assign_request_id));
     apply_security_headers(app)
+}
+
+/// `GET /api/v1/quota` — the session user's storage accounting (Section 6.9):
+/// logical bytes, reserved bytes, live file count, and the effective limit.
+/// Zero rows (never uploaded) report zeros against the configured limit.
+async fn quota_get(
+    State(state): State<HostedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = crate::auth::require_session(&state.auth, &headers, false).await? else {
+        return Err(unauthorized());
+    };
+    let usage = state
+        .store
+        .get_quota(principal.user.id)
+        .await
+        .map_err(crate::auth::db_error)?
+        .unwrap_or((0, 0, 0));
+    Ok(Json(serde_json::json!({
+        "logical_bytes": usage.0,
+        "reserved_bytes": usage.1,
+        "file_count": usage.2,
+        "limit_bytes": state.quota_bytes,
+    })))
 }
 
 /// `POST /api/v1/files?project_id=…&path=…&filename=…` — stages an upload
@@ -935,5 +960,86 @@ mod quota_tests {
             .expect("body");
         let envelope: serde_json::Value = serde_json::from_slice(&body).expect("json");
         assert_eq!(envelope["code"], "quota_exceeded");
+    }
+
+    #[tokio::test]
+    async fn quota_route_reports_usage_for_the_session_user() {
+        let Some((state, sink)) = crate::auth::tests::auth_state().await else {
+            return;
+        };
+        let (cookie, _csrf) =
+            crate::auth::preference_tests::login_session(state.clone(), sink).await;
+        let store = state.store.clone();
+        let mut app_state = hosted_test_state(state);
+        app_state.quota_bytes = 500;
+        let user = whoami(&app_state.auth, &cookie).await;
+        app_state
+            .store
+            .reserve_quota(user, 120, 500)
+            .await
+            .expect("reserve");
+        app_state
+            .store
+            .reconcile_quota(
+                user,
+                archaeodash_control_postgres::QuotaOutcome::Commit,
+                120,
+                1,
+            )
+            .await
+            .expect("commit");
+        let app = hosted_router(app_state);
+
+        let get = |app: Router, cookie: String| {
+            app.oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/quota")
+                    .header(header::COOKIE, cookie)
+                    .extension(ConnectInfo(test_peer()))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+        };
+        let res = get(app, cookie).await.expect("infallible");
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .expect("body");
+        let envelope: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(envelope["logical_bytes"], 120);
+        assert_eq!(envelope["file_count"], 1);
+        assert_eq!(envelope["limit_bytes"], 500);
+
+        // Unauthenticated access is 401: a fresh router with no session.
+        let app2 = hosted_router(HostedState {
+            auth: crate::auth::AuthState {
+                store: store.clone(),
+                email: std::sync::Arc::new(archaeodash_auth::email::DevSinkEmailSender::new()),
+                pepper: archaeodash_auth::throttle::ThrottlePepper::from_hex(&"ab".repeat(32))
+                    .expect("pepper"),
+                base_url: "https://archaeodash.example".to_string(),
+            },
+            store,
+            files: std::sync::Arc::new(
+                crate::hosted_files::HostedFileStore::new(
+                    tempfile::tempdir().expect("temp file store").keep(),
+                )
+                .expect("file store"),
+            ),
+            quota_bytes: 500,
+        });
+        let res = app2
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/quota")
+                    .extension(ConnectInfo(test_peer()))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 }

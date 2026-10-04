@@ -365,3 +365,25 @@ test('http: hosted files service uploads raw bytes and downloads without envelop
   await transport.hostedFiles.delete('0197bbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb');
   assert.equal(calls.at(-1)?.method, 'DELETE');
 });
+
+test('http: hosted projects quota route reports usage', async () => {
+  const calls: { url: URL; method: string }[] = [];
+  const transport = new HttpTransport('', async (input, init) => {
+    const url = new URL(String(input), 'http://test.local');
+    calls.push({ url, method: init?.method ?? 'GET' });
+    return new Response(
+      JSON.stringify({
+        logical_bytes: 120,
+        reserved_bytes: 0,
+        file_count: 1,
+        limit_bytes: 1073741824,
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+  });
+  const usage = await transport.hostedProjects.quota();
+  assert.equal(calls.at(-1)?.url.pathname, '/api/v1/quota');
+  assert.equal(calls.at(-1)?.method, 'GET');
+  assert.equal(usage.logical_bytes, 120);
+  assert.equal(usage.limit_bytes, 1073741824);
+});

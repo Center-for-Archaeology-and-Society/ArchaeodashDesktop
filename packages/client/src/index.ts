@@ -23,6 +23,7 @@ export type {
   HostedFilesService,
   HostedProjectSummary,
   HostedFileMeta,
+  QuotaUsage,
 } from './transport.ts';
 export {
   themes,
