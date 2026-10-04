@@ -85,6 +85,14 @@ the hosted binary runs the sweep hourly under `AUTH_RETENTION_DAYS`
 (default 30). Crash between DB delete and FS purge can only orphan an
 inaccessible trash object, never a discoverable one.
 
+**Web client slice (commit `f04bb64`):** `HostedProjectsPage` at
+`/projects` — list/create projects, per-project file table with upload
+(logical path + picker), parse state, and delete; stable error-envelope
+messages; nav entry following the Account pattern. Client transport
+exports `HostedProjectsService`/`HostedFilesService`. Web tests 101
+green, tsc clean, vite build green; live smoke of the full vertical
+(register → login → project → upload → list) passed.
+
 ## Remaining in the hosted data plane
 
 Per-project manifest/transformations/results sub-namespaces (Section 6.4)
