@@ -49,6 +49,7 @@ use axum::{Json, Router};
 
 pub mod auth;
 pub mod hosted;
+pub mod hosted_files;
 pub use hosted::{finalize_hosted_router, hosted_router, HostedState};
 pub mod job_events;
 pub mod security_headers;

@@ -9,7 +9,9 @@
 
 mod store;
 
-pub use store::{AccountTokenKind, ControlError, ControlStore, ProjectRow, SessionRow, UserRow};
+pub use store::{
+    AccountTokenKind, ControlError, ControlStore, FileRow, ProjectRow, SessionRow, UserRow,
+};
 
 /// Crate version reported by the smoke use case.
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");

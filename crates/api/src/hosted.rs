@@ -5,14 +5,21 @@
 
 use crate::auth::{auth_router, AuthState};
 use crate::security_headers::apply_security_headers;
+use archaeodash_contracts::ErrorEnvelope;
 use archaeodash_control_postgres::ControlStore;
+use archaeodash_control_postgres::FileRow;
+use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
+use axum::extract::{Path, Query};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
+use axum::response::IntoResponse;
 use axum::response::Response;
-use axum::routing::get;
+use axum::routing::{get, post};
+use axum::Json;
 use axum::Router;
 use std::sync::Arc;
+use uuid::Uuid;
 
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
 
@@ -21,6 +28,9 @@ pub const REQUEST_ID_HEADER: &str = "x-request-id";
 pub struct HostedState {
     pub auth: AuthState,
     pub store: Arc<ControlStore>,
+    /// Per-user object namespace root (Section 6.4). Required for the file
+    /// routes; constructed in the binary from `AUTH_FILE_STORE_DIR`.
+    pub files: Arc<crate::hosted_files::HostedFileStore>,
 }
 
 /// Assigns a request/correlation ID to every response (Section 10): reuse a
@@ -72,6 +82,14 @@ async fn health_ready(
 /// `AUTH_CORS_ALLOW_ORIGIN` at composition time.
 pub fn hosted_router(state: HostedState) -> Router {
     let auth = auth_router(state.auth.clone());
+    let files = Router::new()
+        .route("/api/v1/files", post(files_upload).get(files_list))
+        .route(
+            "/api/v1/files/{id}",
+            get(files_metadata).delete(files_delete),
+        )
+        .route("/api/v1/files/{id}/download", get(files_download))
+        .with_state(state.clone());
     let health = Router::new()
         .route("/api/v1/health/live", get(health_live))
         .route("/api/v1/health/ready", get(health_ready))
@@ -79,10 +97,313 @@ pub fn hosted_router(state: HostedState) -> Router {
     let app: Router = Router::new()
         .merge(health)
         .merge(auth)
+        .merge(files)
         .layer(middleware::from_fn(assign_request_id));
     apply_security_headers(app)
 }
 
+/// `POST /api/v1/files?project_id=…&path=…&filename=…` — stages an upload
+/// into the session user's namespace and inserts the catalog row
+/// (Section 10.2). CSRF applies; ownership is checked in the INSERT itself.
+async fn files_upload(
+    State(state): State<HostedState>,
+    headers: HeaderMap,
+    Query(query): Query<UploadFileQuery>,
+    bytes: Bytes,
+) -> Result<(StatusCode, Json<FileMetaResponse>), (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = crate::auth::require_session(&state.auth, &headers, true).await? else {
+        return Err(unauthorized());
+    };
+    let project_id = match Uuid::parse_str(&query.project_id) {
+        Ok(id) => id,
+        Err(_) => return Err(bad_request("invalid_project_id")),
+    };
+    let staged = state
+        .files
+        .stage(
+            principal.user.id,
+            project_id,
+            &query.path,
+            query.filename.as_deref(),
+            &bytes,
+        )
+        .await
+        .map_err(file_error)?;
+    let row = FileRow {
+        file_id: staged.file_id,
+        user_id: principal.user.id,
+        project_id,
+        logical_path: staged.logical_path.clone(),
+        kind: "source".to_string(),
+        display_filename: staged.display_filename.clone(),
+        object_key: staged.object_key.clone(),
+        sha256: staged.sha256.clone(),
+        media_type: staged.media_type.clone(),
+        extension: staged.extension.clone(),
+        bytes: staged.bytes as i64,
+        state: "published".to_string(),
+        parse_error: staged.parse_error.clone(),
+        deleted_at: None,
+        created_at: time::OffsetDateTime::now_utc(),
+        updated_at: time::OffsetDateTime::now_utc(),
+    };
+    match state.store.insert_file(&row).await {
+        Ok(true) => Ok((
+            StatusCode::CREATED,
+            Json(FileMetaResponse {
+                file_id: staged.file_id,
+                project_id,
+                logical_path: staged.logical_path,
+                display_filename: staged.display_filename,
+                size_bytes: staged.bytes,
+                sha256: staged.sha256,
+                media_type: staged.media_type,
+                parse_state: staged.parse_state,
+                parse_error: staged.parse_error,
+            }),
+        )),
+        // Foreign/deleted project or path conflict: remove the staged object
+        // and report failure without a cross-account existence oracle.
+        Ok(false) => {
+            state.files.discard_staged(&staged);
+            Err((StatusCode::NOT_FOUND, json_error_envelope("not_found")))
+        }
+        Err(e) => {
+            state.files.discard_staged(&staged);
+            Err(crate::auth::db_error(e))
+        }
+    }
+}
+
+/// `GET /api/v1/files?project_id=…` — the owned project's live files.
+async fn files_list(
+    State(state): State<HostedState>,
+    headers: HeaderMap,
+    Query(query): Query<ListFilesQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = crate::auth::require_session(&state.auth, &headers, false).await? else {
+        return Err(unauthorized());
+    };
+    let project_id = match Uuid::parse_str(&query.project_id) {
+        Ok(id) => id,
+        Err(_) => return Err(bad_request("invalid_project_id")),
+    };
+    let rows = state
+        .store
+        .list_files(principal.user.id, project_id)
+        .await
+        .map_err(crate::auth::db_error)?;
+    let files: Vec<FileMetaResponse> = rows
+        .iter()
+        .map(|row| FileMetaResponse {
+            file_id: row.file_id,
+            project_id: row.project_id,
+            logical_path: row.logical_path.clone(),
+            display_filename: row.display_filename.clone(),
+            size_bytes: row.bytes as u64,
+            sha256: row.sha256.clone(),
+            media_type: row.media_type.clone(),
+            parse_state: parse_state_from(&row.state, &row.parse_error),
+            parse_error: row.parse_error.clone(),
+        })
+        .collect();
+    Ok(Json(serde_json::Value::Object(serde_json::Map::from_iter(
+        [(
+            "files".to_string(),
+            serde_json::to_value(files).unwrap_or_else(|_| serde_json::Value::Array(vec![])),
+        )],
+    ))))
+}
+
+/// `GET /api/v1/files/{id}` — metadata for one owned, live file.
+async fn files_metadata(
+    State(state): State<HostedState>,
+    headers: HeaderMap,
+    Path(file_id): Path<Uuid>,
+) -> Result<Json<FileMetaResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = crate::auth::require_session(&state.auth, &headers, false).await? else {
+        return Err(unauthorized());
+    };
+    let meta = state
+        .files
+        .metadata(&state.store, principal.user.id, file_id)
+        .await
+        .map_err(file_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, json_error_envelope("not_found")))?;
+    Ok(Json(FileMetaResponse::from_hosted(meta)))
+}
+
+/// `GET /api/v1/files/{id}/download` — object bytes for an owned, live file.
+/// Ownership resolves in SQL before any path is touched.
+async fn files_download(
+    State(state): State<HostedState>,
+    headers: HeaderMap,
+    Path(file_id): Path<Uuid>,
+) -> Result<Response, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = crate::auth::require_session(&state.auth, &headers, false).await? else {
+        return Err(unauthorized());
+    };
+    let Some((meta, content)) = state
+        .files
+        .download(&state.store, principal.user.id, file_id)
+        .await
+        .map_err(file_error)?
+    else {
+        return Err((StatusCode::NOT_FOUND, json_error_envelope("not_found")));
+    };
+    // Display filename only in Content-Disposition, quoted and sanitized:
+    // it never appears in a URL or object key (Section 6.4).
+    let disposition = format!(
+        "attachment; filename=\"{}\"",
+        meta.display_filename.replace(['\\', '"'], "_")
+    );
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, meta.media_type),
+            (header::CONTENT_DISPOSITION, disposition),
+        ],
+        content,
+    )
+        .into_response())
+}
+
+/// `DELETE /api/v1/files/{id}` — tombstones the catalog row and moves the
+/// object to namespace trash. Idempotent semantics: unknown/foreign/deleted
+/// IDs are uniformly 404.
+async fn files_delete(
+    State(state): State<HostedState>,
+    headers: HeaderMap,
+    Path(file_id): Path<Uuid>,
+) -> Result<StatusCode, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = crate::auth::require_session(&state.auth, &headers, true).await? else {
+        return Err(unauthorized());
+    };
+    match state
+        .files
+        .delete(&state.store, principal.user.id, file_id)
+        .await
+        .map_err(file_error)?
+    {
+        Some(_) => Ok(StatusCode::NO_CONTENT),
+        None => Err((StatusCode::NOT_FOUND, json_error_envelope("not_found"))),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct UploadFileQuery {
+    project_id: String,
+    path: String,
+    /// Optional display name override; defaults to the path's last segment.
+    filename: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct ListFilesQuery {
+    project_id: String,
+}
+
+#[derive(serde::Serialize)]
+struct FileMetaResponse {
+    file_id: Uuid,
+    project_id: Uuid,
+    logical_path: String,
+    display_filename: String,
+    size_bytes: u64,
+    sha256: String,
+    media_type: String,
+    parse_state: String,
+    parse_error: Option<String>,
+}
+
+impl FileMetaResponse {
+    fn from_hosted(m: crate::hosted_files::HostedFileMeta) -> Self {
+        Self {
+            file_id: m.file_id,
+            project_id: m.project_id,
+            logical_path: m.logical_path,
+            display_filename: m.display_filename,
+            size_bytes: m.size_bytes,
+            sha256: m.sha256,
+            media_type: m.media_type,
+            parse_state: m.parse_state,
+            parse_error: m.parse_error,
+        }
+    }
+}
+
+fn unauthorized() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(ErrorEnvelope {
+            code: "unauthorized".into(),
+            message: "Sign in to continue.".into(),
+        }),
+    )
+}
+
+fn bad_request(code: &'static str) -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorEnvelope {
+            code: code.into(),
+            message: "Malformed request.".into(),
+        }),
+    )
+}
+
+fn json_error_envelope(code: &'static str) -> Json<ErrorEnvelope> {
+    Json(ErrorEnvelope {
+        code: code.into(),
+        message: "The referenced resource does not exist.".into(),
+    })
+}
+
+/// The catalog row's `state` is the lifecycle state (staged/published/
+/// deleted); the parse outcome surfaces through `parse_error`.
+fn parse_state_from(state: &str, parse_error: &Option<String>) -> String {
+    match (state, parse_error) {
+        ("deleted", _) => "deleted".to_string(),
+        (_, Some(_)) => "parse_failed".to_string(),
+        _ => "parsed".to_string(),
+    }
+}
+
+fn file_error(err: crate::hosted_files::HostedFileError) -> (StatusCode, Json<ErrorEnvelope>) {
+    use crate::hosted_files::HostedFileError as E;
+    let (status, code, message) = match err {
+        E::InvalidPath { .. } => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_path",
+            "That logical path is not allowed.",
+        ),
+        E::UnsupportedFormat { .. } => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "unsupported_format",
+            "Unsupported source format; allowed: csv, tsv, xlsx.",
+        ),
+        E::TooLarge { .. } => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "limit_exceeded",
+            "Upload exceeds the size limit.",
+        ),
+        E::Catalog(c) => return crate::auth::db_error(c),
+        E::Io(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "File storage failed.",
+        ),
+    };
+    (
+        status,
+        Json(ErrorEnvelope {
+            code: code.into(),
+            message: message.to_string(),
+        }),
+    )
+}
+
+#[cfg(test)]
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -97,25 +418,36 @@ mod tests {
     /// header tests run without a database (readiness then degrades to 503),
     /// and with `DATABASE_URL` the readiness test exercises the real schema
     /// check.
-    pub(crate) async fn hosted_test_router() -> HostedState {
+    pub(crate) async fn hosted_test_router() -> (
+        HostedState,
+        Arc<archaeodash_auth::email::DevSinkEmailSender>,
+    ) {
         let url = std::env::var("DATABASE_URL")
             .unwrap_or_else(|_| "postgres://nobody:nopass@127.0.0.1:9/nodb".to_string());
         let pool = sqlx::PgPool::connect_lazy(&url).expect("lazy pool builds");
         let store = Arc::new(ControlStore::new(pool));
-        HostedState {
+        let sink = Arc::new(archaeodash_auth::email::DevSinkEmailSender::new());
+        let state = HostedState {
             auth: AuthState {
                 store: store.clone(),
-                email: Arc::new(archaeodash_auth::email::DevSinkEmailSender::new()),
+                email: sink.clone(),
                 pepper: ThrottlePepper::from_hex(&"ab".repeat(32)).expect("pepper"),
                 base_url: "https://archaeodash.example".to_string(),
             },
             store,
-        }
+            files: Arc::new(
+                crate::hosted_files::HostedFileStore::new(
+                    tempfile::tempdir().expect("temp file store").keep(),
+                )
+                .expect("file store"),
+            ),
+        };
+        (state, sink)
     }
 
     #[tokio::test]
     async fn request_id_is_echoed_and_generated() {
-        let state = hosted_test_router().await;
+        let (state, _sink) = hosted_test_router().await;
         let app = hosted_router(state);
         // Echo a well-formed caller ID.
         let res = app
@@ -193,7 +525,7 @@ mod tests {
     async fn request_logs_route_template_status_latency_no_pii() {
         // Section 12: structured per-request logs keyed by route template and
         // status only — never usernames, emails, or file/project names.
-        let state = hosted_test_router().await;
+        let (state, _sink) = hosted_test_router().await;
         let buffer: std::sync::Arc<std::sync::Mutex<Vec<u8>>> = std::sync::Arc::default();
         let writer = buffer.clone();
         let subscriber = tracing_subscriber::fmt()
@@ -253,7 +585,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_ready_reflects_schema_currentness() {
-        let state = hosted_test_router().await;
+        let (state, _sink) = hosted_test_router().await;
         let app = hosted_router(state);
         let res = app
             .oneshot(
@@ -359,12 +691,14 @@ mod header_hygiene {
 
     use super::tests::hosted_test_router;
     use super::*;
+    use crate::auth::tests::{auth_state, test_peer};
     use axum::body::Body;
+    use axum::extract::ConnectInfo;
     use tower::ServiceExt;
 
     #[tokio::test]
     async fn responses_disclose_no_server_technology() {
-        let state = hosted_test_router().await;
+        let (state, _sink) = hosted_test_router().await;
         let res = hosted_router(state)
             .oneshot(
                 axum::http::Request::builder()
@@ -380,5 +714,50 @@ mod header_hygiene {
                 "{header} must not be emitted"
             );
         }
+    }
+
+    // --- Hosted file routes (Section 10.2 data plane) --------------------
+
+    #[tokio::test]
+    async fn hosted_file_routes_require_session_and_scope_ownership() {
+        let Some((state, sink)) = auth_state().await else {
+            return;
+        };
+        // Reuse the auth test helper to get a session cookie + CSRF token.
+        let (cookie, csrf) =
+            crate::auth::preference_tests::login_session(state.clone(), sink).await;
+        let app = hosted_router(hosted_test_state(state));
+        // Unauthenticated upload is 401.
+        let res = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/files?project_id=00000000-0000-0000-0000-000000000000&path=a.csv")
+                    .header(header::CONTENT_TYPE, "text/csv")
+                    .extension(ConnectInfo(test_peer()))
+                    .body(Body::from("a,b\n1,2\n"))
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        let _ = (cookie, csrf); // used by the DB-backed round trip below
+    }
+}
+
+/// Wraps an [`AuthState`]'s shared store into a hosted state with a temp
+/// file store, for file-route tests that log in through the auth helpers.
+#[cfg(test)]
+fn hosted_test_state(state: crate::auth::AuthState) -> HostedState {
+    HostedState {
+        auth: state.clone(),
+        store: state.store.clone(),
+        files: std::sync::Arc::new(
+            crate::hosted_files::HostedFileStore::new(
+                tempfile::tempdir().expect("temp file store").keep(),
+            )
+            .expect("file store"),
+        ),
     }
 }

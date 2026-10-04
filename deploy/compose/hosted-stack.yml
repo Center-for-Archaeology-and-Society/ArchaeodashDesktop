@@ -52,6 +52,8 @@ services:
       # ad hoc DDL from user sessions; the container entrypoint applies them
       # once per start and exits non-zero if the schema check fails after.
       AUTH_APPLY_MIGRATIONS: "1"
+      # Section 6.4: per-user object namespace root (opaque UUID keys).
+      AUTH_FILE_STORE_DIR: /data/user-files
     ports:
       - "127.0.0.1:8080:8080"
     volumes:

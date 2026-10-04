@@ -7,7 +7,10 @@
 //! project root is the file catalog. Uploads stage bytes into quarantine
 //! under a bounded size, compute a SHA-256 checksum, parse-check CSV
 //! sources, then promote atomically to the user-selected in-project logical
-//! path. The hosted `UserFileStore`/catalog replaces this layout in Phase 7.
+//! path. The hosted form (`crates/api/src/hosted_files.rs`) keeps this
+//! staging/checksum/parse discipline but moves the catalog into the
+//! control-plane `files` table and the bytes into per-user opaque-key
+//! namespaces (Section 6.4).
 
 use std::path::PathBuf;
 
@@ -22,7 +25,17 @@ pub const MAX_UPLOAD_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Format allowlist (Section 7.1): CSV/TSV import, generated XLSX import;
 /// everything else is rejected at upload rather than failing later.
-const ALLOWED_EXTENSIONS: [&str; 3] = ["csv", "tsv", "xlsx"];
+pub const ALLOWED_EXTENSIONS: [&str; 3] = ["csv", "tsv", "xlsx"];
+
+/// Media type for an allowed extension (Section 6.4 catalog metadata).
+pub fn media_type_for(extension: &str) -> &'static str {
+    match extension {
+        "csv" => "text/csv",
+        "tsv" => "text/tab-separated-values",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        _ => "application/octet-stream",
+    }
+}
 
 /// Parse states reported in [`StagedFile::parse_state`].
 pub const PARSE_PARSED: &str = "parsed";

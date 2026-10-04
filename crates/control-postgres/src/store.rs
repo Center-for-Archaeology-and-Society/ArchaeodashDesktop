@@ -25,6 +25,10 @@ pub enum ControlError {
     UsernameTaken,
     #[error("email is already taken")]
     EmailTaken,
+    /// A referenced entity does not exist or is not visible to the caller
+    /// (ownership-scoped lookups deliberately merge these two cases).
+    #[error("{0} not found")]
+    NotFound(String),
 }
 
 /// A `users` row as the auth layer sees it.
@@ -51,6 +55,29 @@ pub struct ProjectRow {
     pub project_id: Uuid,
     pub user_id: Uuid,
     pub name: String,
+    pub deleted_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+/// A hosted file catalog row (Section 6.4/6.5): identity, ownership,
+/// logical path, and integrity/state fields. Object bytes live in the file
+/// store under `object_key`; this row is the only catalog.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct FileRow {
+    pub file_id: Uuid,
+    pub user_id: Uuid,
+    pub project_id: Uuid,
+    pub logical_path: String,
+    pub kind: String,
+    pub display_filename: String,
+    pub object_key: String,
+    pub sha256: String,
+    pub media_type: String,
+    pub extension: String,
+    pub bytes: i64,
+    pub state: String,
+    pub parse_error: Option<String>,
     pub deleted_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -548,6 +575,112 @@ impl ControlStore {
         Ok(result.rows_affected() == 1)
     }
 
+    /// Inserts a hosted file catalog row after the bytes are durably staged.
+    /// Ownership is checked against the projects table; a foreign or deleted
+    /// project is rejected with `None`.
+    pub async fn insert_file(&self, file: &FileRow) -> Result<bool, ControlError> {
+        // Parameter order follows first appearance in the SQL text: the
+        // SELECT list ($1, $3..$12) and the ownership WHERE clause
+        // ($2 project, $13 user). Timestamps default to now().
+        let result = sqlx::query(
+            "INSERT INTO files (file_id, project_id, logical_path, kind, \
+             display_filename, object_key, sha256, media_type, extension, \
+             bytes, state, parse_error) \
+             SELECT $1, p.project_id, $3, $4, $5, $6, $7, $8, $9, $10, \
+                    $11, $12 \
+             FROM projects p \
+             WHERE p.project_id = $2 AND p.user_id = $13 \
+               AND p.deleted_at IS NULL",
+        )
+        .bind(file.file_id) // $1
+        .bind(file.project_id) // $2
+        .bind(&file.logical_path) // $3
+        .bind(&file.kind) // $4
+        .bind(&file.display_filename) // $5
+        .bind(&file.object_key) // $6
+        .bind(&file.sha256) // $7
+        .bind(&file.media_type) // $8
+        .bind(&file.extension) // $9
+        .bind(file.bytes) // $10
+        .bind(&file.state) // $11
+        .bind(&file.parse_error) // $12
+        .bind(file.user_id) // $13
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Fetches one live (non-deleted) file the user owns through its
+    /// project. Other users' files, deleted files, and unknown IDs are all
+    /// `Ok(None)` — no existence oracle across accounts.
+    pub async fn get_file(
+        &self,
+        user_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<Option<FileRow>, ControlError> {
+        let row = sqlx::query_as::<_, FileRow>(
+            "SELECT f.file_id, p.user_id, f.project_id, f.logical_path, \
+                    f.kind, f.display_filename, f.object_key, f.sha256, \
+                    f.media_type, f.extension, f.bytes, f.state, \
+                    f.parse_error, f.deleted_at, f.created_at, f.updated_at \
+             FROM files f JOIN projects p ON p.project_id = f.project_id \
+             WHERE f.file_id = $1 AND p.user_id = $2 AND f.deleted_at IS NULL \
+               AND p.deleted_at IS NULL",
+        )
+        .bind(file_id)
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Lists the live files of one owned project, oldest first.
+    pub async fn list_files(
+        &self,
+        user_id: Uuid,
+        project_id: Uuid,
+    ) -> Result<Vec<FileRow>, ControlError> {
+        let rows: Vec<FileRow> = sqlx::query_as(
+            "SELECT f.file_id, p.user_id, f.project_id, f.logical_path, \
+                    f.kind, f.display_filename, f.object_key, f.sha256, \
+                    f.media_type, f.extension, f.bytes, f.state, \
+                    f.parse_error, f.deleted_at, f.created_at, f.updated_at \
+             FROM files f JOIN projects p ON p.project_id = f.project_id \
+             WHERE p.user_id = $1 AND f.project_id = $2 AND f.deleted_at IS NULL \
+               AND p.deleted_at IS NULL \
+             ORDER BY f.created_at ASC, f.file_id ASC",
+        )
+        .bind(user_id)
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Soft-deletes a live file the user owns: tombstones the row and
+    /// returns the object key so the caller can move the bytes to trash.
+    /// Returns `Ok(None)` for foreign/unknown/deleted IDs.
+    pub async fn soft_delete_file(
+        &self,
+        user_id: Uuid,
+        file_id: Uuid,
+        now: SystemTime,
+    ) -> Result<Option<String>, ControlError> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "UPDATE files f SET deleted_at = $3, updated_at = $3, state = 'deleted' \
+             FROM projects p \
+             WHERE f.project_id = p.project_id AND f.file_id = $1 \
+               AND p.user_id = $2 AND f.deleted_at IS NULL \
+             RETURNING f.object_key",
+        )
+        .bind(file_id)
+        .bind(user_id)
+        .bind(to_offset(now))
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(object_key,)| object_key))
+    }
+
     /// Upserts one preference (single statement, atomic per Section 6.5's
     /// primary-key `(user_id, key)` contract).
     pub async fn set_preference(
@@ -922,6 +1055,7 @@ mod tests {
             "_sqlx_migrations",
             "account_tokens",
             "auth_throttles",
+            "files",
             "preferences",
             // Catalog rows only: identity/ownership/name/tombstone. No
             // analytical data (Section 6.4: file bytes live in the user file
@@ -1039,5 +1173,126 @@ mod tests {
             .await
             .expect("get")
             .is_none());
+    }
+
+    /// Section 6.4/10.2 hosted file catalog: insertion is ownership-checked
+    /// (foreign/deleted projects reject), the active logical path is unique
+    /// per project, listing is owner-scoped, and soft delete tombstones and
+    /// frees the path while returning the object key for the bytes sweep.
+    #[tokio::test]
+    async fn hosted_file_catalog_is_ownership_scoped() {
+        let Some((store, _pool)) = migrated_store().await else {
+            return;
+        };
+        let (owner, _) = make_user(&store).await;
+        let (stranger, _) = make_user(&store).await;
+        let project_id = Uuid::now_v7();
+        store
+            .create_project(project_id, owner.id, "catalog", SystemTime::now())
+            .await
+            .expect("create project");
+
+        let row = FileRow {
+            file_id: Uuid::now_v7(),
+            user_id: owner.id,
+            project_id,
+            logical_path: "sources/INAA.csv".to_string(),
+            kind: "source".to_string(),
+            display_filename: "INAA.csv".to_string(),
+            object_key: format!(
+                "users/{}/projects/{}/files/{}/1",
+                owner.id,
+                project_id,
+                Uuid::now_v7().simple()
+            ),
+            sha256: "a".repeat(64),
+            media_type: "text/csv".to_string(),
+            extension: "csv".to_string(),
+            bytes: 12,
+            state: "published".to_string(),
+            parse_error: None,
+            deleted_at: None,
+            created_at: to_offset(SystemTime::now()),
+            updated_at: to_offset(SystemTime::now()),
+        };
+        assert!(store.insert_file(&row).await.expect("insert"));
+
+        // A foreign project's ownership check rejects the insert.
+        let stranger_project = Uuid::now_v7();
+        store
+            .create_project(stranger_project, stranger.id, "other", SystemTime::now())
+            .await
+            .expect("create project");
+        let foreign = FileRow {
+            project_id: stranger_project,
+            user_id: owner.id,
+            file_id: Uuid::now_v7(),
+            ..row.clone()
+        };
+        assert!(!store.insert_file(&foreign).await.expect("insert"));
+
+        // Same logical path twice among live rows is a unique violation.
+        let duplicate = FileRow {
+            file_id: Uuid::now_v7(),
+            ..row.clone()
+        };
+        assert!(store.insert_file(&duplicate).await.is_err());
+
+        // Owner listing shows exactly one file; the stranger sees none.
+        assert_eq!(
+            store
+                .list_files(owner.id, project_id)
+                .await
+                .expect("list")
+                .len(),
+            1
+        );
+        assert!(store
+            .list_files(stranger.id, project_id)
+            .await
+            .expect("list")
+            .is_empty());
+
+        // Owner fetch works; stranger fetch is None (no existence oracle).
+        assert!(store
+            .get_file(owner.id, row.file_id)
+            .await
+            .expect("get")
+            .is_some());
+        assert!(store
+            .get_file(stranger.id, row.file_id)
+            .await
+            .expect("get")
+            .is_none());
+
+        // Soft delete tombstones and returns the object key for the sweep.
+        let key = store
+            .soft_delete_file(owner.id, row.file_id, SystemTime::now())
+            .await
+            .expect("delete")
+            .expect("object key");
+        assert_eq!(key, row.object_key);
+        assert!(store
+            .get_file(owner.id, row.file_id)
+            .await
+            .expect("get")
+            .is_none());
+        // Deleting again reports nothing; the path is free again.
+        assert!(store
+            .soft_delete_file(owner.id, row.file_id, SystemTime::now())
+            .await
+            .expect("delete again")
+            .is_none());
+        let reused = FileRow {
+            file_id: Uuid::now_v7(),
+            object_key: format!(
+                "users/{}/projects/{}/files/{}/1",
+                owner.id,
+                project_id,
+                Uuid::now_v7().simple()
+            ),
+            ..row.clone()
+        };
+        assert!(store.insert_file(&reused).await.expect("insert again"));
     }
 }

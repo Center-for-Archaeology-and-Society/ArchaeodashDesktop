@@ -392,7 +392,7 @@ fn domain_validation_error(
     )
 }
 
-fn db_error(err: ControlError) -> (StatusCode, Json<ErrorEnvelope>) {
+pub(crate) fn db_error(err: ControlError) -> (StatusCode, Json<ErrorEnvelope>) {
     let (status, code, message) = match &err {
         ControlError::UsernameTaken => (
             StatusCode::CONFLICT,
@@ -403,6 +403,11 @@ fn db_error(err: ControlError) -> (StatusCode, Json<ErrorEnvelope>) {
             StatusCode::CONFLICT,
             "email_taken",
             "That email is already taken.",
+        ),
+        ControlError::NotFound(_) => (
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "The referenced resource does not exist.",
         ),
         ControlError::Database(_) | ControlError::Migration(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -854,10 +859,10 @@ async fn password_reset_confirm(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)] // test code; panics are the failure mode
 
-    use super::*;
+    pub(crate) use super::*;
     use archaeodash_auth::email::DevSinkEmailSender;
     use archaeodash_auth::token::OpaqueToken;
     use archaeodash_contracts::ErrorEnvelope;
@@ -1073,7 +1078,7 @@ mod tests {
 
     #[tokio::test]
     async fn wrong_password_is_generic_unauthorized() {
-        let Some((state, sink)) = auth_state().await else {
+        let Some((state, _sink)) = auth_state().await else {
             return;
         };
         let suffix = unique_suffix();
@@ -1110,7 +1115,7 @@ mod tests {
 
     #[tokio::test]
     async fn login_missing_account_is_generic_and_timing_uniform() {
-        let Some((state, sink)) = auth_state().await else {
+        let Some((state, _sink)) = auth_state().await else {
             return;
         };
         let app = auth_app(state);
@@ -1414,7 +1419,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_rejects_invalid_identity_and_duplicate_usernames() {
-        let Some((state, sink)) = auth_state().await else {
+        let Some((state, _sink)) = auth_state().await else {
             return;
         };
         let suffix = unique_suffix();
@@ -1460,12 +1465,12 @@ mod tests {
 
 /// The authenticated principal returned by `GET /auth/session` and used to
 /// scope preference reads/writes.
-struct SessionPrincipal {
-    user: UserRow,
+pub(crate) struct SessionPrincipal {
+    pub(crate) user: UserRow,
 }
 
 /// Resolves the live session from the cookie, enforcing CSRF on writes.
-async fn require_session(
+pub(crate) async fn require_session(
     state: &AuthState,
     headers: &HeaderMap,
     csrf_required: bool,
@@ -1509,7 +1514,8 @@ async fn preferences_get(
 /// RFC 3339 rendering for catalog timestamps (Section 10: JSON for
 /// metadata).
 fn rfc3339(t: OffsetDateTime) -> String {
-    t.format(&Rfc3339).expect("rfc3339")
+    t.format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
 #[derive(serde::Serialize)]
@@ -1618,7 +1624,7 @@ async fn projects_list(
     Ok(Json(serde_json::Value::Object(serde_json::Map::from_iter(
         [(
             "projects".to_string(),
-            serde_json::to_value(projects).expect("serializable"),
+            serde_json::to_value(projects).unwrap_or_else(|_| serde_json::Value::Array(vec![])),
         )],
     ))))
 }
@@ -1704,7 +1710,7 @@ pub fn auth_router(state: AuthState) -> Router {
 }
 
 #[cfg(test)]
-mod preference_tests {
+pub(crate) mod preference_tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)] // test code; panics are the failure mode
 
     use super::tests::{auth_app, auth_state, post_json, test_peer, unique_suffix};

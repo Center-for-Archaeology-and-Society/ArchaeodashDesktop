@@ -22,6 +22,7 @@ Phase 7 operations slice (Sections 6.5, 10, 12, and the `deploy.sh`/`install.sh`
 | `AUTH_ALLOW_DEV_EMAIL` | Must be `1` for the dev sink; refused otherwise | unset |
 | `AUTH_BIND` | Listen address | `127.0.0.1:8080` |
 | `AUTH_APPLY_MIGRATIONS` | `1` applies SQLx migrations at startup | unset |
+| `AUTH_FILE_STORE_DIR` | Per-user file namespace root (Section 6.4); opaque UUID object keys live under `users/<id>/projects/<id>/` | `./data/user-files` |
 
 The dev email mode logs redacted recipients and action links and refuses to start without the explicit opt-in — it can never silently serve production.
 

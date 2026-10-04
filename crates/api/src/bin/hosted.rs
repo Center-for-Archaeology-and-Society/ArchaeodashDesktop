@@ -12,6 +12,7 @@
 //! `AUTH_ALLOW_DEV_EMAIL=1` so it can never silently serve production.
 
 use archaeodash_api::auth::AuthState;
+use archaeodash_api::hosted_files::HostedFileStore;
 use archaeodash_api::{finalize_hosted_router, hosted_router, HostedState};
 use archaeodash_auth::email::{
     DevSinkEmailSender, EmailSender, SendmailEmailSender, SmtpEmailSender,
@@ -89,6 +90,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let store = Arc::new(store);
+    // Section 6.4: single-host deployments use the local filesystem backend
+    // under AUTH_FILE_STORE_DIR; object keys are opaque UUID namespaces.
+    let file_root =
+        std::env::var("AUTH_FILE_STORE_DIR").unwrap_or_else(|_| "./data/user-files".into());
+    let files = Arc::new(
+        HostedFileStore::new(file_root).map_err(|e| format!("file store init failed: {e}"))?,
+    );
     let state = HostedState {
         auth: AuthState {
             store: store.clone(),
@@ -97,6 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             base_url,
         },
         store,
+        files,
     };
 
     let app = finalize_hosted_router(hosted_router(state));
