@@ -77,11 +77,18 @@ reconciling on every outcome, delete reconciling tombstoned bytes, and
 runbook. Live e2e: fit → 201, delete → 204 frees quota, over-quota → 413
 `quota_exceeded` with no reserved-byte leakage. 269 workspace tests green.
 
+**Retention sweep (Section 6.9, commit `82ce641`):** the remaining
+tombstone cleanup is implemented — `ControlStore::sweep_expired_tombstones`
+atomically deletes rows tombstoned past the cutoff and returns ownership +
+object key; `HostedFileStore::purge_trash_object` removes the trash bytes;
+the hosted binary runs the sweep hourly under `AUTH_RETENTION_DAYS`
+(default 30). Crash between DB delete and FS purge can only orphan an
+inaccessible trash object, never a discoverable one.
+
 ## Remaining in the hosted data plane
 
-The async retention sweep for `.trash`/tombstones and per-project
-manifest/transformations/results sub-namespaces (Section 6.4) — each is
-additive to this catalog.
+Per-project manifest/transformations/results sub-namespaces (Section 6.4)
+and quota policy revisions are additive to this catalog.
 
 ## Related
 
