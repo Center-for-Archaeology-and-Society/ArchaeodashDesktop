@@ -21,6 +21,7 @@ export const navRoutes: readonly NavRoute[] = [
   { label: 'Cluster', path: '/cluster', legacyId: 'clustertab' },
   { label: 'Probabilities and Distances', path: '/probabilities' },
   { label: 'Euclidean Distance', path: '/euclidean' },
+  { label: 'Account', path: '/account' },
   {
     label: 'Info',
     path: '/info',

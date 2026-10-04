@@ -16,6 +16,7 @@ import {
   PrivacyPage,
   TermsPage,
 } from './shell/routes.tsx';
+import { AccountPage } from './shell/AccountPage.tsx';
 import { ExplorePage, type ExploreDeps } from './explore/ExplorePage.tsx';
 import { OrdinationPage, type OrdinationDeps } from './ordination/OrdinationPage.tsx';
 import { VisualizePage, type VisualizeDeps } from './visualize/VisualizePage.tsx';
@@ -102,6 +103,7 @@ function routeChildren(deps: ExploreDeps, ordinationDeps: OrdinationDeps, visual
     { path: 'info/help', element: <HelpPage /> },
     { path: 'info/terms', element: <TermsPage /> },
     { path: 'info/privacy', element: <PrivacyPage /> },
+    { path: 'account', element: <AccountPage auth={transport.auth} /> },
     { path: '*', element: <HomePage /> },
   ];
 }

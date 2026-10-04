@@ -17,6 +17,8 @@ import {
   TermsPage,
 } from './shell/routes.tsx';
 import { navRoutes } from './shell/nav.ts';
+import { AccountPage } from './shell/AccountPage.tsx';
+import type { AuthService } from '@archaeodash/client';
 import { normalizeTheme, themes } from '@archaeodash/client';
 
 function renderShell(theme = 'light'): string {
@@ -44,6 +46,7 @@ test('navbar preserves the legacy tab order and labels', () => {
       'Cluster',
       'Probabilities and Distances',
       'Euclidean Distance',
+      'Account',
       'Info',
     ],
   );
@@ -104,4 +107,45 @@ test('home route renders the project entry guidance', () => {
   const html = renderToString(<MemoryRouter><HomePage /></MemoryRouter>);
   assert.ok(html.includes('Home'));
   assert.ok(html.includes('Data Manager'));
+});
+
+test('account page renders the signed-out sign-in form in hosted mode', () => {
+  const auth: AuthService = {
+    consent: async () => ({ consentVersion: '2026-10', termsPath: '/legal/terms', privacyPath: '/legal/privacy' }),
+    register: async () => {},
+    verify: async () => {},
+    login: async () => ({ authenticated: false }),
+    session: async () => ({ authenticated: false }),
+    logout: async () => {},
+    logoutAll: async () => {},
+    requestPasswordReset: async () => {},
+    confirmPasswordReset: async () => {},
+  };
+  const html = renderAt(
+    <MemoryRouter initialEntries={['/account']}>
+      <AccountPage auth={auth} />
+    </MemoryRouter>,
+  );
+  assert.ok(html.includes('Sign in'), 'sign-in form is the default mode');
+  assert.ok(html.includes('Register as a new user'), 'registration entry point');
+  assert.ok(html.includes('Forgot your password?'), 'password-reset entry point');
+  assert.ok(html.includes('Stay signed in'), 'remember-me choice offered');
+});
+
+test('account page explains that hosted accounts are desktop-unavailable', () => {
+  const html = renderAt(
+    <MemoryRouter initialEntries={['/account']}>
+      <AccountPage />
+    </MemoryRouter>,
+  );
+  assert.ok(
+    html.includes('only available in the web application'),
+    'desktop-mode notice',
+  );
+});
+
+test('navbar gains the Account entry after Euclidean Distance', () => {
+  const labels = navRoutes.map((r) => r.label);
+  assert.ok(labels.includes('Account'));
+  assert.equal(labels.indexOf('Account'), labels.indexOf('Euclidean Distance') + 1);
 });

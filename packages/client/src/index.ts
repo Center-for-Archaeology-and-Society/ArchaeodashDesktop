@@ -16,6 +16,9 @@ export type {
   ExportsService,
   PreferencesService,
   ProjectsService,
+  AuthService,
+  ConsentInfo,
+  SessionInfo,
 } from './transport.ts';
 export {
   themes,
