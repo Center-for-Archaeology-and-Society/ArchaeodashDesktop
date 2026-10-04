@@ -1,0 +1,3 @@
+# Interaction Log 2026-10-04
+
+- Started the hosted project catalog (Section 10.2/6.4 data plane) — a gap found while auditing non-owner-gated work: hosted mode could authenticate but had no per-user project storage. Migration `0004_project_catalog.sql` (projects catalog: identity/ownership/name/tombstone only), `ControlStore::create_project/list_projects/get_project/soft_delete_project` with ownership scoping and no cross-account existence oracle, and routes `POST/GET /api/v1/projects`, `GET/DELETE /api/v1/projects/{id}` (session + CSRF). Catalog test covers isolation, CSRF, tombstone idempotence; schema audit extended to the projects table. 261 tests green. Pushed as `781d7cc`.
