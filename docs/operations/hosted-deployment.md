@@ -24,6 +24,7 @@ Phase 7 operations slice (Sections 6.5, 10, 12, and the `deploy.sh`/`install.sh`
 | `AUTH_APPLY_MIGRATIONS` | `1` applies SQLx migrations at startup | unset |
 | `AUTH_FILE_STORE_DIR` | Per-user file namespace root (Section 6.4); opaque UUID object keys live under `users/<id>/projects/<id>/` | `./data/user-files` |
 | `AUTH_QUOTA_BYTES` | Per-user logical byte quota (Section 6.9); uploads reserve before staging and reconcile after | `1073741824` |
+| `AUTH_RETENTION_DAYS` | Tombstones older than this many days are purged from the catalog and trash by the hourly sweep (Section 6.9) | `30` |
 
 The dev email mode logs redacted recipients and action links and refuses to start without the explicit opt-in — it can never silently serve production.
 

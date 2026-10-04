@@ -57,6 +57,9 @@ services:
       # Section 6.9: per-user logical byte quota (reserve before upload,
       # reconcile after). Default 1 GiB when unset.
       AUTH_QUOTA_BYTES: ${AUTH_QUOTA_BYTES:-1073741824}
+      # Section 6.9: hourly retention sweep purges catalog tombstones older
+      # than this many days along with their trash objects. Default 30.
+      AUTH_RETENTION_DAYS: ${AUTH_RETENTION_DAYS:-30}
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
