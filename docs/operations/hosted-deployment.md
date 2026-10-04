@@ -16,7 +16,7 @@ Phase 7 operations slice (Sections 6.5, 10, 12, and the `deploy.sh`/`install.sh`
 |---|---|---|
 | `DATABASE_URL` | Control-plane Postgres DSN | — |
 | `AUTH_PEPPER` | 64-hex throttle-key pepper (Section 11) | — |
-| `AUTH_BASE_URL` | Public base URL for verification/reset links | — |
+| `AUTH_BASE_URL` | Public base URL for verification/reset links — must be the **web client origin** so `{base}/auth/verify?token=…` and `{base}/auth/reset?token=…` land on the client routes that consume the token | — |
 | `AUTH_EMAIL_MODE` | `sendmail` \| `smtp` \| `dev` | `sendmail` |
 | `AUTH_SMTP_*` | SMTP host/port/username/password/from when mode is `smtp` | — |
 | `AUTH_ALLOW_DEV_EMAIL` | Must be `1` for the dev sink; refused otherwise | unset |

@@ -334,3 +334,123 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
     </section>
   );
 }
+
+/**
+ * Email-link landing pages. Verification and reset emails carry
+ * `{AUTH_BASE_URL}/auth/verify?token=…` and `/auth/reset?token=…`; these
+ * routes consume the token through the API and route the user onward.
+ */
+
+function useLinkToken(): string | null {
+  const [search, setSearch] = useState(() =>
+    typeof window === 'undefined' ? '' : window.location.search,
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onPop = () => setSearch(window.location.search);
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  return new URLSearchParams(search).get('token');
+}
+
+export function VerifyEmailPage({ auth }: AccountPageProps): ReactElement {
+  const token = useLinkToken();
+  const [state, setState] = useState<'working' | 'done' | 'failed'>(
+    token ? 'working' : 'failed',
+  );
+  useEffect(() => {
+    if (!auth || !token) return;
+    let cancelled = false;
+    auth
+      .verify(token)
+      .then(() => {
+        if (!cancelled) setState('done');
+      })
+      .catch(() => {
+        if (!cancelled) setState('failed');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [auth, token]);
+  return (
+    <section aria-labelledby="verify-heading">
+      <h1 id="verify-heading">Email verification</h1>
+      {!token && <p role="alert">This verification link is missing its token.</p>}
+      {state === 'working' && <p role="status">Verifying your email address…</p>}
+      {state === 'done' && (
+        <p role="status">
+          Your email address is verified. You can now{' '}
+          <Link to="/account">sign in</Link>.
+        </p>
+      )}
+      {state === 'failed' && token && (
+        <p role="alert">
+          That verification link is no longer valid.{' '}
+          <Link to="/account">Sign in</Link> to request a new email.
+        </p>
+      )}
+    </section>
+  );
+}
+
+export function ResetPasswordPage({ auth }: AccountPageProps): ReactElement {
+  const token = useLinkToken();
+  const [state, setState] = useState<'form' | 'done'>('form');
+  const [error, setError] = useState('');
+  if (!token) {
+    return (
+      <section aria-labelledby="reset-heading">
+        <h1 id="reset-heading">Choose a new password</h1>
+        <p role="alert">This reset link is missing its token.</p>
+        <p>
+          <Link to="/account">Back to sign in</Link>
+        </p>
+      </section>
+    );
+  }
+  if (state === 'done') {
+    return (
+      <section aria-labelledby="reset-heading">
+        <h1 id="reset-heading">Choose a new password</h1>
+        <p role="status">
+          Password updated. You can now <Link to="/account">sign in</Link> with
+          the new password.
+        </p>
+      </section>
+    );
+  }
+  return (
+    <section aria-labelledby="reset-heading">
+      <h1 id="reset-heading">Choose a new password</h1>
+      <form
+        aria-label="Choose a new password"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!auth) return;
+          const data = new FormData(event.currentTarget);
+          const password = String(data.get('password') ?? '');
+          setError('');
+          auth
+            .confirmPasswordReset({ token, newPassword: password })
+            .then(() => setState('done'))
+            .catch((err: unknown) => setError(errorText(err)));
+        }}
+      >
+        <label>
+          New password (at least 12 characters)
+          <input
+            name="password"
+            type="password"
+            autoComplete="new-password"
+            minLength={12}
+            required
+          />
+        </label>
+        <button type="submit">Update password</button>
+      </form>
+      {error && <p role="alert">{error}</p>}
+    </section>
+  );
+}

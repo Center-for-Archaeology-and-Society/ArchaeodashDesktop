@@ -17,7 +17,11 @@ import {
   TermsPage,
 } from './shell/routes.tsx';
 import { navRoutes } from './shell/nav.ts';
-import { AccountPage } from './shell/AccountPage.tsx';
+import {
+  AccountPage,
+  ResetPasswordPage,
+  VerifyEmailPage,
+} from './shell/AccountPage.tsx';
 import type { AuthService } from '@archaeodash/client';
 import { normalizeTheme, themes } from '@archaeodash/client';
 
@@ -148,4 +152,38 @@ test('navbar gains the Account entry after Euclidean Distance', () => {
   const labels = navRoutes.map((r) => r.label);
   assert.ok(labels.includes('Account'));
   assert.equal(labels.indexOf('Account'), labels.indexOf('Euclidean Distance') + 1);
+});
+
+test('verify and reset link pages handle a missing token without calling the API', () => {
+  const verifyCalls: string[] = [];
+  const resetCalls: string[] = [];
+  const auth: AuthService = {
+    consent: async () => ({ consentVersion: '2026-10', termsPath: '/legal/terms', privacyPath: '/legal/privacy' }),
+    register: async () => {},
+    verify: async (token: string) => {
+      verifyCalls.push(token);
+    },
+    login: async () => ({ authenticated: false }),
+    session: async () => ({ authenticated: false }),
+    logout: async () => {},
+    logoutAll: async () => {},
+    requestPasswordReset: async () => {},
+    confirmPasswordReset: async (r: { token: string; newPassword: string }) => {
+      resetCalls.push(r.token);
+    },
+  };
+  const verifyHtml = renderAt(
+    <MemoryRouter initialEntries={['/auth/verify']}>
+      <VerifyEmailPage auth={auth} />
+    </MemoryRouter>,
+  );
+  assert.ok(verifyHtml.includes('missing its token'), 'missing-token notice');
+  assert.equal(verifyCalls.length, 0, 'no API call without a token');
+  const resetHtml = renderAt(
+    <MemoryRouter initialEntries={['/auth/reset']}>
+      <ResetPasswordPage auth={auth} />
+    </MemoryRouter>,
+  );
+  assert.ok(resetHtml.includes('missing its token'), 'missing-token notice on reset');
+  assert.equal(resetCalls.length, 0, 'no API call without a token');
 });
