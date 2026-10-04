@@ -44,6 +44,18 @@ pub struct UserRow {
     pub consented_at: Option<OffsetDateTime>,
 }
 
+/// A hosted project catalog row (Section 6.4/10.2): identity, ownership,
+/// display name, and soft-delete state. Analytical content never lands here.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ProjectRow {
+    pub project_id: Uuid,
+    pub user_id: Uuid,
+    pub name: String,
+    pub deleted_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
 /// A `sessions` row.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct SessionRow {
@@ -457,6 +469,85 @@ impl ControlStore {
         Ok(rows)
     }
 
+    /// Creates a hosted project catalog row (Section 6.4/10.2): identity,
+    /// ownership, and display name only — no analytical data. The file
+    /// namespace `users/<user-id>/projects/<project-id>/` is derived from
+    /// these opaque UUIDs and lives in the file store, not PostgreSQL.
+    pub async fn create_project(
+        &self,
+        project_id: Uuid,
+        user_id: Uuid,
+        name: &str,
+        now: SystemTime,
+    ) -> Result<ProjectRow, ControlError> {
+        let row = sqlx::query_as::<_, ProjectRow>(
+            "INSERT INTO projects (project_id, user_id, name, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $4) \
+             RETURNING project_id, user_id, name, deleted_at, created_at, updated_at",
+        )
+        .bind(project_id)
+        .bind(user_id)
+        .bind(name)
+        .bind(to_offset(now))
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Lists the caller's live (non-deleted) projects, newest first. Catalog
+    /// authorization is by `user_id` equality: a user never sees another
+    /// user's rows, and no legacy/external identifier participates.
+    pub async fn list_projects(&self, user_id: Uuid) -> Result<Vec<ProjectRow>, ControlError> {
+        let rows: Vec<ProjectRow> = sqlx::query_as(
+            "SELECT project_id, user_id, name, deleted_at, created_at, updated_at \
+             FROM projects WHERE user_id = $1 AND deleted_at IS NULL \
+             ORDER BY updated_at DESC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Fetches one live project the user owns; `Ok(None)` for other users'
+    /// projects, deleted projects, and unknown IDs alike (no existence
+    /// oracle across accounts).
+    pub async fn get_project(
+        &self,
+        user_id: Uuid,
+        project_id: Uuid,
+    ) -> Result<Option<ProjectRow>, ControlError> {
+        let row = sqlx::query_as::<_, ProjectRow>(
+            "SELECT project_id, user_id, name, deleted_at, created_at, updated_at \
+             FROM projects WHERE project_id = $1 AND user_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(project_id)
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Soft-deletes a project the user owns; returns whether a live row was
+    /// tombstoned. The retention sweep purges file-store objects later.
+    pub async fn soft_delete_project(
+        &self,
+        user_id: Uuid,
+        project_id: Uuid,
+        now: SystemTime,
+    ) -> Result<bool, ControlError> {
+        let result = sqlx::query(
+            "UPDATE projects SET deleted_at = $3, updated_at = $3 \
+             WHERE project_id = $1 AND user_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(project_id)
+        .bind(user_id)
+        .bind(to_offset(now))
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     /// Upserts one preference (single statement, atomic per Section 6.5's
     /// primary-key `(user_id, key)` contract).
     pub async fn set_preference(
@@ -832,6 +923,10 @@ mod tests {
             "account_tokens",
             "auth_throttles",
             "preferences",
+            // Catalog rows only: identity/ownership/name/tombstone. No
+            // analytical data (Section 6.4: file bytes live in the user file
+            // store namespace, not PostgreSQL).
+            "projects",
             "sessions",
             "users",
         ]
@@ -878,5 +973,71 @@ mod tests {
             ],
             "users table columns drifted from the Section 6.5 spec"
         );
+    }
+
+    /// Section 6.4/10.2 hosted project catalog: creation, ownership-scoped
+    /// listing, cross-user invisibility (no existence oracle), and soft
+    /// delete. Catalog rows carry identity/name only — never analytical
+    /// content.
+    #[tokio::test]
+    async fn hosted_project_catalog_is_ownership_scoped() {
+        let Some((store, _pool)) = migrated_store().await else {
+            return;
+        };
+        let (owner, _) = make_user(&store).await;
+        let (stranger, _) = make_user(&store).await;
+        let project_id = Uuid::now_v7();
+        let created = store
+            .create_project(project_id, owner.id, "INAA field season", SystemTime::now())
+            .await
+            .expect("create project");
+        assert_eq!(created.project_id, project_id);
+        assert_eq!(created.user_id, owner.id);
+        assert_eq!(created.name, "INAA field season");
+        assert!(created.deleted_at.is_none());
+
+        // Owner listing shows it.
+        let listed = store.list_projects(owner.id).await.expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].project_id, project_id);
+
+        // A stranger's listing and direct fetch see nothing — no existence
+        // oracle across accounts.
+        assert!(store
+            .list_projects(stranger.id)
+            .await
+            .expect("list")
+            .is_empty());
+        assert!(store
+            .get_project(stranger.id, project_id)
+            .await
+            .expect("get")
+            .is_none());
+        assert!(store
+            .get_project(owner.id, project_id)
+            .await
+            .expect("get")
+            .is_some());
+
+        // Soft delete tombstones for the owner and is idempotent (second
+        // delete reports nothing deleted).
+        assert!(store
+            .soft_delete_project(owner.id, project_id, SystemTime::now())
+            .await
+            .expect("delete"));
+        assert!(!store
+            .soft_delete_project(owner.id, project_id, SystemTime::now())
+            .await
+            .expect("delete again"));
+        assert!(store
+            .list_projects(owner.id)
+            .await
+            .expect("list")
+            .is_empty());
+        assert!(store
+            .get_project(owner.id, project_id)
+            .await
+            .expect("get")
+            .is_none());
     }
 }

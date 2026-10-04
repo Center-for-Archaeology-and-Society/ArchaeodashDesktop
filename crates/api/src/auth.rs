@@ -26,7 +26,7 @@ use archaeodash_auth::token::{digest_presentation, OpaqueToken, REMEMBER_ME_DAY_
 use archaeodash_auth::GENERIC_AUTH_MESSAGE;
 use archaeodash_contracts::ErrorEnvelope;
 use archaeodash_control_postgres::{AccountTokenKind, ControlError, ControlStore, UserRow};
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -35,6 +35,8 @@ use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::SystemTime;
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 use uuid::Uuid;
 pub const SESSION_COOKIE: &str = "archaeodash_session";
 pub const CSRF_COOKIE: &str = "archaeodash_csrf";
@@ -1504,6 +1506,25 @@ async fn preferences_get(
     Ok(Json(serde_json::Value::Object(map)))
 }
 
+/// RFC 3339 rendering for catalog timestamps (Section 10: JSON for
+/// metadata).
+fn rfc3339(t: OffsetDateTime) -> String {
+    t.format(&Rfc3339).expect("rfc3339")
+}
+
+#[derive(serde::Serialize)]
+struct ProjectSummary {
+    project_id: Uuid,
+    name: String,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Deserialize)]
+struct CreateProjectBody {
+    name: String,
+}
+
 #[derive(Deserialize)]
 struct PutPreferenceBody {
     key: String,
@@ -1537,9 +1558,122 @@ async fn preferences_set(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `POST /api/v1/projects` — creates a hosted project catalog row for the
+/// session user (Section 10.2). The file namespace
+/// `users/<user-id>/projects/<project-id>/` is derived from opaque UUIDs.
+async fn projects_create(
+    State(state): State<AuthState>,
+    headers: HeaderMap,
+    body: Result<Json<CreateProjectBody>, axum::extract::rejection::JsonRejection>,
+) -> Result<(StatusCode, Json<ProjectSummary>), (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = require_session(&state, &headers, true).await? else {
+        return Err(unauthorized());
+    };
+    let Json(req) = body.map_err(|_| (StatusCode::BAD_REQUEST, json_error("bad_request")))?;
+    let name = req.name.trim();
+    if name.is_empty() || name.chars().count() > 200 {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json_error("invalid_project_name"),
+        ));
+    }
+    let row = state
+        .store
+        .create_project(Uuid::now_v7(), principal.user.id, name, SystemTime::now())
+        .await
+        .map_err(db_error)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(ProjectSummary {
+            project_id: row.project_id,
+            name: row.name,
+            created_at: rfc3339(row.created_at),
+            updated_at: rfc3339(row.updated_at),
+        }),
+    ))
+}
+
+/// `GET /api/v1/projects` — the session user's live projects, newest first.
+async fn projects_list(
+    State(state): State<AuthState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = require_session(&state, &headers, false).await? else {
+        return Err(unauthorized());
+    };
+    let rows = state
+        .store
+        .list_projects(principal.user.id)
+        .await
+        .map_err(db_error)?;
+    let projects: Vec<ProjectSummary> = rows
+        .into_iter()
+        .map(|row| ProjectSummary {
+            project_id: row.project_id,
+            name: row.name,
+            created_at: rfc3339(row.created_at),
+            updated_at: rfc3339(row.updated_at),
+        })
+        .collect();
+    Ok(Json(serde_json::Value::Object(serde_json::Map::from_iter(
+        [(
+            "projects".to_string(),
+            serde_json::to_value(projects).expect("serializable"),
+        )],
+    ))))
+}
+
+/// `GET /api/v1/projects/{id}` — one owned project summary. Other users'
+/// projects, deleted projects, and unknown IDs are all 404 (no existence
+/// oracle across accounts).
+async fn projects_get(
+    State(state): State<AuthState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<ProjectSummary>, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = require_session(&state, &headers, false).await? else {
+        return Err(unauthorized());
+    };
+    let row = state
+        .store
+        .get_project(principal.user.id, project_id)
+        .await
+        .map_err(db_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, json_error("not_found")))?;
+    Ok(Json(ProjectSummary {
+        project_id: row.project_id,
+        name: row.name,
+        created_at: rfc3339(row.created_at),
+        updated_at: rfc3339(row.updated_at),
+    }))
+}
+
+/// `DELETE /api/v1/projects/{id}` — soft delete (tombstone) of an owned
+/// project; file-namespace purge is the asynchronous retention sweep's job.
+async fn projects_delete(
+    State(state): State<AuthState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<StatusCode, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = require_session(&state, &headers, true).await? else {
+        return Err(unauthorized());
+    };
+    let deleted = state
+        .store
+        .soft_delete_project(principal.user.id, project_id, SystemTime::now())
+        .await
+        .map_err(db_error)?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, json_error("not_found")))
+    }
+}
+
 /// The hosted control-plane router: auth surface plus user-scoped
-/// preferences. Composed under the security-headers middleware and a strict
-/// same-origin CORS allowlist by [`hosted_router`].
+/// preferences and the Section 10.2 project catalog. Composed under the
+/// security-headers middleware and a strict same-origin CORS allowlist by
+/// [`hosted_router`].
 pub fn auth_router(state: AuthState) -> Router {
     Router::new()
         .route("/api/v1/auth/register", post(register))
@@ -1552,6 +1686,11 @@ pub fn auth_router(state: AuthState) -> Router {
         .route(
             "/api/v1/preferences",
             get(preferences_get).put(preferences_set),
+        )
+        .route("/api/v1/projects", post(projects_create).get(projects_list))
+        .route(
+            "/api/v1/projects/{id}",
+            get(projects_get).delete(projects_delete),
         )
         .route(
             "/api/v1/auth/password-reset/request",
@@ -2184,6 +2323,229 @@ mod lifecycle_rehearsal {
             .expect("user exists");
         assert_eq!(stored.consent_version.as_deref(), Some(CONSENT_VERSION));
         assert!(stored.consented_at.is_some());
+        let _ = sink;
+    }
+
+    #[tokio::test]
+    async fn hosted_project_catalog_is_session_scoped() {
+        let Some((state, sink)) = auth_state().await else {
+            return;
+        };
+        let app = auth_app(state.clone());
+        let suffix = unique_suffix();
+
+        // Register + verify + login to get a session cookie/CSRF pair.
+        let register = |username: String| {
+            let app = app.clone();
+            async move {
+                post_json(
+                    app,
+                    "/api/v1/auth/register",
+                    serde_json::json!({
+                        "username": username,
+                        "email": format!("{username}@example.com"),
+                        "password": "correct horse battery staple",
+                        "consent_version": CONSENT_VERSION
+                    }),
+                )
+                .await
+            }
+        };
+        let login = |username: String| {
+            let app = app.clone();
+            async move {
+                post_json(
+                    app,
+                    "/api/v1/auth/login",
+                    serde_json::json!({
+                        "identifier": username,
+                        "password": "correct horse battery staple"
+                    }),
+                )
+                .await
+            }
+        };
+        let extract_cookie = |response: &axum::response::Response| -> String {
+            response
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .map(|v| v.to_str().expect("ascii").to_string())
+                .find(|c| c.starts_with(SESSION_COOKIE))
+                .expect("session cookie")
+                .split(';')
+                .next()
+                .expect("cookie pair")
+                .to_string()
+        };
+        let extract_csrf = |response: &axum::response::Response| -> String {
+            response
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .map(|v| v.to_str().expect("ascii").to_string())
+                .find(|c| c.starts_with(CSRF_COOKIE))
+                .expect("csrf cookie")
+                .split(';')
+                .next()
+                .expect("cookie pair")
+                .to_string()
+        };
+
+        register(format!("proj-{suffix}")).await;
+        let token = sink_last_token(&sink, "/auth/verify?token=");
+        post_json(
+            app.clone(),
+            "/api/v1/auth/verify",
+            serde_json::json!({ "token": token }),
+        )
+        .await;
+        let login_response = login(format!("proj-{suffix}")).await;
+        assert_eq!(login_response.status(), StatusCode::OK);
+        let cookie = extract_cookie(&login_response);
+        let csrf = extract_csrf(&login_response);
+        let csrf_value = csrf.split_once('=').expect("csrf pair").1.to_string();
+
+        // Double-submit: both cookies travel in the Cookie header and the
+        // CSRF value is echoed in the X-CSRF-Token header.
+        let cookie_pair = format!("{cookie}; {csrf}");
+        let authed = |method: axum::http::Method, uri: String, body: Option<serde_json::Value>| {
+            let app = app.clone();
+            let cookie_pair = cookie_pair.clone();
+            let csrf_value = csrf_value.clone();
+            async move {
+                let (body, content_type) = match body {
+                    Some(value) => (
+                        Body::from(serde_json::to_vec(&value).expect("json")),
+                        Some((header::CONTENT_TYPE, "application/json")),
+                    ),
+                    None => (Body::empty(), None),
+                };
+                let mut builder = axum::http::Request::builder()
+                    .method(method)
+                    .uri(&uri)
+                    .header(header::COOKIE, cookie_pair)
+                    .header(CSRF_HEADER, csrf_value);
+                if let Some((name, value)) = content_type {
+                    builder = builder.header(name, value);
+                }
+                let mut request = builder.body(body).expect("request");
+                request.extensions_mut().insert(ConnectInfo(test_peer()));
+                app.oneshot(request).await
+            }
+        };
+
+        // Unauthenticated reads are 401.
+        let mut anon = axum::http::Request::builder()
+            .uri("/api/v1/projects")
+            .body(Body::empty())
+            .expect("request");
+        anon.extensions_mut().insert(ConnectInfo(test_peer()));
+        let response = app.clone().oneshot(anon).await.expect("infallible");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        // Create requires CSRF.
+        let mut no_csrf = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri("/api/v1/projects")
+            .header(header::COOKIE, cookie.clone())
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "name": "no-csrf" })).expect("json"),
+            ))
+            .expect("request");
+        no_csrf.extensions_mut().insert(ConnectInfo(test_peer()));
+        let response = app.clone().oneshot(no_csrf).await.expect("infallible");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        // Create with CSRF: 201 with a summary payload.
+        let response = authed(
+            axum::http::Method::POST,
+            "/api/v1/projects".to_string(),
+            Some(serde_json::json!({ "name": "INAA field season" })),
+        )
+        .await
+        .expect("infallible");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let created: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body"),
+        )
+        .expect("json");
+        let project_id = created["project_id"].as_str().expect("uuid").to_string();
+        assert_eq!(created["name"], "INAA field season");
+
+        // Listing shows exactly this project.
+        let response = authed(
+            axum::http::Method::GET,
+            "/api/v1/projects".to_string(),
+            None,
+        )
+        .await
+        .expect("infallible");
+        assert_eq!(response.status(), StatusCode::OK);
+        let listed: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body"),
+        )
+        .expect("json");
+        assert_eq!(listed["projects"].as_array().expect("array").len(), 1);
+
+        // Second user sees an empty catalog and a 404 for the first user's
+        // project (no existence oracle).
+        register(format!("proj-other-{suffix}")).await;
+        let other_token = sink_last_token(&sink, "/auth/verify?token=");
+        post_json(
+            app.clone(),
+            "/api/v1/auth/verify",
+            serde_json::json!({ "token": other_token }),
+        )
+        .await;
+        let other_login = login(format!("proj-other-{suffix}")).await;
+        let other_cookie = extract_cookie(&other_login);
+        let mut other_request = axum::http::Request::builder()
+            .uri(&format!("/api/v1/projects/{project_id}"))
+            .header(header::COOKIE, other_cookie)
+            .body(Body::empty())
+            .expect("request");
+        other_request
+            .extensions_mut()
+            .insert(ConnectInfo(test_peer()));
+        let other_response = app
+            .clone()
+            .oneshot(other_request)
+            .await
+            .expect("infallible");
+        assert_eq!(other_response.status(), StatusCode::NOT_FOUND);
+
+        // Owner GET returns the summary; DELETE tombstones; second DELETE is 404.
+        let response = authed(
+            axum::http::Method::GET,
+            format!("/api/v1/projects/{project_id}"),
+            None,
+        )
+        .await
+        .expect("infallible");
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = authed(
+            axum::http::Method::DELETE,
+            format!("/api/v1/projects/{project_id}"),
+            None,
+        )
+        .await
+        .expect("infallible");
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let response = authed(
+            axum::http::Method::DELETE,
+            format!("/api/v1/projects/{project_id}"),
+            None,
+        )
+        .await
+        .expect("infallible");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
         let _ = sink;
     }
 }
