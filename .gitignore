@@ -21,3 +21,6 @@ apps/desktop/src-tauri/gen/
 # Local R toolchain used for oracle captures (not part of the build)
 R-4.6.1/
 scripts/e2e/out/
+
+# Local hosted file store (e2e/dev runs of the hosted binary)
+data/
