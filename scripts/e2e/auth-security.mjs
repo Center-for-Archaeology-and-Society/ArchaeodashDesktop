@@ -267,7 +267,34 @@ try {
     throw new Error(`new-password sign-in state: ${body.slice(0, 700).replace(/\n/g, ' | ')}`);
   }
 
+  // --- 6b. Hosted project catalog + file upload (Section 10.2 UI) --------
+  // The signed-in user creates a project and uploads a CSV through the
+  // Projects page; the quota line reflects the upload.
+  await page.goto(`${webBase}/projects`);
+  await page.getByLabel('New project name').fill('E2E Catalog');
+  await page.getByRole('button', { name: 'Create project' }).click();
+  await page.getByRole('button', { name: 'E2E Catalog' }).waitFor({ timeout: 10_000 });
+  await page.getByRole('button', { name: 'E2E Catalog' }).click();
+  await page.getByText('No files in this project.').waitFor({ timeout: 10_000 });
+  await page.getByLabel('File', { exact: true }).setInputFiles({
+    name: 'INAA.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('sample_id,Cu\nA-1,42\n'),
+  });
+  await page.getByRole('button', { name: 'Upload' }).click();
+  await page.getByText('INAA.csv').waitFor({ timeout: 10_000 });
+  await page.getByText('parsed').waitFor({ timeout: 10_000 });
+  try {
+    await page
+      .getByText(new RegExp('bytes used'))
+      .waitFor({ timeout: 10_000 });
+  } catch (error) {
+    const body = await page.evaluate(() => document.body.innerText);
+    throw new Error(`quota line state: ${body.slice(0, 700).replace(/\n/g, ' | ')}`);
+  }
+
   // --- 7. Sign out everywhere revokes the session ------------------------
+  await page.goto(`${webBase}/account`);
   await page.getByRole('button', { name: 'Sign out everywhere' }).click();
   await page.getByRole('button', { name: 'Sign in', exact: true }).waitFor({ timeout: 10_000 });
 
