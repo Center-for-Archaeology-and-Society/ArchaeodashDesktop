@@ -82,7 +82,17 @@ mod tests {
         // The guard is None when no file appender could be set up; the
         // process still logs (the caller's stdout fallback). A second call
         // after a global subscriber exists is also a safe no-op.
-        assert!(init(Some(std::path::Path::new("/nonexistent/xyz/logs"))).is_none());
+        //
+        // The path must be uncreatable for ANY user, including root in a
+        // container: a regular file is created where the log directory is
+        // expected, so `create_dir_all` fails with ENOTDIR regardless of
+        // privileges (a path like /nonexistent/xyz would be creatable by
+        // root and make this test environment-dependent).
+        let not_a_dir = std::env::temp_dir().join("archaeodash-log-test-not-a-dir");
+        let _ = std::fs::remove_file(&not_a_dir);
+        std::fs::write(&not_a_dir, b"file, not directory").expect("write blocking file");
+        assert!(init(Some(&not_a_dir.join("logs"))).is_none());
+        std::fs::remove_file(&not_a_dir).ok();
         assert!(init(None).is_none());
     }
 }

@@ -28,3 +28,13 @@ Maps each finding in [[Security_Audit_Blackbox_and_Code_2026-02-20]] and [[Secur
 - Hosted CI verification of all of the above (GitHub Actions billing failure — every run dies before any step; owner must fix under Billing & plans).
 - Browser-level security e2e suite (shares the CI block).
 - The formal threat-model review sign-off itself is a human decision; this note provides the evidence base.
+
+**Update 2026-10-08:** the hosted CI gate was replaced by a local Docker
+verification (`scripts/verify-local.sh` + `deploy/compose/verify.yml`);
+`.github/workflows/ci.yml` was removed. The Linux rust/node gates now run in
+containers against a real PostgreSQL 16 — including the DB-backed auth,
+control-plane, and hosted-file/definition tests and the browser-level
+security e2e that was previously listed here as CI-blocked. The
+macOS/Windows desktop-cross and launch-smoke jobs and the Phase 6
+workflows remain hosted-CI-only. See
+[[Local_Docker_Verification_2026-10-08]].

@@ -1,0 +1,65 @@
+# Local CI-equivalent verification (replaces the GitHub Actions `ci.yml`
+# workflow, which is blocked by the account's Actions billing failure).
+# Replicates the two hosted-CI jobs that ran on Linux:
+#
+#   rust: cargo fmt --check, cargo clippy --workspace -- -D warnings,
+#         cargo test --workspace (against a real PostgreSQL 16, like the
+#         CI service container)
+#   node: pnpm install --frozen-lockfile, pnpm -r build, pnpm -r test
+#
+# Run through scripts/verify-local.sh, which sequences the services and
+# fails on the first non-zero exit. Toolchain versions come from
+# rust-toolchain.toml (1.98.1, rustfmt + clippy) and packageManager
+# (pnpm 12.4.1 on Node 22) — the same pins the workflow used.
+#
+# The macOS/Windows desktop-cross and launch-smoke jobs have no local
+# Linux-container equivalent and remain hosted-CI-only (see the Phase 7
+# checkpoint in IMPLEMENTATION.md).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: control_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d control_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Not published on the host: only the check services reach it, so the
+    # gate never collides with a developer's local PostgreSQL.
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  rust-check:
+    build:
+      context: ../verify
+      dockerfile: rust.Dockerfile
+    working_dir: /workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:test@postgres:5432/control_test
+      CARGO_TARGET_DIR: /target
+    volumes:
+      - ../..:/workspace
+      - rust-target:/target
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+
+  node-check:
+    image: node:22-bookworm
+    working_dir: /workspace
+    environment:
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+    volumes:
+      - ../..:/workspace
+      - pnpm-store:/root/.local/share/pnpm/store
+
+volumes:
+  rust-target:
+  cargo-registry:
+  cargo-git:
+  pnpm-store:
