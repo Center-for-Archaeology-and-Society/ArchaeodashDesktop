@@ -584,15 +584,16 @@ async fn transformations_save(
         .await
     {
         Ok(Some(outcome)) => {
-            // The replaced revision's object leaves the catalog now; trash
-            // routes it into the retention sweep (Section 6.9).
+            // Replaced revisions keep no history (desktop upsert parity: the
+            // definition is one name-keyed JSON). The catalog row now points
+            // at the new object only, so the previous bytes are unrecoverable
+            // through any API — remove them outright. Trashing would leak:
+            // no catalog row references a replaced revision, so the retention
+            // sweep could never find it. A crash between commit and removal
+            // orphans an undiscoverable object, the same guarantee class as
+            // the Section 6.9 file sweep window.
             if let Some(previous) = outcome.previous_object_key {
-                state.files.trash_object(
-                    principal.user.id,
-                    project_id,
-                    &previous,
-                    &format!("{}.prev", outcome.row.transformation_id.simple()),
-                );
+                state.files.remove_object(&previous);
             }
             Ok((
                 if outcome.replaced {
@@ -1160,7 +1161,8 @@ mod header_hygiene {
         // Reuse the auth test helper to get a session cookie + CSRF token.
         let (cookie, csrf) =
             crate::auth::preference_tests::login_session(state.clone(), sink).await;
-        let app = hosted_router(hosted_test_state(state));
+        let (app_state, _base) = hosted_test_state(state);
+        let app = hosted_router(app_state);
         // Unauthenticated upload is 401.
         let res = app
             .clone()
@@ -1182,19 +1184,24 @@ mod header_hygiene {
 
 /// Wraps an [`AuthState`]'s shared store into a hosted state with a temp
 /// file store, for file-route tests that log in through the auth helpers.
+/// Returns the store base path so tests can assert object lifecycle on disk
+/// (retention/trash behavior is a filesystem contract, not a catalog one).
 #[cfg(test)]
-pub(crate) fn hosted_test_state(state: crate::auth::AuthState) -> HostedState {
-    HostedState {
-        auth: state.clone(),
-        store: state.store.clone(),
-        files: std::sync::Arc::new(
-            crate::hosted_files::HostedFileStore::new(
-                tempfile::tempdir().expect("temp file store").keep(),
-            )
-            .expect("file store"),
-        ),
-        quota_bytes: 1_073_741_824,
-    }
+pub(crate) fn hosted_test_state(
+    state: crate::auth::AuthState,
+) -> (HostedState, std::path::PathBuf) {
+    let base = tempfile::tempdir().expect("temp file store").keep();
+    let files =
+        std::sync::Arc::new(crate::hosted_files::HostedFileStore::new(&base).expect("file store"));
+    (
+        HostedState {
+            auth: state.clone(),
+            store: state.store.clone(),
+            files,
+            quota_bytes: 1_073_741_824,
+        },
+        base,
+    )
 }
 
 #[cfg(test)]
@@ -1235,7 +1242,7 @@ mod quota_tests {
         };
         let (cookie, csrf) = login_session(state.clone(), sink).await;
         // 10-byte quota: the 5-byte upload fits, the 20-byte one does not.
-        let mut app_state = hosted_test_state(state);
+        let (mut app_state, _base) = hosted_test_state(state);
         app_state.quota_bytes = 10;
         let user = whoami(&app_state.auth, &cookie).await;
         let project = app_state
@@ -1297,7 +1304,7 @@ mod quota_tests {
         let (cookie, _csrf) =
             crate::auth::preference_tests::login_session(state.clone(), sink).await;
         let store = state.store.clone();
-        let mut app_state = hosted_test_state(state);
+        let (mut app_state, _base) = hosted_test_state(state);
         app_state.quota_bytes = 500;
         let user = whoami(&app_state.auth, &cookie).await;
         app_state
@@ -1339,23 +1346,14 @@ mod quota_tests {
         assert_eq!(envelope["limit_bytes"], 500);
 
         // Unauthenticated access is 401: a fresh router with no session.
-        let app2 = hosted_router(HostedState {
-            auth: crate::auth::AuthState {
-                store: store.clone(),
-                email: std::sync::Arc::new(archaeodash_auth::email::DevSinkEmailSender::new()),
-                pepper: archaeodash_auth::throttle::ThrottlePepper::from_hex(&"ab".repeat(32))
-                    .expect("pepper"),
-                base_url: "https://archaeodash.example".to_string(),
-            },
+        let (app2_state, _file_base) = hosted_test_state(crate::auth::AuthState {
             store,
-            files: std::sync::Arc::new(
-                crate::hosted_files::HostedFileStore::new(
-                    tempfile::tempdir().expect("temp file store").keep(),
-                )
-                .expect("file store"),
-            ),
-            quota_bytes: 500,
+            email: std::sync::Arc::new(archaeodash_auth::email::DevSinkEmailSender::new()),
+            pepper: archaeodash_auth::throttle::ThrottlePepper::from_hex(&"ab".repeat(32))
+                .expect("pepper"),
+            base_url: "https://archaeodash.example".to_string(),
         });
+        let app2 = hosted_router(app2_state);
         let res = app2
             .oneshot(
                 axum::http::Request::builder()
@@ -1418,7 +1416,7 @@ mod transformation_tests {
             return;
         };
         let (cookie, csrf) = login_session(auth.clone(), sink).await;
-        let app_state = hosted_test_state(auth);
+        let (app_state, _file_base) = hosted_test_state(auth);
         let store = app_state.store.clone();
         let user = {
             let presentation = cookie
@@ -1675,5 +1673,123 @@ mod transformation_tests {
             .await
             .expect("list");
         assert!(listed.is_empty(), "tombstoned definition leaves the list");
+    }
+
+    /// Object lifecycle on disk (Section 6.9): the replaced revision's
+    /// object is removed outright (no revision history is kept, so a
+    /// trashed previous object could never be swept), and the deleted
+    /// definition's object moves to the namespace trash for the sweep.
+    #[tokio::test]
+    async fn transformation_objects_replace_in_place_and_trash_on_delete() {
+        let Some((auth, sink)) = auth_state().await else {
+            return;
+        };
+        let (cookie, csrf) = login_session(auth.clone(), sink).await;
+        let (app_state, file_base) = hosted_test_state(auth);
+        let store = app_state.store.clone();
+        let object_path = |key: &str| file_base.join(key);
+        let user = {
+            let presentation = cookie
+                .split(';')
+                .map(str::trim)
+                .find_map(|c| c.strip_prefix(crate::auth::SESSION_COOKIE))
+                .and_then(|c| c.strip_prefix('='))
+                .expect("session cookie")
+                .to_string();
+            let digest = archaeodash_auth::token::digest_presentation(&presentation);
+            store
+                .find_live_session(&digest, std::time::SystemTime::now())
+                .await
+                .expect("session lookup")
+                .expect("live session")
+                .1
+                .id
+        };
+        let project = store
+            .create_project(
+                Uuid::now_v7(),
+                user,
+                "object lifecycle",
+                std::time::SystemTime::now(),
+            )
+            .await
+            .expect("project");
+        let base = format!("/api/v1/projects/{}/transformations", project.project_id);
+        let definition = r#"{"definition":{"name":"Cu over Zn","transform_method":"log10","imputation_method":"none","imputation_seed":null,"elemental_columns":["Cu"],"descriptive_columns":[],"group_column":null,"ratios":[],"ratio_mode":"append"}}"#;
+        let app = hosted_router(app_state);
+        let post = |app: Router, uri: String, body: &str, csrf: String| {
+            app.oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header(header::COOKIE, cookie.clone())
+                    .header("x-csrf-token", csrf)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(test_peer()))
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+        };
+
+        // First save writes the object at its catalog key.
+        let res = post(app.clone(), base.clone(), definition, csrf.clone())
+            .await
+            .expect("infallible");
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let first_key = store
+            .get_transformation_by_name(user, project.project_id, "Cu over Zn")
+            .await
+            .expect("get")
+            .expect("row")
+            .object_key;
+        assert!(object_path(&first_key).exists(), "object written");
+
+        // Replace: the catalog row moves to a new key and the previous
+        // object is gone from the namespace (removed, not trashed — no
+        // revision history is kept, so trash could never be swept).
+        let res = post(app.clone(), base.clone(), definition, csrf.clone())
+            .await
+            .expect("infallible");
+        assert_eq!(res.status(), StatusCode::OK);
+        let second_key = store
+            .get_transformation_by_name(user, project.project_id, "Cu over Zn")
+            .await
+            .expect("get")
+            .expect("row")
+            .object_key;
+        assert_ne!(second_key, first_key, "each revision gets a fresh key");
+        assert!(object_path(&second_key).exists(), "new object written");
+        assert!(!object_path(&first_key).exists(), "old object removed");
+
+        // Delete: tombstone + trash for the retention sweep.
+        let transformation_id = store
+            .get_transformation_by_name(user, project.project_id, "Cu over Zn")
+            .await
+            .expect("get")
+            .expect("row")
+            .transformation_id;
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("DELETE")
+                    .uri(format!("{base}/{transformation_id}").as_str())
+                    .header(header::COOKIE, cookie)
+                    .header("x-csrf-token", csrf)
+                    .extension(ConnectInfo(test_peer()))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        assert!(!object_path(&second_key).exists(), "object left files/");
+        let trash = file_base
+            .join("users")
+            .join(user.to_string())
+            .join("projects")
+            .join(project.project_id.to_string())
+            .join(".trash")
+            .join(format!("{}.deleted", transformation_id.simple()));
+        assert!(trash.exists(), "object moved to trash for the sweep");
     }
 }

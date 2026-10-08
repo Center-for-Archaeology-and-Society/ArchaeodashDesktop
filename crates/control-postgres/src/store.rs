@@ -103,6 +103,15 @@ pub struct SweptFile {
     pub object_key: String,
 }
 
+/// A transformation-definition tombstone due for retention cleanup: same
+/// contract as [`SweptFile`], for the `transformations` catalog.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct SweptTransformation {
+    pub transformation_id: Uuid,
+    pub user_id: Uuid,
+    pub object_key: String,
+}
+
 /// A hosted transformation-definition catalog row (Sections 6.4/6.5/10.2):
 /// identity, project scope, unique active name, current revision, and the
 /// small summary fields listing needs without object reads. The definition
@@ -1011,6 +1020,27 @@ impl ControlStore {
              WHERE f.project_id = p.project_id \
                AND f.deleted_at IS NOT NULL AND f.deleted_at < $1 \
              RETURNING f.file_id, p.user_id, f.object_key",
+        )
+        .bind(cutoff)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Retention sweep for transformation definitions (Section 6.9): same
+    /// contract as [`Self::sweep_expired_tombstones`] over the
+    /// `transformations` catalog — tombstoned rows past `cutoff` are deleted
+    /// atomically and returned with ownership + object key so the caller can
+    /// purge their trash objects.
+    pub async fn sweep_expired_transformations(
+        &self,
+        cutoff: OffsetDateTime,
+    ) -> Result<Vec<SweptTransformation>, ControlError> {
+        let rows: Vec<SweptTransformation> = sqlx::query_as(
+            "DELETE FROM transformations t USING projects p \
+             WHERE t.project_id = p.project_id \
+               AND t.deleted_at IS NOT NULL AND t.deleted_at < $1 \
+             RETURNING t.transformation_id, p.user_id, t.object_key",
         )
         .bind(cutoff)
         .fetch_all(&self.pool)
@@ -1967,5 +1997,83 @@ mod tests {
             .await
             .expect("stranger delete")
             .is_none());
+    }
+
+    /// Retention sweep for transformation tombstones: the same cutoff
+    /// scoping as the file sweep — an old tombstone is deleted and returned
+    /// with its object key for the trash purge, a fresh one survives, and
+    /// the files sweep is untouched.
+    #[tokio::test]
+    async fn sweep_expired_transformations_scopes_by_cutoff() {
+        let Some((store, _pool)) = migrated_store().await else {
+            return;
+        };
+        let (owner, _) = make_user(&store).await;
+        let project_id = Uuid::now_v7();
+        store
+            .create_project(project_id, owner.id, "sweep", SystemTime::now())
+            .await
+            .expect("create project");
+        let now = SystemTime::now();
+        let object_key = |suffix: &str| {
+            format!(
+                "users/{}/projects/{project_id}/transformations/{suffix}",
+                owner.id
+            )
+        };
+
+        // Live definition, tombstoned 48 hours ago by direct update (the
+        // sweep cutoff carries an hour of margin, so it is due).
+        let old = save_definition(
+            &store,
+            owner.id,
+            project_id,
+            "old definition",
+            &object_key("old/1.json"),
+        )
+        .await;
+        sqlx::query("UPDATE transformations SET deleted_at = $2 WHERE transformation_id = $1")
+            .bind(old.row.transformation_id)
+            .bind(to_offset(now - Duration::from_secs(48 * 3600)))
+            .execute(&store.pool)
+            .await
+            .expect("backdate tombstone");
+
+        // Fresh definition tombstoned now: inside the margin, survives.
+        let fresh = save_definition(
+            &store,
+            owner.id,
+            project_id,
+            "fresh definition",
+            &object_key("fresh/1.json"),
+        )
+        .await;
+        assert!(store
+            .soft_delete_transformation(owner.id, fresh.row.transformation_id, now)
+            .await
+            .expect("tombstone fresh")
+            .is_some());
+
+        let swept = store
+            .sweep_expired_transformations(to_offset(now - Duration::from_secs(3600)))
+            .await
+            .expect("sweep");
+        assert_eq!(swept.len(), 1);
+        assert_eq!(swept[0].transformation_id, old.row.transformation_id);
+        assert_eq!(swept[0].user_id, owner.id);
+        assert_eq!(swept[0].object_key, object_key("old/1.json"));
+
+        // The fresh tombstone survives (still within the window); sweeping
+        // again finds nothing.
+        assert!(store
+            .get_transformation(owner.id, fresh.row.transformation_id)
+            .await
+            .expect("get after delete")
+            .is_none());
+        assert!(store
+            .sweep_expired_transformations(to_offset(now - Duration::from_secs(3600)))
+            .await
+            .expect("sweep again")
+            .is_empty());
     }
 }

@@ -143,6 +143,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => tracing::warn!(error = %e, "retention sweep failed"),
             }
+            // Transformation-definition tombstones sweep the same way; the
+            // trash tag is the transformation ID, which the generic purge
+            // matches.
+            match sweep_store.sweep_expired_transformations(cutoff).await {
+                Ok(swept) => {
+                    for item in swept {
+                        sweep_files.purge_trash_object(item.user_id, item.transformation_id);
+                        tracing::info!(
+                            transformation_id = %item.transformation_id,
+                            "retention sweep purged transformation"
+                        );
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "transformation retention sweep failed"),
+            }
         }
     });
 

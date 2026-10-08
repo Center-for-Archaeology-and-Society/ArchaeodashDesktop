@@ -362,10 +362,11 @@ pub struct StoredDefinitionObject {
 }
 
 impl HostedFileStore {
-    /// Removes a trash object left by [`HostedFileStore::delete`] once the
-    /// catalog tombstone has been swept (Section 6.9 retention cleanup).
-    /// Missing files are fine — the sweep may run after a partial purge.
-    pub fn purge_trash_object(&self, user_id: Uuid, file_id: Uuid) {
+    /// Removes a trash object left by a delete once its catalog tombstone
+    /// has been swept (Section 6.9 retention cleanup). `id` is the trash tag
+    /// — the file or transformation ID that named the object. Missing files
+    /// are fine — the sweep may run after a partial purge.
+    pub fn purge_trash_object(&self, user_id: Uuid, id: Uuid) {
         // The trash dir is the namespace's `.trash`; walk it rather than
         // reconstructing the project id (the sweep already carries user_id,
         // and a missing directory is a no-op either way).
@@ -374,7 +375,7 @@ impl HostedFileStore {
         let Ok(entries) = std::fs::read_dir(trash) else {
             return;
         };
-        let target = format!("{}.deleted", file_id.simple());
+        let target = format!("{}.deleted", id.simple());
         for entry in entries.flatten() {
             let path = entry.path().join(".trash").join(&target);
             if path.exists() {

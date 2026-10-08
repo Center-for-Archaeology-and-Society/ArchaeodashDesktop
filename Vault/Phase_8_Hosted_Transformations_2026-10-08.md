@@ -36,6 +36,18 @@ revision mechanism remains open.
   object against the catalog row before parsing. Definition bytes are not
   quota-counted yet — deliberately deferred to the quota-policy-revision
   slice, noted in code.
+- **Retention fix (same day):** the first cut trashed replaced-revision
+  objects, but no catalog row references a replaced revision — the Section
+  6.9 sweep (which deletes *tombstoned* rows) could never find them, so
+  every same-name save leaked an unsweepable object. Replaced revisions are
+  now removed outright (desktop upsert parity: one name-keyed JSON, no
+  revision history; a crash between commit and removal orphans an
+  undiscoverable object, the same guarantee class as the file sweep
+  window). Deleted definitions keep tombstone → trash, and the hourly sweep
+  gained `sweep_expired_transformations` so their trash objects are purged
+  under `AUTH_RETENTION_DAYS` like file tombstones. Verified by a store
+  cutoff-scoping test and an HTTP object-lifecycle test (replace removes
+  the previous bytes; delete moves them to `.trash/`).
 - **Client transport** — `HostedTransformationsService`
   (`save`/`list`/`get`/`delete`) on the HTTP transport; Tauri transport
   unaffected (desktop keeps its local-directory store).
