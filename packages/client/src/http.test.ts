@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { HttpTransport } from './http.ts';
 import { TransportError, type Transport } from './transport.ts';
+import type { TransformationDefinition } from '@archaeodash/contracts';
 import {
   registerTransportContractTests,
   type Harness,
@@ -386,4 +387,76 @@ test('http: hosted projects quota route reports usage', async () => {
   assert.equal(calls.at(-1)?.method, 'GET');
   assert.equal(usage.logical_bytes, 120);
   assert.equal(usage.limit_bytes, 1073741824);
+});
+
+test('http: hosted transformations service hits Section 10.2 definition routes', async () => {
+  const calls: { url: URL; method: string; body: unknown }[] = [];
+  const meta = {
+    transformation_id: '0197cccc-cccc-7ccc-8ccc-cccccccccccc',
+    project_id: '0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa',
+    name: 'Cu over Zn',
+    revision: 1,
+    transform_method: 'log10',
+    imputation_method: 'none',
+    ratio_count: 1,
+    bytes: 120,
+    sha256: 'a'.repeat(64),
+    created_at_unix_secs: 1760000000,
+    updated_at_unix_secs: 1760000000,
+  };
+  const definition: TransformationDefinition = {
+    name: 'Cu over Zn',
+    transform_method: 'log10',
+    imputation_method: 'none',
+    imputation_seed: null,
+    elemental_columns: ['Cu', 'Zn'],
+    descriptive_columns: [],
+    group_column: null,
+    ratios: [{ output_name: null, numerator: 'Cu', denominator: 'Zn' }],
+    ratio_mode: 'append',
+  };
+  const transport = new HttpTransport('', async (input, init) => {
+    const url = new URL(String(input), 'http://test.local');
+    let payload: unknown = null;
+    if (typeof init?.body === 'string') payload = JSON.parse(init.body);
+    calls.push({ url, method: init?.method ?? 'GET', body: payload });
+    return new Response(JSON.stringify({ transformation: meta, replaced: false, definition }), {
+      status: 201,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  const saved = await transport.hostedTransformations.save({
+    projectId: '0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa',
+    definition,
+  });
+  assert.equal(calls.at(-1)?.method, 'POST');
+  assert.equal(
+    calls.at(-1)?.url.pathname,
+    '/api/v1/projects/0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa/transformations',
+  );
+  assert.deepEqual(calls.at(-1)?.body, { definition });
+  assert.equal(saved.replaced, false);
+  assert.equal(saved.transformation.revision, 1);
+
+  await transport.hostedTransformations.list('0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa');
+  assert.equal(
+    calls.at(-1)?.url.pathname,
+    '/api/v1/projects/0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa/transformations',
+  );
+
+  await transport.hostedTransformations.get(
+    '0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa',
+    '0197cccc-cccc-7ccc-8ccc-cccccccccccc',
+  );
+  assert.equal(
+    calls.at(-1)?.url.pathname,
+    '/api/v1/projects/0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa/transformations/0197cccc-cccc-7ccc-8ccc-cccccccccccc',
+  );
+
+  await transport.hostedTransformations.delete(
+    '0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa',
+    '0197cccc-cccc-7ccc-8ccc-cccccccccccc',
+  );
+  assert.equal(calls.at(-1)?.method, 'DELETE');
 });

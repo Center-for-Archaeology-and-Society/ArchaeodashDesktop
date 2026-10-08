@@ -236,6 +236,48 @@ export interface HostedFilesService {
   delete(fileId: string): Promise<void>;
 }
 
+/** One hosted transformation-definition catalog row (Sections 6.4/6.5). */
+export interface HostedTransformationMeta {
+  transformation_id: string;
+  project_id: string;
+  name: string;
+  revision: number;
+  transform_method: string;
+  imputation_method: string;
+  ratio_count: number;
+  bytes: number;
+  sha256: string;
+  created_at_unix_secs: number;
+  updated_at_unix_secs: number;
+}
+
+/**
+ * Hosted transformation-definition service (Sections 6.4/6.5/10.2):
+ * named definitions are configuration, stored in the project's
+ * `transformations/` namespace with catalog authorization. Absent in
+ * desktop (Tauri) mode, where the desktop transformations service works
+ * on the local project directory.
+ */
+export interface HostedTransformationsService {
+  save(request: {
+    projectId: string;
+    definition: TransformationDefinition;
+  }): Promise<{
+    transformation: HostedTransformationMeta;
+    replaced: boolean;
+    definition: TransformationDefinition;
+  }>;
+  list(projectId: string): Promise<{ transformations: HostedTransformationMeta[] }>;
+  get(
+    projectId: string,
+    transformationId: string,
+  ): Promise<{
+    transformation: HostedTransformationMeta;
+    definition: TransformationDefinition;
+  }>;
+  delete(projectId: string, transformationId: string): Promise<void>;
+}
+
 /**
  * Hosted-account service (Section 10.1). Password reset and registration
  * issue emails through the server; the client never handles raw tokens
@@ -282,6 +324,8 @@ export interface Transport {
   readonly hostedProjects?: HostedProjectsService;
   /** Hosted per-user file store; absent in desktop (Tauri) mode. */
   readonly hostedFiles?: HostedFilesService;
+  /** Hosted transformation definitions; absent in desktop (Tauri) mode. */
+  readonly hostedTransformations?: HostedTransformationsService;
 }
 
 /** Normalizes any backend rejection into a TransportError. */

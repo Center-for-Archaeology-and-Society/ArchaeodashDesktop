@@ -31,8 +31,9 @@ fn io_err(e: std::io::Error) -> DomainError {
     DomainError::Internal(Box::new(e))
 }
 
-/// Unix seconds now; clocks before the epoch yield 0.
-fn now_unix_secs() -> u64 {
+/// Unix seconds now; clocks before the epoch yield 0. Shared with the hosted
+/// definition catalog so desktop and hosted envelopes agree on timestamps.
+pub fn now_unix_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -40,11 +41,21 @@ fn now_unix_secs() -> u64 {
 }
 
 /// On-disk envelope for one saved definition: the definition plus the
-/// persistence metadata the legacy store kept alongside each snapshot.
+/// persistence metadata the legacy store kept alongside each snapshot. The
+/// hosted store reuses the same envelope so definitions stay portable
+/// between desktop project directories and hosted object namespaces.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct StoredTransformation {
-    created_at_unix_secs: u64,
-    definition: TransformationDefinition,
+pub struct StoredTransformation {
+    /// Unix seconds of the original save (preserved across upserts).
+    pub created_at_unix_secs: u64,
+    pub definition: TransformationDefinition,
+}
+
+/// Validates a definition before persisting (Section 8.2 colliding-name
+/// rejection and Section 8.3 seed visibility). Shared by the desktop store
+/// and the hosted definition catalog.
+pub fn validate_definition(definition: &TransformationDefinition) -> Result<(), DomainError> {
+    TransformService::validate(definition)
 }
 
 /// Deterministic default ratio output name: sanitized

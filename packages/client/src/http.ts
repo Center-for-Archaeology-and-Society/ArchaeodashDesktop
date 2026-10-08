@@ -76,6 +76,8 @@ import {
   type TransformationsService,
   type Transport,
   type HostedFilesService,
+  type HostedTransformationMeta,
+  type HostedTransformationsService,
   type HostedFileMeta,
   type HostedProjectsService,
   type HostedProjectSummary,
@@ -113,6 +115,7 @@ export class HttpTransport implements Transport {
   readonly auth: AuthService;
   readonly hostedProjects: HostedProjectsService;
   readonly hostedFiles: HostedFilesService;
+  readonly hostedTransformations: HostedTransformationsService;
 
   constructor(
     baseUrl: string = '',
@@ -137,6 +140,7 @@ export class HttpTransport implements Transport {
     this.auth = this.makeAuth();
     this.hostedProjects = this.makeHostedProjects();
     this.hostedFiles = this.makeHostedFiles();
+    this.hostedTransformations = this.makeHostedTransformations();
   }
 
   private url(path: string, query?: Record<string, string>): string {
@@ -422,6 +426,23 @@ export class HttpTransport implements Transport {
       },
       delete: async (fileId) => {
         await this.request('DELETE', `/api/v1/files/${encodeURIComponent(fileId)}`);
+      },
+    };
+  }
+
+  private makeHostedTransformations(): HostedTransformationsService {
+    const base = (projectId: string) =>
+      `/api/v1/projects/${encodeURIComponent(projectId)}/transformations`;
+    return {
+      save: (request) =>
+        this.request('POST', base(request.projectId), {
+          body: { definition: request.definition },
+        }),
+      list: (projectId) => this.request('GET', base(projectId)),
+      get: (projectId, transformationId) =>
+        this.request('GET', `${base(projectId)}/${encodeURIComponent(transformationId)}`),
+      delete: async (projectId, transformationId) => {
+        await this.request('DELETE', `${base(projectId)}/${encodeURIComponent(transformationId)}`);
       },
     };
   }

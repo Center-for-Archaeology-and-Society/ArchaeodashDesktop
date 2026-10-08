@@ -93,6 +93,16 @@ pub fn hosted_router(state: HostedState) -> Router {
         )
         .route("/api/v1/files/{id}/download", get(files_download))
         .with_state(state.clone());
+    let transformations = Router::new()
+        .route(
+            "/api/v1/projects/{project_id}/transformations",
+            post(transformations_save).get(transformations_list),
+        )
+        .route(
+            "/api/v1/projects/{project_id}/transformations/{transformation_id}",
+            get(transformations_get).delete(transformations_delete),
+        )
+        .with_state(state.clone());
     let health = Router::new()
         .route("/api/v1/health/live", get(health_live))
         .route("/api/v1/health/ready", get(health_ready))
@@ -101,6 +111,7 @@ pub fn hosted_router(state: HostedState) -> Router {
         .merge(health)
         .merge(auth)
         .merge(files)
+        .merge(transformations)
         .layer(middleware::from_fn(assign_request_id));
     apply_security_headers(app)
 }
@@ -402,6 +413,322 @@ struct UploadFileQuery {
     path: String,
     /// Optional display name override; defaults to the path's last segment.
     filename: Option<String>,
+}
+
+// --- Hosted transformation definitions (Sections 6.4/6.5/10.2) ------------
+//
+// Named transformation definitions are configuration (column selections,
+// method parameters, seeds — never calculated values, Section 5), so the
+// catalog row holds identity/ownership/summary fields and the definition
+// JSON lives in the project's `transformations/` file-store namespace.
+
+/// A definition body is small configuration JSON; anything larger is a
+/// malformed client, not a definition (Section 6.9 keeps definition bytes
+/// out of the upload quota until the quota-policy revision slice).
+const MAX_TRANSFORMATION_BYTES: usize = 256 * 1024;
+
+/// The catalog's summary serialization of one definition row.
+#[derive(serde::Serialize)]
+struct TransformationMetaResponse {
+    transformation_id: Uuid,
+    project_id: Uuid,
+    name: String,
+    revision: i32,
+    transform_method: String,
+    imputation_method: String,
+    ratio_count: i32,
+    bytes: u64,
+    sha256: String,
+    created_at_unix_secs: u64,
+    updated_at_unix_secs: u64,
+}
+
+fn transformation_meta(
+    row: &archaeodash_control_postgres::TransformationRow,
+) -> TransformationMetaResponse {
+    TransformationMetaResponse {
+        transformation_id: row.transformation_id,
+        project_id: row.project_id,
+        name: row.name.clone(),
+        revision: row.revision,
+        transform_method: row.transform_method.clone(),
+        imputation_method: row.imputation_method.clone(),
+        ratio_count: row.ratio_count,
+        bytes: row.bytes.max(0) as u64,
+        sha256: row.sha256.clone(),
+        created_at_unix_secs: row.created_at.unix_timestamp().max(0) as u64,
+        updated_at_unix_secs: row.updated_at.unix_timestamp().max(0) as u64,
+    }
+}
+
+#[derive(serde::Serialize)]
+struct TransformationSaveResponse {
+    transformation: TransformationMetaResponse,
+    replaced: bool,
+    definition: archaeodash_contracts::TransformationDefinition,
+}
+
+#[derive(serde::Serialize)]
+struct TransformationListResponse {
+    transformations: Vec<TransformationMetaResponse>,
+}
+
+#[derive(serde::Serialize)]
+struct TransformationGetResponse {
+    transformation: TransformationMetaResponse,
+    definition: archaeodash_contracts::TransformationDefinition,
+}
+
+/// Serializes a contracts enum to its wire tag for the catalog summary
+/// columns; serialization of these unit enums cannot fail.
+fn method_tag<T: serde::Serialize>(value: &T) -> String {
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::String(s)) => s,
+        _ => "unknown".to_string(),
+    }
+}
+
+/// `POST /api/v1/projects/{id}/transformations` — saves (upserts by name)
+/// one definition into the owned project's transformations namespace.
+/// CSRF applies; the project ownership check happens before any object
+/// write; a replaced revision's object moves to trash for the sweep.
+async fn transformations_save(
+    State(state): State<HostedState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    bytes: Bytes,
+) -> Result<(StatusCode, Json<TransformationSaveResponse>), (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = crate::auth::require_session(&state.auth, &headers, true).await? else {
+        return Err(unauthorized());
+    };
+    if bytes.len() > MAX_TRANSFORMATION_BYTES {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(ErrorEnvelope {
+                code: "limit_exceeded".into(),
+                message: "Transformation definition exceeds the size limit.".into(),
+            }),
+        ));
+    }
+    let parsed: archaeodash_contracts::SaveTransformationRequest =
+        serde_json::from_slice(&bytes).map_err(|_| bad_request("invalid_json"))?;
+    let name = parsed.definition.name.trim().to_string();
+    if name.is_empty() || name.len() > 200 {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorEnvelope {
+                code: "invalid_name".into(),
+                message: "Transformation name must be 1-200 characters.".into(),
+            }),
+        ));
+    }
+    if let Err(e) = archaeodash_application::transforms::validate_definition(&parsed.definition) {
+        return Err(crate::domain_error_response(e));
+    }
+    // Uniform 404 for foreign/deleted projects before any write.
+    if state
+        .store
+        .get_project(principal.user.id, project_id)
+        .await
+        .map_err(crate::auth::db_error)?
+        .is_none()
+    {
+        return Err((StatusCode::NOT_FOUND, json_error_envelope("not_found")));
+    }
+    let now = std::time::SystemTime::now();
+    // Preserve the original creation timestamp across replaces (desktop
+    // upsert parity): the envelope carries the first save's seconds.
+    let existing = state
+        .store
+        .get_transformation_by_name(principal.user.id, project_id, &name)
+        .await
+        .map_err(crate::auth::db_error)?;
+    let created_at_unix_secs = match &existing {
+        Some(row) => row.created_at.unix_timestamp().max(0) as u64,
+        None => archaeodash_application::transforms::now_unix_secs(),
+    };
+    let transformation_id = existing
+        .as_ref()
+        .map(|row| row.transformation_id)
+        .unwrap_or_else(Uuid::now_v7);
+    let stored = archaeodash_application::transforms::StoredTransformation {
+        created_at_unix_secs,
+        definition: parsed.definition,
+    };
+    let body = serde_json::to_vec(&stored)
+        .map_err(|_| internal_error("definition serialization failed"))?;
+    let object = state
+        .files
+        .write_definition_object(
+            principal.user.id,
+            project_id,
+            transformation_id,
+            &Uuid::now_v7().simple().to_string(),
+            &body,
+        )
+        .map_err(file_error)?;
+    match state
+        .store
+        .upsert_transformation(
+            principal.user.id,
+            project_id,
+            &name,
+            &object.object_key,
+            &object.sha256,
+            object.bytes as i64,
+            &method_tag(&stored.definition.transform_method),
+            &method_tag(&stored.definition.imputation_method),
+            stored.definition.ratios.len() as i32,
+            now,
+        )
+        .await
+    {
+        Ok(Some(outcome)) => {
+            // The replaced revision's object leaves the catalog now; trash
+            // routes it into the retention sweep (Section 6.9).
+            if let Some(previous) = outcome.previous_object_key {
+                state.files.trash_object(
+                    principal.user.id,
+                    project_id,
+                    &previous,
+                    &format!("{}.prev", outcome.row.transformation_id.simple()),
+                );
+            }
+            Ok((
+                if outcome.replaced {
+                    StatusCode::OK
+                } else {
+                    StatusCode::CREATED
+                },
+                Json(TransformationSaveResponse {
+                    transformation: transformation_meta(&outcome.row),
+                    replaced: outcome.replaced,
+                    definition: stored.definition,
+                }),
+            ))
+        }
+        // The project check above makes this unreachable today; the object
+        // must not outlive a rejected catalog write either way.
+        Ok(None) => {
+            state.files.remove_object(&object.object_key);
+            Err((StatusCode::NOT_FOUND, json_error_envelope("not_found")))
+        }
+        Err(e) => {
+            state.files.remove_object(&object.object_key);
+            Err(crate::auth::db_error(e))
+        }
+    }
+}
+
+/// `GET /api/v1/projects/{id}/transformations` — the owned project's live
+/// definitions from catalog summary fields (no object reads).
+async fn transformations_list(
+    State(state): State<HostedState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<TransformationListResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = crate::auth::require_session(&state.auth, &headers, false).await? else {
+        return Err(unauthorized());
+    };
+    let rows = state
+        .store
+        .list_transformations(principal.user.id, project_id)
+        .await
+        .map_err(crate::auth::db_error)?;
+    Ok(Json(TransformationListResponse {
+        transformations: rows.iter().map(transformation_meta).collect(),
+    }))
+}
+
+/// `GET /api/v1/projects/{id}/transformations/{transformation_id}` — one
+/// owned definition: catalog metadata plus the definition JSON, checksum-
+/// verified against the catalog row before parsing.
+async fn transformations_get(
+    State(state): State<HostedState>,
+    headers: HeaderMap,
+    Path((project_id, transformation_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<TransformationGetResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = crate::auth::require_session(&state.auth, &headers, false).await? else {
+        return Err(unauthorized());
+    };
+    let row = state
+        .store
+        .get_transformation(principal.user.id, transformation_id)
+        .await
+        .map_err(crate::auth::db_error)?
+        .filter(|row| row.project_id == project_id)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, json_error_envelope("not_found")))?;
+    let body = state
+        .files
+        .read_object(&row.object_key)
+        .map_err(file_error)?;
+    let checksum = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&body);
+        format!("{:x}", hasher.finalize())
+    };
+    if checksum != row.sha256 {
+        return Err(internal_error("definition checksum mismatch"));
+    }
+    let stored: archaeodash_application::transforms::StoredTransformation =
+        serde_json::from_slice(&body)
+            .map_err(|_| internal_error("stored definition is unreadable"))?;
+    Ok(Json(TransformationGetResponse {
+        transformation: transformation_meta(&row),
+        definition: stored.definition,
+    }))
+}
+
+/// `DELETE /api/v1/projects/{id}/transformations/{transformation_id}` —
+/// tombstones the catalog row and trashes the object. Idempotent semantics:
+/// unknown/foreign/deleted IDs are uniformly 404.
+async fn transformations_delete(
+    State(state): State<HostedState>,
+    headers: HeaderMap,
+    Path((project_id, transformation_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = crate::auth::require_session(&state.auth, &headers, true).await? else {
+        return Err(unauthorized());
+    };
+    let Some(row) = state
+        .store
+        .get_transformation(principal.user.id, transformation_id)
+        .await
+        .map_err(crate::auth::db_error)?
+        .filter(|row| row.project_id == project_id)
+    else {
+        return Err((StatusCode::NOT_FOUND, json_error_envelope("not_found")));
+    };
+    let Some(object_key) = state
+        .store
+        .soft_delete_transformation(
+            principal.user.id,
+            transformation_id,
+            std::time::SystemTime::now(),
+        )
+        .await
+        .map_err(crate::auth::db_error)?
+    else {
+        return Err((StatusCode::NOT_FOUND, json_error_envelope("not_found")));
+    };
+    state.files.trash_object(
+        principal.user.id,
+        row.project_id,
+        &object_key,
+        &transformation_id.simple().to_string(),
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn internal_error(message: &'static str) -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorEnvelope {
+            code: "internal_error".into(),
+            message: message.into(),
+        }),
+    )
 }
 
 #[derive(serde::Deserialize)]
@@ -1041,5 +1368,312 @@ mod quota_tests {
             .await
             .expect("infallible");
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+}
+
+#[cfg(test)]
+mod transformation_tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
+    use super::hosted_test_state;
+    use super::*;
+    use crate::auth::preference_tests::login_session;
+    use crate::auth::tests::{auth_state, test_peer};
+    use axum::body::Body;
+    use axum::extract::ConnectInfo;
+    use tower::ServiceExt;
+
+    const DEFINITION_BODY: &str = r#"{"definition":{"name":"Cu over Zn","transform_method":"log10","imputation_method":"none","imputation_seed":null,"elemental_columns":["Cu","Zn"],"descriptive_columns":[],"group_column":null,"ratios":[{"output_name":null,"numerator":"Cu","denominator":"Zn"}],"ratio_mode":"append"}}"#;
+
+    /// Requests through the composed router with session + CSRF attached.
+    async fn request(
+        app: Router,
+        method: &str,
+        uri: &str,
+        body: Option<&str>,
+        cookie: &str,
+        csrf: &str,
+    ) -> axum::response::Response {
+        let mut builder = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::COOKIE, cookie)
+            .header("x-csrf-token", csrf)
+            .extension(ConnectInfo(test_peer()));
+        if body.is_some() {
+            builder = builder.header(header::CONTENT_TYPE, "application/json");
+        }
+        app.oneshot(
+            builder
+                .body(Body::from(body.unwrap_or_default().to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("infallible")
+    }
+
+    #[tokio::test]
+    async fn transformations_round_trip_with_ownership_and_csrf() {
+        let Some((auth, sink)) = auth_state().await else {
+            return;
+        };
+        let (cookie, csrf) = login_session(auth.clone(), sink).await;
+        let app_state = hosted_test_state(auth);
+        let store = app_state.store.clone();
+        let user = {
+            let presentation = cookie
+                .split(';')
+                .map(str::trim)
+                .find_map(|c| c.strip_prefix(crate::auth::SESSION_COOKIE))
+                .and_then(|c| c.strip_prefix('='))
+                .expect("session cookie")
+                .to_string();
+            let digest = archaeodash_auth::token::digest_presentation(&presentation);
+            store
+                .find_live_session(&digest, std::time::SystemTime::now())
+                .await
+                .expect("session lookup")
+                .expect("live session")
+                .1
+                .id
+        };
+        let project = store
+            .create_project(
+                Uuid::now_v7(),
+                user,
+                "transformations",
+                std::time::SystemTime::now(),
+            )
+            .await
+            .expect("project");
+        let stranger = {
+            let suffix = crate::auth::tests::unique_suffix();
+            let username = format!("transf-stranger-{suffix}");
+            let email = format!("{username}@example.com");
+            let hash = archaeodash_auth::password::hash_password("correct horse battery staple")
+                .expect("hash");
+            store
+                .create_user(
+                    Uuid::now_v7(),
+                    &username,
+                    &username,
+                    &email,
+                    archaeodash_auth::identity::normalize_email(&email)
+                        .expect("valid email")
+                        .as_str(),
+                    &hash,
+                    None,
+                    std::time::SystemTime::now(),
+                )
+                .await
+                .expect("stranger user")
+        };
+        let stranger_project = store
+            .create_project(
+                Uuid::now_v7(),
+                stranger.id,
+                "other",
+                std::time::SystemTime::now(),
+            )
+            .await
+            .expect("stranger project");
+        let base = format!("/api/v1/projects/{}/transformations", project.project_id);
+        let app = hosted_router(app_state);
+
+        // Unauthenticated save is 401.
+        let res = Router::new()
+            .merge(app.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(&base)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(test_peer()))
+                    .body(Body::from(DEFINITION_BODY))
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+        // Missing CSRF on a cookie-authenticated state change is 403.
+        let res = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(&base)
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(test_peer()))
+                    .body(Body::from(DEFINITION_BODY))
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+
+        // Save creates revision 1 and echoes the definition.
+        let res = request(
+            app.clone(),
+            "POST",
+            &base,
+            Some(DEFINITION_BODY),
+            &cookie,
+            &csrf,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .expect("body");
+        let saved: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(saved["replaced"], false);
+        assert_eq!(saved["transformation"]["revision"], 1);
+        assert_eq!(saved["transformation"]["name"], "Cu over Zn");
+        assert_eq!(saved["transformation"]["transform_method"], "log10");
+        assert_eq!(saved["definition"]["ratio_mode"], "append");
+        let transformation_id = saved["transformation"]["transformation_id"]
+            .as_str()
+            .expect("id")
+            .to_string();
+
+        // Save again under the same name: replace in place (revision 2).
+        let res = request(
+            app.clone(),
+            "POST",
+            &base,
+            Some(DEFINITION_BODY),
+            &cookie,
+            &csrf,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .expect("body");
+        let replaced: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(replaced["replaced"], true);
+        assert_eq!(replaced["transformation"]["revision"], 2);
+        assert_eq!(
+            replaced["transformation"]["transformation_id"],
+            saved["transformation"]["transformation_id"]
+        );
+
+        // List shows one entry; get round-trips the stored definition.
+        let res = request(app.clone(), "GET", &base, None, &cookie, &csrf).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .expect("body");
+        let listed: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(listed["transformations"].as_array().expect("list").len(), 1);
+
+        let res = request(
+            app.clone(),
+            "GET",
+            &format!("{base}/{transformation_id}"),
+            None,
+            &cookie,
+            &csrf,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .expect("body");
+        let fetched: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(fetched["definition"], saved["definition"]);
+
+        // A stranger's list is empty and direct get/delete are uniform 404s
+        // (no existence oracle across accounts).
+        let (stranger_cookie, stranger_csrf) = {
+            let Some((auth2, sink2)) = auth_state().await else {
+                return;
+            };
+            login_session(auth2.clone(), sink2).await
+        };
+        let res = request(
+            app.clone(),
+            "GET",
+            &format!(
+                "/api/v1/projects/{}/transformations/{transformation_id}",
+                stranger_project.project_id
+            ),
+            None,
+            &stranger_cookie,
+            &stranger_csrf,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let res = request(
+            app.clone(),
+            "GET",
+            &format!("{base}/{transformation_id}"),
+            None,
+            &stranger_cookie,
+            &stranger_csrf,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let res = request(
+            app.clone(),
+            "DELETE",
+            &format!("{base}/{transformation_id}"),
+            None,
+            &stranger_cookie,
+            &stranger_csrf,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+        // Invalid definitions are 422 with the domain validation code.
+        let res = request(
+            app.clone(),
+            "POST",
+            &base,
+            Some(r#"{"definition":{"name":"  ","transform_method":"none","imputation_method":"none","imputation_seed":null,"elemental_columns":[],"descriptive_columns":[],"group_column":null,"ratios":[],"ratio_mode":"append"}}"#),
+            &cookie,
+            &csrf,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .expect("body");
+        let envelope: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(envelope["code"], "invalid_name");
+
+        // Oversized bodies are 413 before any validation or storage.
+        let oversized = format!("{{\"definition\":{}}}", " ".repeat(256 * 1024));
+        let res = request(app.clone(), "POST", &base, Some(&oversized), &cookie, &csrf).await;
+        assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        // Delete is 204 once, then uniformly 404.
+        let res = request(
+            app.clone(),
+            "DELETE",
+            &format!("{base}/{transformation_id}"),
+            None,
+            &cookie,
+            &csrf,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        let res = request(
+            app.clone(),
+            "DELETE",
+            &format!("{base}/{transformation_id}"),
+            None,
+            &cookie,
+            &csrf,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let listed = store
+            .list_transformations(user, project.project_id)
+            .await
+            .expect("list");
+        assert!(listed.is_empty(), "tombstoned definition leaves the list");
     }
 }

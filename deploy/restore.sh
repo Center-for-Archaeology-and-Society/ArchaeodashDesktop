@@ -35,9 +35,9 @@ TABLE_COUNT="$(psql "$TARGET" -Atqc "
   SELECT count(*) FROM information_schema.tables
   WHERE table_schema = 'public'
     AND table_name IN ('users','sessions','account_tokens','auth_throttles',
-                       'preferences','projects','files','storage_quotas')
+                       'preferences','projects','files','storage_quotas','transformations')
 ")"
-[ "$TABLE_COUNT" = "8" ] || { echo "restored schema incomplete ($TABLE_COUNT/8 tables)" >&2; exit 1; }
+[ "$TABLE_COUNT" = "9" ] || { echo "restored schema incomplete ($TABLE_COUNT/9 tables)" >&2; exit 1; }
 
 # 5. Optional file-store manifest cross-check: when AUTH_FILE_STORE_DIR is
 #    set (USER_FILE_STORE_DIR is the accepted pre-Section-6.4 alias), every

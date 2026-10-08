@@ -103,6 +103,38 @@ pub struct SweptFile {
     pub object_key: String,
 }
 
+/// A hosted transformation-definition catalog row (Sections 6.4/6.5/10.2):
+/// identity, project scope, unique active name, current revision, and the
+/// small summary fields listing needs without object reads. The definition
+/// JSON itself lives in the file-store namespace under `object_key`;
+/// calculated values are never stored here (Section 5).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct TransformationRow {
+    pub transformation_id: Uuid,
+    pub project_id: Uuid,
+    pub name: String,
+    pub revision: i32,
+    pub object_key: String,
+    pub sha256: String,
+    pub bytes: i64,
+    pub transform_method: String,
+    pub imputation_method: String,
+    pub ratio_count: i32,
+    pub deleted_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+/// The outcome of saving one transformation definition: the current row
+/// (revision already bumped), whether an active definition was replaced, and
+/// the replaced revision's object key so the caller can trash the old bytes.
+#[derive(Debug, Clone)]
+pub struct UpsertedTransformation {
+    pub row: TransformationRow,
+    pub replaced: bool,
+    pub previous_object_key: Option<String>,
+}
+
 /// A `sessions` row.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct SessionRow {
@@ -702,6 +734,203 @@ impl ControlStore {
         Ok(row.map(|(object_key,)| object_key))
     }
 
+    /// Saves (upserts by name) one transformation definition for an owned,
+    /// live project (Section 6.5 catalog semantics). The write happens in a
+    /// transaction: ownership is re-checked inside, the active name conflict
+    /// serializes on `FOR UPDATE`, and the revision bumps monotonically.
+    /// Returns `Ok(None)` for a foreign or deleted project (no existence
+    /// oracle across accounts).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_transformation(
+        &self,
+        user_id: Uuid,
+        project_id: Uuid,
+        name: &str,
+        object_key: &str,
+        sha256: &str,
+        bytes: i64,
+        transform_method: &str,
+        imputation_method: &str,
+        ratio_count: i32,
+        now: SystemTime,
+    ) -> Result<Option<UpsertedTransformation>, ControlError> {
+        let mut tx = self.pool.begin().await?;
+        let owned: Option<Uuid> = sqlx::query_scalar(
+            "SELECT project_id FROM projects \
+             WHERE project_id = $1 AND user_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(project_id)
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(project_id) = owned else {
+            return Ok(None);
+        };
+        let previous: Option<(Uuid, i32, String)> = sqlx::query_as(
+            "SELECT transformation_id, revision, object_key FROM transformations \
+             WHERE project_id = $1 AND name = $2 AND deleted_at IS NULL \
+             FOR UPDATE",
+        )
+        .bind(project_id)
+        .bind(name)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let row = match previous {
+            Some((transformation_id, revision, previous_object_key)) => {
+                let row = sqlx::query_as::<_, TransformationRow>(
+                    "UPDATE transformations SET revision = $3, object_key = $4, sha256 = $5, \
+                            bytes = $6, transform_method = $7, imputation_method = $8, \
+                            ratio_count = $9, updated_at = $10 \
+                     WHERE transformation_id = $1 \
+                     RETURNING transformation_id, project_id, name, revision, object_key, \
+                               sha256, bytes, transform_method, imputation_method, ratio_count, \
+                               deleted_at, created_at, updated_at",
+                )
+                .bind(transformation_id)
+                .bind(project_id)
+                .bind(revision + 1)
+                .bind(object_key)
+                .bind(sha256)
+                .bind(bytes)
+                .bind(transform_method)
+                .bind(imputation_method)
+                .bind(ratio_count)
+                .bind(to_offset(now))
+                .fetch_one(&mut *tx)
+                .await?;
+                Some(UpsertedTransformation {
+                    row,
+                    replaced: true,
+                    previous_object_key: Some(previous_object_key),
+                })
+            }
+            None => {
+                let row = sqlx::query_as::<_, TransformationRow>(
+                    "INSERT INTO transformations (transformation_id, project_id, name, revision, \
+                            object_key, sha256, bytes, transform_method, imputation_method, \
+                            ratio_count, created_at, updated_at) \
+                     VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9, $10, $10) \
+                     RETURNING transformation_id, project_id, name, revision, object_key, \
+                               sha256, bytes, transform_method, imputation_method, ratio_count, \
+                               deleted_at, created_at, updated_at",
+                )
+                .bind(Uuid::now_v7())
+                .bind(project_id)
+                .bind(name)
+                .bind(object_key)
+                .bind(sha256)
+                .bind(bytes)
+                .bind(transform_method)
+                .bind(imputation_method)
+                .bind(ratio_count)
+                .bind(to_offset(now))
+                .fetch_one(&mut *tx)
+                .await?;
+                Some(UpsertedTransformation {
+                    row,
+                    replaced: false,
+                    previous_object_key: None,
+                })
+            }
+        };
+        tx.commit().await?;
+        Ok(row)
+    }
+
+    /// Lists one owned project's live transformation definitions, ordered by
+    /// name. Ownership resolves through the project join; other users'
+    /// projects yield an empty list.
+    pub async fn list_transformations(
+        &self,
+        user_id: Uuid,
+        project_id: Uuid,
+    ) -> Result<Vec<TransformationRow>, ControlError> {
+        let rows: Vec<TransformationRow> = sqlx::query_as(
+            "SELECT t.transformation_id, t.project_id, t.name, t.revision, t.object_key, \
+                    t.sha256, t.bytes, t.transform_method, t.imputation_method, t.ratio_count, \
+                    t.deleted_at, t.created_at, t.updated_at \
+             FROM transformations t JOIN projects p ON p.project_id = t.project_id \
+             WHERE p.user_id = $1 AND t.project_id = $2 AND t.deleted_at IS NULL \
+             ORDER BY t.name ASC",
+        )
+        .bind(user_id)
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Fetches one live definition the user owns through its project.
+    /// Foreign, unknown, and deleted IDs are uniformly `Ok(None)`.
+    pub async fn get_transformation(
+        &self,
+        user_id: Uuid,
+        transformation_id: Uuid,
+    ) -> Result<Option<TransformationRow>, ControlError> {
+        let row = sqlx::query_as::<_, TransformationRow>(
+            "SELECT t.transformation_id, t.project_id, t.name, t.revision, t.object_key, \
+                    t.sha256, t.bytes, t.transform_method, t.imputation_method, t.ratio_count, \
+                    t.deleted_at, t.created_at, t.updated_at \
+             FROM transformations t JOIN projects p ON p.project_id = t.project_id \
+             WHERE t.transformation_id = $1 AND p.user_id = $2 AND t.deleted_at IS NULL \
+               AND p.deleted_at IS NULL",
+        )
+        .bind(transformation_id)
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Fetches one live definition by its project-unique name. Ownership
+    /// resolves through the project join; foreign projects, unknown names,
+    /// and tombstoned rows are uniformly `Ok(None)`.
+    pub async fn get_transformation_by_name(
+        &self,
+        user_id: Uuid,
+        project_id: Uuid,
+        name: &str,
+    ) -> Result<Option<TransformationRow>, ControlError> {
+        let row = sqlx::query_as::<_, TransformationRow>(
+            "SELECT t.transformation_id, t.project_id, t.name, t.revision, t.object_key, \
+                    t.sha256, t.bytes, t.transform_method, t.imputation_method, t.ratio_count, \
+                    t.deleted_at, t.created_at, t.updated_at \
+             FROM transformations t JOIN projects p ON p.project_id = t.project_id \
+             WHERE p.user_id = $1 AND t.project_id = $2 AND t.name = $3 \
+               AND t.deleted_at IS NULL AND p.deleted_at IS NULL",
+        )
+        .bind(user_id)
+        .bind(project_id)
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Soft-deletes a live definition the user owns: tombstones the row and
+    /// returns the object key so the caller can move the bytes to trash.
+    /// Returns `Ok(None)` for foreign/unknown/deleted IDs.
+    pub async fn soft_delete_transformation(
+        &self,
+        user_id: Uuid,
+        transformation_id: Uuid,
+        now: SystemTime,
+    ) -> Result<Option<String>, ControlError> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "UPDATE transformations t SET deleted_at = $3, updated_at = $3 \
+             FROM projects p \
+             WHERE t.project_id = p.project_id AND t.transformation_id = $1 \
+               AND p.user_id = $2 AND t.deleted_at IS NULL \
+             RETURNING t.object_key",
+        )
+        .bind(transformation_id)
+        .bind(user_id)
+        .bind(to_offset(now))
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(object_key,)| object_key))
+    }
+
     /// Reserves capacity for an incoming upload (Section 6.9): the quota row
     /// is created on first use and `reserved_bytes` grows by `add` only when
     /// the projected total (logical + reserved + add) stays within the limit.
@@ -1183,6 +1412,10 @@ mod tests {
             "projects",
             "sessions",
             "storage_quotas",
+            // Transformation-definition catalog: configuration and summary
+            // fields only (Section 6.5); definition JSON lives in the file
+            // store namespace.
+            "transformations",
             "users",
         ]
         .iter()
@@ -1561,5 +1794,178 @@ mod tests {
             .await
             .expect("sweep again")
             .is_empty());
+    }
+
+    /// A tiny transformation-definition catalog row for tests.
+    async fn save_definition(
+        store: &ControlStore,
+        user_id: Uuid,
+        project_id: Uuid,
+        name: &str,
+        object_key: &str,
+    ) -> UpsertedTransformation {
+        store
+            .upsert_transformation(
+                user_id,
+                project_id,
+                name,
+                object_key,
+                "a".repeat(64).as_str(),
+                42,
+                "log10",
+                "none",
+                0,
+                SystemTime::now(),
+            )
+            .await
+            .expect("upsert transformation")
+            .expect("project is owned and live")
+    }
+
+    /// Section 6.4/6.5 hosted transformation definitions: upsert by name
+    /// bumps the revision and returns the replaced object key, listing and
+    /// fetches are ownership-scoped with no existence oracle, and soft
+    /// delete frees the name while returning the object key for trash.
+    #[tokio::test]
+    async fn hosted_transformations_are_scoped_and_revisioned() {
+        let Some((store, _pool)) = migrated_store().await else {
+            return;
+        };
+        let (owner, _) = make_user(&store).await;
+        let (stranger, _) = make_user(&store).await;
+        let project_id = Uuid::now_v7();
+        store
+            .create_project(project_id, owner.id, "defs", SystemTime::now())
+            .await
+            .expect("create project");
+        // Object keys embed the run-unique owner/project UUIDs so repeated
+        // runs against a shared test database never collide on the unique
+        // object_key column.
+        let object_key = |suffix: &str| {
+            format!(
+                "users/{}/projects/{project_id}/transformations/{suffix}",
+                owner.id
+            )
+        };
+
+        // Foreign or unknown projects reject atomically (no existence oracle).
+        assert!(store
+            .upsert_transformation(
+                stranger.id,
+                project_id,
+                "ratios",
+                "users/x/transformations/t/1.json",
+                &"a".repeat(64),
+                1,
+                "log10",
+                "none",
+                0,
+                SystemTime::now(),
+            )
+            .await
+            .expect("upsert")
+            .is_none());
+
+        // First save creates revision 1.
+        let first = save_definition(
+            &store,
+            owner.id,
+            project_id,
+            "Cu/Zn ratios",
+            &object_key("t/1.json"),
+        )
+        .await;
+        assert!(!first.replaced);
+        assert_eq!(first.row.revision, 1);
+        assert!(first.previous_object_key.is_none());
+
+        // Second save of the same name replaces in place: the
+        // transformation_id is stable, the revision bumps, and the caller
+        // learns the previous object key so the old bytes can be trashed.
+        let second = save_definition(
+            &store,
+            owner.id,
+            project_id,
+            "Cu/Zn ratios",
+            &object_key("t/2.json"),
+        )
+        .await;
+        assert!(second.replaced);
+        assert_eq!(second.row.transformation_id, first.row.transformation_id);
+        assert_eq!(second.row.revision, 2);
+        assert_eq!(
+            second.previous_object_key.as_deref(),
+            Some(object_key("t/1.json").as_str())
+        );
+        // Creation time is preserved across replaces (desktop upsert parity).
+        assert_eq!(second.row.created_at, first.row.created_at);
+
+        // A different name is a new definition; listing is name-ordered and
+        // owner-scoped.
+        let _ = save_definition(
+            &store,
+            owner.id,
+            project_id,
+            "log10 base",
+            &object_key("u/1.json"),
+        )
+        .await;
+        let listed = store
+            .list_transformations(owner.id, project_id)
+            .await
+            .expect("list");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].name, "Cu/Zn ratios");
+        assert_eq!(listed[1].name, "log10 base");
+        assert!(store
+            .list_transformations(stranger.id, project_id)
+            .await
+            .expect("stranger list")
+            .is_empty());
+
+        // Fetch by ID is ownership-scoped; strangers and unknown IDs see
+        // nothing.
+        assert!(store
+            .get_transformation(owner.id, second.row.transformation_id)
+            .await
+            .expect("get")
+            .is_some());
+        assert!(store
+            .get_transformation(stranger.id, second.row.transformation_id)
+            .await
+            .expect("stranger get")
+            .is_none());
+
+        // Soft delete tombstones and returns the object key; the name is
+        // freed for a fresh definition (new transformation_id, revision 1).
+        let key = store
+            .soft_delete_transformation(owner.id, second.row.transformation_id, SystemTime::now())
+            .await
+            .expect("delete")
+            .expect("live row");
+        assert_eq!(key, object_key("t/2.json"));
+        assert!(store
+            .get_transformation(owner.id, second.row.transformation_id)
+            .await
+            .expect("get after delete")
+            .is_none());
+        let fresh = save_definition(
+            &store,
+            owner.id,
+            project_id,
+            "Cu/Zn ratios",
+            &object_key("v/1.json"),
+        )
+        .await;
+        assert!(!fresh.replaced);
+        assert_ne!(fresh.row.transformation_id, second.row.transformation_id);
+        assert_eq!(fresh.row.revision, 1);
+
+        // Deleting a foreign user's definition is uniformly not-found.
+        assert!(store
+            .soft_delete_transformation(stranger.id, fresh.row.transformation_id, SystemTime::now())
+            .await
+            .expect("stranger delete")
+            .is_none());
     }
 }

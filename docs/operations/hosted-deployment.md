@@ -48,7 +48,7 @@ The dump and manifest land in the same bundle so control-plane and file-store po
 ## Restore drill (Phase 7 exit gate)
 
 1. Provision a clean PostgreSQL instance.
-2. `deploy/restore.sh <bundle> <target-dsn>`: verifies the dump checksum, restores, checks the watermark, validates the eight control-plane tables exist, and cross-checks the file-store manifest when `AUTH_FILE_STORE_DIR` is set.
+2. `deploy/restore.sh <bundle> <target-dsn>`: verifies the dump checksum, restores, checks the watermark, validates the nine control-plane tables exist, and cross-checks the file-store manifest when `AUTH_FILE_STORE_DIR` is set.
 3. Start the API against the restored DSN with `AUTH_APPLY_MIGRATIONS` unset — startup must pass the schema check without applying anything.
 4. Exercise `health/ready` and an authenticated read.
 

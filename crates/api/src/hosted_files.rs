@@ -187,6 +187,76 @@ impl HostedFileStore {
         let _ = std::fs::remove_file(self.object_path(&staged.object_key));
     }
 
+    /// Writes one transformation-definition revision into the project's
+    /// `transformations/<id>/<revision>.json` sub-namespace (Section 6.4):
+    /// staged write + fsync + atomic rename, SHA-256 over the exact bytes.
+    /// Object keys are server-generated UUIDs; the catalog row (written by
+    /// the caller after this succeeds) is the only index.
+    pub fn write_definition_object(
+        &self,
+        user_id: Uuid,
+        project_id: Uuid,
+        transformation_id: Uuid,
+        revision_id: &str,
+        body: &[u8],
+    ) -> Result<StoredDefinitionObject, HostedFileError> {
+        let object_key = format!(
+            "users/{user_id}/projects/{project_id}/transformations/{}/{revision_id}",
+            transformation_id.simple()
+        );
+        let target = self.object_path(&object_key);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(HostedFileError::Io)?;
+        }
+        let staging = target.with_extension("staging");
+        std::fs::write(&staging, body).map_err(HostedFileError::Io)?;
+        if let Some(parent) = staging.parent() {
+            archaeodash_data_io::sync_dir(parent);
+        }
+        let sha256 = {
+            let mut hasher = Sha256::new();
+            hasher.update(body);
+            format!("{:x}", hasher.finalize())
+        };
+        std::fs::rename(&staging, &target).map_err(HostedFileError::Io)?;
+        if let Some(parent) = target.parent() {
+            archaeodash_data_io::sync_dir(parent);
+        }
+        Ok(StoredDefinitionObject {
+            object_key,
+            sha256,
+            bytes: body.len() as u64,
+        })
+    }
+
+    /// Reads one object by its catalog-resolved key. Callers resolve the key
+    /// through an ownership-checked catalog row first; the path join stays
+    /// defensive against catalog corruption.
+    pub fn read_object(&self, object_key: &str) -> Result<Vec<u8>, HostedFileError> {
+        std::fs::read(self.object_path(object_key)).map_err(HostedFileError::Io)
+    }
+
+    /// Removes one object outright (used when a catalog write rejects a
+    /// just-written object so no orphan remains, even in trash).
+    pub fn remove_object(&self, object_key: &str) {
+        let _ = std::fs::remove_file(self.object_path(object_key));
+    }
+
+    /// Moves one current object into the namespace trash after its catalog
+    /// row was tombstoned or replaced, for the retention sweep to purge.
+    /// Missing objects are fine (idempotent cleanup).
+    pub fn trash_object(&self, user_id: Uuid, project_id: Uuid, object_key: &str, tag: &str) {
+        let from = self.object_path(object_key);
+        let trash = self.project_dir(user_id, project_id).join(".trash");
+        if std::fs::create_dir_all(&trash).is_err() {
+            return;
+        }
+        let _ = std::fs::rename(&from, trash.join(format!("{tag}.deleted")));
+        if let Some(parent) = trash.parent() {
+            archaeodash_data_io::sync_dir(parent);
+        }
+    }
+
     /// Metadata for one owned, live file. Foreign/unknown/deleted are `None`.
     pub async fn metadata(
         &self,
@@ -231,16 +301,15 @@ impl HostedFileStore {
         else {
             return Ok(None);
         };
-        let from = self.object_path(&object_key);
-        let bytes = std::fs::metadata(&from).map(|m| m.len()).unwrap_or(0);
-        let trash = self
-            .project_dir(user_id, project_id_of(&object_key))
-            .join(".trash");
-        std::fs::create_dir_all(&trash).map_err(HostedFileError::Io)?;
-        let _ = std::fs::rename(&from, trash.join(format!("{}.deleted", file_id.simple())));
-        if let Some(parent) = trash.parent() {
-            archaeodash_data_io::sync_dir(parent);
-        }
+        let bytes = std::fs::metadata(self.object_path(&object_key))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        self.trash_object(
+            user_id,
+            project_id_of(&object_key),
+            &object_key,
+            &file_id.simple().to_string(),
+        );
         Ok(Some(bytes))
     }
 
@@ -280,6 +349,16 @@ pub struct HostedFileMeta {
     pub media_type: String,
     pub parse_state: String,
     pub parse_error: Option<String>,
+}
+
+/// The file-store side of a saved transformation definition (Section 6.4
+/// `transformations/<id>/<revision>.json`): opaque key plus integrity fields
+/// for the catalog row.
+#[derive(Debug, Clone)]
+pub struct StoredDefinitionObject {
+    pub object_key: String,
+    pub sha256: String,
+    pub bytes: u64,
 }
 
 impl HostedFileStore {
@@ -403,5 +482,61 @@ mod tests {
             .expect_err("too large");
         assert!(matches!(err, HostedFileError::TooLarge { .. }));
         assert!(!base.join("users").exists(), "no namespace created");
+    }
+
+    #[tokio::test]
+    async fn definition_objects_follow_the_transformations_namespace() {
+        let (_dir, base) = tempdir();
+        let store = HostedFileStore::new(&base).expect("store");
+        let user = Uuid::now_v7();
+        let project = Uuid::now_v7();
+        let transformation = Uuid::now_v7();
+        let revision = Uuid::now_v7().simple().to_string();
+        let stored = store
+            .write_definition_object(
+                user,
+                project,
+                transformation,
+                &revision,
+                br#"{"created_at_unix_secs":1,"definition":{}}"#,
+            )
+            .expect("write");
+        // Object key layout per Section 6.4, with a checksum over the bytes.
+        let expected = base
+            .join("users")
+            .join(user.to_string())
+            .join("projects")
+            .join(project.to_string())
+            .join("transformations")
+            .join(transformation.simple().to_string())
+            .join(&revision);
+        assert_eq!(
+            stored.object_key,
+            format!(
+                "users/{user}/projects/{project}/transformations/{}/{revision}",
+                transformation.simple()
+            )
+        );
+        assert_eq!(stored.bytes, 42);
+        assert_eq!(stored.sha256.len(), 64);
+        // Round trip: the catalog-resolved key reads back exact bytes.
+        let read_back = store.read_object(&stored.object_key).expect("read");
+        assert_eq!(
+            read_back,
+            br#"{"created_at_unix_secs":1,"definition":{}}"#.to_vec()
+        );
+        assert!(!expected.with_extension("staging").exists());
+        // Trash routes the object into the project's .trash for the sweep;
+        // the caller's tag marks why the revision left the catalog.
+        store.trash_object(user, project, &stored.object_key, "replaced");
+        assert!(!expected.exists());
+        let trash = base
+            .join("users")
+            .join(user.to_string())
+            .join("projects")
+            .join(project.to_string())
+            .join(".trash")
+            .join("replaced.deleted");
+        assert!(trash.exists());
     }
 }

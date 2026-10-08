@@ -390,7 +390,7 @@ async fn files_delete(
 
 /// Maps domain errors: validation/identity problems are unprocessable (422),
 /// not-found is 404, and internal failures stay opaque (500).
-fn domain_error_response(err: DomainError) -> (StatusCode, Json<ErrorEnvelope>) {
+pub(crate) fn domain_error_response(err: DomainError) -> (StatusCode, Json<ErrorEnvelope>) {
     let (status, code) = match &err {
         DomainError::InvalidIdentity { .. } => {
             (StatusCode::UNPROCESSABLE_ENTITY, "invalid_identity")

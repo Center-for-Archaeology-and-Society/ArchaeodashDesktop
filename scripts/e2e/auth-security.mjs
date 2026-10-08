@@ -293,6 +293,94 @@ try {
     throw new Error(`quota line state: ${body.slice(0, 700).replace(/\n/g, ' | ')}`);
   }
 
+  // --- 6c. Hosted transformation definitions (Sections 6.4/6.5/10.2) -----
+  // In-page fetches against the live API: save/list/get/delete of a named
+  // definition in the project's transformations namespace, including the
+  // foreign-project 404 and the invalid-definition 422.
+  const transformationResults = await page.evaluate(async () => {
+    const csrf = document.cookie
+      .split(';')
+      .map((pair) => pair.trim())
+      .find((pair) => pair.startsWith('archaeodash_csrf='))
+      ?.split('=')
+      .slice(1)
+      .join('=');
+    const post = (url, body) =>
+      fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json', 'x-csrf-token': csrf ?? '' },
+        body: JSON.stringify(body),
+      });
+    const projects = await fetch('/api/v1/projects', { credentials: 'include' }).then((r) =>
+      r.json(),
+    );
+    const projectId = projects.projects[0].project_id;
+    const base = `/api/v1/projects/${projectId}/transformations`;
+    const definition = {
+      name: 'Cu over Zn',
+      transform_method: 'log10',
+      imputation_method: 'none',
+      imputation_seed: null,
+      elemental_columns: ['Cu', 'Zn'],
+      descriptive_columns: [],
+      group_column: null,
+      ratios: [{ output_name: null, numerator: 'Cu', denominator: 'Zn' }],
+      ratio_mode: 'append',
+    };
+    const created = await post(base, { definition });
+    const createdBody = created.status === 201 ? await created.json() : null;
+    const listed = await fetch(base, { credentials: 'include' }).then((r) => r.json());
+    const got = createdBody
+      ? await fetch(`${base}/${createdBody.transformation.transformation_id}`, {
+          credentials: 'include',
+        }).then((r) => r.json())
+      : null;
+    const replaced = createdBody ? await post(base, { definition }) : null;
+    const invalid = await post(base, {
+      definition: { ...definition, name: '   ' },
+    });
+    const foreign = createdBody
+      ? await post(`/api/v1/projects/00000000-0000-0000-0000-000000000000/transformations`, {
+          definition,
+        })
+      : null;
+    const deleted = createdBody
+      ? await fetch(`${base}/${createdBody.transformation.transformation_id}`, {
+          method: 'DELETE',
+          credentials: 'include',
+          headers: { 'x-csrf-token': csrf ?? '' },
+        })
+      : null;
+    const deletedAgain = deleted
+      ? await fetch(`${base}/${createdBody.transformation.transformation_id}`, {
+          method: 'DELETE',
+          credentials: 'include',
+          headers: { 'x-csrf-token': csrf ?? '' },
+        })
+      : null;
+    return {
+      createStatus: created.status,
+      createdRevision: createdBody?.transformation?.revision,
+      listedCount: listed.transformations?.length,
+      roundTrip: got?.definition?.name === 'Cu over Zn',
+      replacedStatus: replaced?.status,
+      invalidStatus: invalid.status,
+      foreignStatus: foreign.status,
+      deleteStatus: deleted?.status,
+      deleteAgainStatus: deletedAgain?.status,
+    };
+  });
+  assert.equal(transformationResults.createStatus, 201, 'definition save creates');
+  assert.equal(transformationResults.createdRevision, 1);
+  assert.equal(transformationResults.listedCount, 1);
+  assert.ok(transformationResults.roundTrip, 'definition round-trips byte-faithfully');
+  assert.equal(transformationResults.replacedStatus, 200, 'same-name save replaces');
+  assert.equal(transformationResults.invalidStatus, 422, 'blank name is 422');
+  assert.equal(transformationResults.foreignStatus, 404, 'foreign project is 404');
+  assert.equal(transformationResults.deleteStatus, 204, 'delete tombstones');
+  assert.equal(transformationResults.deleteAgainStatus, 404, 'delete is idempotent 404');
+
   // --- 7. Sign out everywhere revokes the session ------------------------
   await page.goto(`${webBase}/account`);
   await page.getByRole('button', { name: 'Sign out everywhere' }).click();
