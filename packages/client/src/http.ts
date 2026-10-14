@@ -203,9 +203,16 @@ export class HttpTransport implements Transport {
   }
 
   private async unwrap<T>(res: Response): Promise<T> {
-    // 202/204 acks (register, verify, logout, reset) have no JSON body.
-    if (res.status === 204 || res.status === 202) return undefined as T;
+    // 204 has no body by definition. A 202 ack is body-less for auth routes
+    // (register, verify, logout, reset) but carries a JSON job snapshot for
+    // analysis job submit/cancel, so a 202 body is parsed when present.
+    if (res.status === 204) return undefined as T;
     if (!res.ok) throw await this.toError(res);
+    if (res.status === 202) {
+      const text = await res.text();
+      if (text.length === 0) return undefined as T;
+      return JSON.parse(text) as T;
+    }
     return (await res.json()) as T;
   }
 

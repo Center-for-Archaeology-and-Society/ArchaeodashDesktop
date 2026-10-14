@@ -460,3 +460,28 @@ test('http: hosted transformations service hits Section 10.2 definition routes',
   );
   assert.equal(calls.at(-1)?.method, 'DELETE');
 });
+
+test('http: 202 with a JSON body parses the job snapshot; 202 without a body is undefined', async () => {
+  const snapshot = {
+    id: '0197dddd-dddd-7ddd-8ddd-dddddddddddd',
+    state: 'running',
+    stage: 'computing',
+    progress: 40,
+  };
+  const responses: Array<{ status: number; body: string | null }> = [];
+  const transport = new HttpTransport('', async () => {
+    const queued = responses.shift();
+    if (!queued) throw new Error('no queued response');
+    return new Response(queued.body, { status: queued.status });
+  });
+  responses.push({ status: 202, body: JSON.stringify(snapshot) });
+  const submitted = await transport.jobs.submit({
+    kind: 'cluster_fit',
+    request: { group_path: 'groups/A.parquet' },
+  } as never);
+  assert.deepEqual(submitted, snapshot);
+
+  responses.push({ status: 202, body: null });
+  const acked = await transport.auth.logout();
+  assert.equal(acked, undefined);
+});

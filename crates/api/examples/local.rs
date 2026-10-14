@@ -24,8 +24,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         exports: Arc::new(ExportService::new(&root)?),
         preferences: Arc::new(PreferenceService::new(&root)?),
     };
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:8787").await?;
-    eprintln!("Local API listening on http://127.0.0.1:8787");
+    let addr = std::env::var("LOCAL_API_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".into());
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    eprintln!("Local API listening on http://{addr}");
     axum::serve(listener, root_router(state)).await?;
     Ok(())
 }
