@@ -92,6 +92,16 @@ gate are not supported by the code.
 9. Desktop: enable bundle, CSP, dialog permissions, `tauri build` in CI.
 10. Correct help.md, privacy.md and the phase-gate statements.
 
+## Re-check against GitHub master `82eca8c` (2026-10-14)
+
+The five commits after `cb4c520` (hosted transformation-definition catalog
+and routes, `ci.yml` removed in favour of `scripts/verify-local.sh` +
+`deploy/compose/verify.yml`, tombstone sweep, client 202 fix) change none of
+the findings above. Two consequences: the three-platform numerical-parity and
+macOS/Windows desktop/launch-smoke jobs no longer run anywhere, and the local
+`~/ArchaeodashDesktop` checkout is on pre-rewrite history five commits behind
+(`git fetch && git reset --hard origin/master` after saving local changes).
+
 ## Limits
 
 Static review only: `cargo test`/`pnpm test` were not executed (no package
