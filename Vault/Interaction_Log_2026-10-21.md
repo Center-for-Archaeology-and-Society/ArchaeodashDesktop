@@ -1,0 +1,3 @@
+# Interaction Log 2026-10-21
+
+- Validated the R Shiny → Rust/TS conversion at master `be2ddce`. Outcome: numerical core and golden parity hold; application layer has result-changing divergences (ratio/transform order, zScore non-finite rule, import recipe defaults, transformation ignored by analysis tabs, 1,000-row cap), substantial missing legacy features (imputation, XLSX/TSV import, append, group-selection/transformation UI, ordination views, PNG export), hosted binary does not mount analysis routes, desktop unbundled. No code changed. See [[Validation_Audit_R_To_Rust_Conversion_2026-10-21]].
