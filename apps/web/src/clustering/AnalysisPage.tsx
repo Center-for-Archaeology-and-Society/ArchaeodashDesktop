@@ -1,12 +1,16 @@
 import { runAnalysisJob } from './job-workflow.ts';
 import { analysisColumns, projectionLabels, sourceOptions } from './input-options.ts';
-import { moveAndReload, batchMoveAndReload } from './assignment-workflow.ts';
+import { moveAcrossSources } from './multi-source-move.ts';
+import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
+import { useGroupFiles } from '../datasets/useGroupFiles.ts';
+import { asRowsResponse, defaultGroupColumn, inputPaths } from '../visualize/combine.ts';
+import { notifyGroupsChanged } from '../data-manager/events.ts';
 import { ResultAssignment } from './ResultAssignment.tsx';
 import { AnalysisPlots } from './AnalysisPlots.tsx';
-import { useEffect, useRef, useState, type ReactElement } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import type {
   AnalysisSource, ClusterDistanceMetric, ClusterLinkage, TransformationDefinition, AnalysisJobSnapshot, AnalysisJobRequest,
-  Transport, GroupRowsResponse, ClusterMethod, MembershipMethod, TransferUnitsRequest, BatchTransferUnitsRequest, GroupCandidate,
+  Transport, ClusterMethod, MembershipMethod, TransferUnitsRequest, BatchTransferUnitsRequest,
   ClusterFitResponse, ClusterDiagnosticsResponse,
   MembershipProbabilitiesResponse, EuclideanMatchesResponse,
 } from '@archaeodash/client';
@@ -72,11 +76,15 @@ export function ResultTable({ result }: { result: AnalysisResult }): ReactElemen
 }
 
 export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: AnalysisDeps }): ReactElement {
-  const [paths, setPaths] = useState<string[]>([]);
-  const [candidates, setCandidates] = useState<GroupCandidate[]>([]);
+  const dataset = useGroupFiles(deps.groups);
+  const { files, combined, candidates } = dataset;
+  const paths = useMemo(() => dataset.ready.map(c => c.path), [dataset.ready]);
+  const multiSource = files.length > 1;
+  const data = useMemo(
+    () => (dataset.load.kind === 'loaded' && files.length > 0 ? asRowsResponse(files, combined) : null),
+    [dataset.load.kind, files, combined],
+  );
   const [reviewing, setReviewing] = useState(false);
-  const [path, setPath] = useState('');
-  const [data, setData] = useState<GroupRowsResponse | null>(null);
   const [columns, setColumns] = useState<string[]>([]);
   const [group, setGroup] = useState('');
   const [id, setId] = useState('');
@@ -115,20 +123,17 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     let active = true;
     deps.transformations.list().then(async list => Promise.all(list.transformations.map(d => deps.transformations.load(d.name))))
       .then(found => { if (active) setDefinitions(found); }).catch(e => { if (active) setError(`Could not load transformations: ${String(e)}`); });
-    deps.groups.scan().then(found => { if (active) { setCandidates(found); setPaths(found.filter(p => p.ready).map(p => p.path)); } })
-      .catch(e => { if (active) setError(String(e)); });
     return () => { active = false; generation.current++; activeJob.current?.abort(); };
   }, [deps]);
+  // New rows (selection change or a committed move): reset settings. With
+  // several groups the synthetic group column is the default grouping.
+  const defaultGroup = defaultGroupColumn(combined);
   useEffect(() => {
-    let active = true;
-    setData(null);
-    if (path) deps.groups.rows(path).then(rows => {
-      if (!active) return;
-      setData(rows); setColumns(rows.elemental_columns); setGroup(rows.descriptive_columns[0] ?? '');
-      setId(rows.visible_id_column); setSourceGroup(rows.descriptive_columns[0] ?? ''); setPlotGroup(rows.descriptive_columns[0] ?? ''); setProjection(null); setDefinitionName('');
-    }).catch(e => { if (active) setError(String(e)); });
-    return () => { active = false; };
-  }, [deps, path]);
+    if (!data) return;
+    setColumns(data.elemental_columns); setGroup(defaultGroup);
+    setId(data.visible_id_column); setSourceGroup(defaultGroup); setPlotGroup(defaultGroup); setProjection(null); setDefinitionName('');
+  }, [data, defaultGroup]);
+  useEffect(() => { if (dataset.load.kind === 'error') setError(dataset.load.message); }, [dataset.load]);
   useEffect(() => {
     if (data && columns.length) setPcCount(current => Math.max(1, Math.min(current, columns.length, data.rows.length)));
   }, [columns.length, data]);
@@ -138,7 +143,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     const ticket = ++generation.current;
     setBusy(true); setError(''); setNotice(''); setReviewing(false); setCutK(2); setResult(null);
     try {
-      const input = { path, columns, transformation: definition, ...sourceOptions(source, pcCount, sourceGroup, seed) };
+      const input = { ...inputPaths(files), columns, transformation: definition, ...sourceOptions(source, pcCount, sourceGroup, seed) };
       let analysis: AnalysisJobRequest;
       if (kind === 'cluster') {
         analysis = diagnostics
@@ -167,16 +172,26 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     const ticket = generation.current;
     setBusy(true); setError(''); setNotice('');
     try {
-      const outcome = await ('targets' in request ? batchMoveAndReload(deps.groups, request) : moveAndReload(deps.groups, request));
+      const revisions = new Map<string, string>();
+      for (const c of candidates) if (c.group?.revision_id) revisions.set(c.path, c.group.revision_id);
+      for (const f of files) revisions.set(f.path, f.data.revision_id);
+      const outcome = await moveAcrossSources(deps.groups, request, {
+        sourceOf: new Map(combined.rows.map((r, i) => [r.analytical_uuid, combined.pathOf[i]!])),
+        sources: files.map(f => f.path),
+        revisions,
+      });
       if (ticket !== generation.current) return;
-      setResult(null); setData(null); setReviewing(false);
-      const count = 'targets' in request ? request.targets.reduce((sum, target) => sum + target.selected_uuids.length, 0) : request.selected_uuids.length;
-      setNotice(`Moved ${count} analytical units. Recompute analysis for the updated data.`);
-      if (outcome.refreshed) {
-        setCandidates(outcome.refreshed.candidates); setPaths(outcome.refreshed.paths);
-        setPath(outcome.nextPath); setData(outcome.refreshed.rows);
-      } else {
-        setError(`Move committed, but reloading failed. Reopen the dataset. ${outcome.refreshError}`);
+      setResult(null); setReviewing(false);
+      setNotice(`Moved ${outcome.moved} analytical units. Recompute analysis for the updated data.`);
+      try {
+        // Keep the selection, plus any group a move created.
+        const created = outcome.transactions.flatMap(tx => tx.outputs.map(o => o.path));
+        const selected = dataset.selectedPaths;
+        await dataset.rescan(all => all.filter(p => selected.includes(p) || created.includes(p)));
+        dataset.reload();
+        notifyGroupsChanged();
+      } catch (e) {
+        setError(`Move committed, but reloading failed. Reopen the dataset. ${e instanceof Error ? e.message : String(e)}`);
       }
     } catch (e) {
       if (ticket === generation.current) setError(`Move failed; the selection was not retried. Recompute analysis if the data changed. ${e instanceof Error ? e.message : String(e)}`);
@@ -189,9 +204,9 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   return <section aria-label={titles[kind]}>
     <h1>{titles[kind]}</h1>
     <p>Analyze measured or transformed columns and recomputed ordination scores. Results are temporary.</p>
-    <label>Dataset <select disabled={busy} value={path} onChange={e => { reset(); setData(null); setPath(e.target.value); }}>
-      <option value="">Choose a group file…</option>{paths.map(p => <option key={p}>{p}</option>)}
-    </select></label>
+    <label>Dataset <GroupMultiSelect disabled={busy} options={dataset.options} selected={dataset.selectedPaths} onChange={next => { reset(); dataset.setSelectedPaths(next); }} /></label>
+    {dataset.load.kind === 'loading' && <p role="status">Loading dataset…</p>}
+    {dataset.orderedPaths.length === 0 && dataset.load.kind !== 'loading' && <p>Choose one or more groups in Dataset.</p>}
     {data && <fieldset disabled={busy} onChange={reset}><legend>Analysis settings</legend>
       <label>Transformation <select value={definitionName} onChange={e => { const selected = definitions.find(d => d.name === e.target.value) ?? null; setDefinitionName(e.target.value); setColumns(analysisColumns(data, selected)); }}>
         <option value="">Measured values</option>{definitions.map(d => <option key={d.name}>{d.name}</option>)}
@@ -237,6 +252,6 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     {kind === 'cluster' && <button disabled={disabled} onClick={() => void run(true)}>Run cluster diagnostics</button>}
     {busy && <p role="status">{moving.current ? 'Moving analytical units…' : cancelling ? 'Cancelling analysis…' : job ? `${job.state}: ${job.stage?.replaceAll('_', ' ') ?? 'waiting'} (${job.progress}%)` : 'Submitting analysis…'}</p>}
     {busy && !moving.current && <button disabled={cancelling} onClick={() => { setCancelling(true); activeJob.current?.abort(); }}>Cancel analysis</button>}{notice && <p role="status">{notice}</p>}{error && <p role="alert">{error}</p>}
-    {result && <div key={generation.current}><AnalysisPlots result={result} cutK={cutK} onCutKChange={setCutK} disabled={busy || reviewing} /><ResultAssignment result={result} cutK={cutK} destinations={paths} candidates={candidates} busy={busy} onReviewChange={setReviewing} onConfirm={request => void assign(request)} onBatchConfirm={request => void assign(request)} /><ResultTable result={result} /></div>}
+    {result && <div key={generation.current}><AnalysisPlots result={result} cutK={cutK} onCutKChange={setCutK} disabled={busy || reviewing} /><ResultAssignment result={result} cutK={cutK} destinations={paths} candidates={candidates} multiSource={multiSource} busy={busy} onReviewChange={setReviewing} onConfirm={request => void assign(request)} onBatchConfirm={request => void assign(request)} /><ResultTable result={result} /></div>}
   </section>;
 }

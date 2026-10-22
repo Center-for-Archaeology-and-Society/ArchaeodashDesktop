@@ -298,6 +298,11 @@ export interface AppliedTransformation {
 
 export interface OrdinationRequestBase {
   path: string;
+  /** Extra group files read together with `path`; rows are `path`'s rows
+   *  then each entry's rows, in order. Every input also exposes a synthetic
+   *  descriptive column holding each row's file group name: `"Group"`, or
+   *  `"Group (file)"` when any input has a real `"Group"` column. */
+  extra_paths?: string[];
   columns: string[];
   transformation?: TransformationDefinition | null;
 }
@@ -310,9 +315,6 @@ export type OrdinationResponseBase = {
 
 export interface PcaRequest extends OrdinationRequestBase {
   scale?: boolean;
-  /** Extra group files ordinated with `path`; rows are `path`'s rows then
-   *  each entry's rows, in order. */
-  extra_paths?: string[];
 }
 
 export interface PcaResponse extends OrdinationResponseBase {
@@ -329,9 +331,6 @@ export interface PcaResponse extends OrdinationResponseBase {
 export interface LdaRequest extends OrdinationRequestBase {
   /** Ignored (may be "") when `group_by_file` is true. */
   group_column: string;
-  /** Extra group files ordinated with `path`; rows are `path`'s rows then
-   *  each entry's rows, in order. */
-  extra_paths?: string[];
   /** Label each row with its file's group name instead of `group_column`. */
   group_by_file?: boolean;
 }
@@ -350,9 +349,6 @@ export interface LdaResponse extends OrdinationResponseBase {
 
 export interface UmapRequest extends OrdinationRequestBase {
   seed?: number | null;
-  /** Extra group files ordinated with `path`; rows are `path`'s rows then
-   *  each entry's rows, in order. */
-  extra_paths?: string[];
 }
 
 export interface UmapResponse extends OrdinationResponseBase {
@@ -441,6 +437,8 @@ export type MembershipMethod = 'hotellings' | 'mahalanobis';
 export interface MembershipProbabilitiesRequest extends AnalysisInputOptions {
   projection_groups?: string[] | null;
   path: string;
+  /** Extra group files read together with `path` (see `OrdinationRequestBase`). */
+  extra_paths?: string[];
   columns: string[];
   group_column: string;
   id_column: string;
@@ -468,6 +466,8 @@ export interface MembershipProbabilitiesResponse {
 export interface EuclideanMatchesRequest extends AnalysisInputOptions {
   projection_groups?: string[] | null;
   path: string;
+  /** Extra group files read together with `path` (see `OrdinationRequestBase`). */
+  extra_paths?: string[];
   columns: string[];
   group_column: string;
   id_column: string;
@@ -510,6 +510,8 @@ export interface ExploreMissingProfileResponse extends OrdinationResponseBase {
 
 export interface ExploreHistogramRequest {
   path: string;
+  /** Extra group files read together with `path` (see `OrdinationRequestBase`). */
+  extra_paths?: string[];
   column: string;
   bins?: number;
   transformation?: TransformationDefinition | null;
@@ -525,6 +527,8 @@ export interface ExploreHistogramResponse {
 
 export interface ExploreCrosstabRequest {
   path: string;
+  /** Extra group files read together with `path` (see `OrdinationRequestBase`). */
+  extra_paths?: string[];
   group_column: string;
   value_column: string;
   summary_method: 'count' | 'mean' | 'median' | 'sd' | (string & {});
@@ -570,11 +574,15 @@ export interface ExploreCompositionalProfileResponse extends OrdinationResponseB
 
 export interface ExportMeasuredDataRequest {
   path: string;
+  /** Extra group files read together with `path` (see `OrdinationRequestBase`). */
+  extra_paths?: string[];
   raw_text?: boolean;
 }
 
 export interface ExportTransformedRequest {
   path: string;
+  /** Extra group files read together with `path` (see `OrdinationRequestBase`). */
+  extra_paths?: string[];
   definition: TransformationDefinition;
   raw_text?: boolean;
 }

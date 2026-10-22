@@ -4,14 +4,16 @@ import type { TransferUnitsRequest, BatchTransferUnitsRequest, GroupCandidate } 
 import type { AnalysisResult } from './AnalysisPage.tsx';
 import { buildAssignmentRequest, selectableRows } from './assignment-model.ts';
 
-export function MoveConfirmation({ request, busy, onConfirm, onCancel }: {
+export function MoveConfirmation({ request, busy, onConfirm, onCancel, multiSource = false, groupName = (path: string) => path }: {
   request: TransferUnitsRequest;
   busy: boolean;
   onConfirm: (request: TransferUnitsRequest) => void;
   onCancel: () => void;
+  multiSource?: boolean;
+  groupName?: (path: string) => string;
 }): ReactElement {
   return <section aria-label="Confirm analytical unit move">
-    <p>Move {request.selected_uuids.length} selected analytical units from <strong>{request.source_path}</strong> to <strong>{request.destination_path}</strong>?</p>
+    <p>Move {request.selected_uuids.length} selected analytical units from <strong>{multiSource ? 'their current groups' : groupName(request.source_path)}</strong> to <strong>{groupName(request.destination_path)}</strong>?{multiSource ? ' Units already in that group stay put.' : ''}</p>
     <p>The units will leave the source group. Original measured values remain unchanged. An empty source group file is removed.</p>
     <button type="button" disabled={busy} onClick={() => onConfirm(request)}>Confirm move</button>{' '}
     <button type="button" disabled={busy} onClick={onCancel}>Cancel</button>
@@ -19,8 +21,10 @@ export function MoveConfirmation({ request, busy, onConfirm, onCancel }: {
 }
 
 /** UUIDs stay in component state and requests, never checkbox values or labels. */
-export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfirm, candidates = [], onBatchConfirm, onReviewChange = () => {} }: {
+export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfirm, candidates = [], onBatchConfirm, onReviewChange = () => {}, multiSource = false }: {
   result: AnalysisResult;
+  /** The result spans several group files; moves are split per source. */
+  multiSource?: boolean;
   destinations: readonly string[];
   candidates?: readonly GroupCandidate[];
   onBatchConfirm?: (request: BatchTransferUnitsRequest) => void;
@@ -38,11 +42,12 @@ export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfi
   const [automatic, setAutomatic] = useState(false);
   const [autoReviewing, setAutoReviewing] = useState(false);
   if (result.kind === 'diagnostics') return null;
-  const targets = destinations.filter(path => path !== result.data.path);
+  const targets = destinations.filter(path => multiSource || path !== result.data.path);
+  const groupName = (path: string) => candidates.find(c => c.path === path)?.group?.group_name ?? path;
   function review() {
     try {
       if (!targets.includes(target)) throw new Error('Choose an available destination group.');
-      setPrepared(buildAssignmentRequest(result, [...selected], target));
+      setPrepared(buildAssignmentRequest(result, [...selected], target, undefined, multiSource));
       onReviewChange(true);
       setError('');
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
@@ -67,13 +72,13 @@ export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfi
         </table>
         {shown < rows.length && <button type="button" onClick={() => setShown(value => value + 100)}>Show 100 more analytical units</button>}
         {!automatic && <><label>Destination group <select value={target} onChange={event => setTarget(event.target.value)}>
-          <option value="">Choose an existing group…</option>{targets.map(path => <option key={path}>{path}</option>)}
+          <option value="">Choose an existing group…</option>{targets.map(path => <option key={path} value={path}>{groupName(path)}</option>)}
         </select></label>
         {!targets.length && <p>No other ready group file is available. Import or create a destination group before assigning results.</p>}
         <button type="button" disabled={!selected.size || !targets.includes(target)} onClick={review}>Review move</button></>}
       </fieldset>
-      {automatic && onBatchConfirm && <AutomaticAssignment result={result} selected={[...selected]} candidates={candidates} cutK={cutK} busy={busy} onConfirm={onBatchConfirm} onReviewChange={value => { setAutoReviewing(value); onReviewChange(value); }} />}
-      {prepared && <MoveConfirmation request={prepared} busy={busy} onConfirm={onConfirm} onCancel={() => { setPrepared(null); onReviewChange(false); }} />}
+      {automatic && onBatchConfirm && <AutomaticAssignment multiSource={multiSource} result={result} selected={[...selected]} candidates={candidates} cutK={cutK} busy={busy} onConfirm={onBatchConfirm} onReviewChange={value => { setAutoReviewing(value); onReviewChange(value); }} />}
+      {prepared && <MoveConfirmation request={prepared} busy={busy} multiSource={multiSource} groupName={groupName} onConfirm={onConfirm} onCancel={() => { setPrepared(null); onReviewChange(false); }} />}
     </>}
     {error && <p role="alert">{error}</p>}
   </section>;

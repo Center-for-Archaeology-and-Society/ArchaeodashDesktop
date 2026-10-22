@@ -720,6 +720,7 @@ mod tests {
         let no_project = clustering
             .cluster_diagnostics(ClusterDiagnosticsRequest {
                 path: "groups/A.parquet".into(),
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
                 max_k: 3,
@@ -739,6 +740,7 @@ mod tests {
         assert!(clustering
             .euclidean_matches(EuclideanMatchesRequest {
                 path: "groups/A.parquet".into(),
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 group_column: "Site".into(),
                 id_column: "anid".into(),
@@ -790,6 +792,7 @@ mod tests {
         let diagnostics = clustering
             .cluster_diagnostics(ClusterDiagnosticsRequest {
                 path: imported.groups[0].path.clone(),
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
                 max_k: 3,
@@ -813,6 +816,7 @@ mod tests {
             .cluster_fit(ClusterFitRequest {
                 plot_group_column: None,
                 path: imported.groups[0].path.clone(),
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
                 method: ClusterMethod::Kmeans,
@@ -849,6 +853,7 @@ mod tests {
             .cluster_fit(ClusterFitRequest {
                 plot_group_column: None,
                 path: path.clone(),
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
                 method: ClusterMethod::Kmeans,
@@ -878,6 +883,7 @@ mod tests {
         let membership = clustering
             .membership_probabilities(MembershipProbabilitiesRequest {
                 path: path.clone(),
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into(), "co".into(), "zn".into()],
                 group_column: "Site".into(),
                 id_column: "anid".into(),
@@ -899,6 +905,7 @@ mod tests {
         let matches = clustering
             .euclidean_matches(EuclideanMatchesRequest {
                 path: path.clone(),
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 group_column: "Site".into(),
                 id_column: "anid".into(),
@@ -1024,6 +1031,7 @@ mod tests {
         let err = clustering
             .euclidean_matches(EuclideanMatchesRequest {
                 path: path.clone(),
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 group_column: "Site".into(),
                 id_column: "anid".into(),
@@ -1486,6 +1494,7 @@ mod tests {
         let err = explore
             .explore_missing_profile(ExploreMissingProfileRequest {
                 path: "groups/whatever.parquet".into(),
+                extra_paths: vec![],
                 columns: vec!["as".into()],
                 transformation: None,
             })
@@ -1514,6 +1523,7 @@ mod tests {
         let response = explore
             .explore_missing_profile(ExploreMissingProfileRequest {
                 path: commit.groups[0].path.clone(),
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
             })
@@ -1678,6 +1688,7 @@ mod tests {
         let err = exports
             .export_measured_data(ExportMeasuredDataRequest {
                 path: "groups/whatever.parquet".into(),
+                extra_paths: vec![],
                 raw_text: false,
             })
             .expect_err("no project open");
@@ -1708,6 +1719,7 @@ mod tests {
         let export = exports
             .export_measured_data(ExportMeasuredDataRequest {
                 path: path.clone(),
+                extra_paths: vec![],
                 raw_text: false,
             })
             .expect("measured export");

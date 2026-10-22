@@ -1,17 +1,19 @@
 import { useMemo, useState, type ReactElement } from 'react';
 import type { BatchTransferUnitsRequest, GroupCandidate } from '@archaeodash/client';
 import type { AnalysisResult } from './AnalysisPage.tsx';
-import { buildAutomaticAssignmentRequest, recommendedAssignments } from './automatic-assignment.ts';
+import { KEEP_IN_SOURCE, buildAutomaticAssignmentRequest, recommendedAssignments } from './automatic-assignment.ts';
 
 type Mapping = { groupLabel: string; destinationPath: string; newGroupName?: string };
-export function BatchConfirmation({ request, selectedCount, busy, onConfirm, onCancel }: {
+export function BatchConfirmation({ request, selectedCount, busy, onConfirm, onCancel, multiSource = false }: {
   request: BatchTransferUnitsRequest; selectedCount: number; busy: boolean;
-  onConfirm: (request: BatchTransferUnitsRequest) => void; onCancel: () => void;
+  onConfirm: (request: BatchTransferUnitsRequest) => void; onCancel: () => void; multiSource?: boolean;
 }): ReactElement {
   const moving = request.targets.reduce((sum, target) => sum + target.selected_uuids.length, 0);
   return <section aria-label="Confirm automatic assignment">
     <h3>Review group assignments</h3>
-    <p>Move {moving} analytical units from {request.source_path} in one transaction. {selectedCount - moving} selected units stay in the source group.</p>
+    {multiSource
+      ? <p>Move up to {moving} analytical units from the selected groups, one transaction per source group; units already in their destination stay put. {selectedCount - moving} selected units stay in their own group.</p>
+      : <p>Move {moving} analytical units from {request.source_path} in one transaction. {selectedCount - moving} selected units stay in the source group.</p>}
     <table className="data-table"><thead><tr><th>Destination</th><th>Group</th><th>Units</th></tr></thead>
       <tbody>{request.targets.map(target => <tr key={target.destination_path}><td>{target.destination_path}</td><td>{target.destination_group_name ?? 'Existing group'}</td><td>{target.selected_uuids.length}</td></tr>)}</tbody>
     </table>
@@ -21,9 +23,11 @@ export function BatchConfirmation({ request, selectedCount, busy, onConfirm, onC
   </section>;
 }
 
-export function AutomaticAssignment({ result, selected, candidates, cutK, busy, onConfirm, onReviewChange }: {
+export function AutomaticAssignment({ result, selected, candidates, cutK, busy, onConfirm, onReviewChange, multiSource = false }: {
   result: AnalysisResult; selected: readonly string[]; candidates: readonly GroupCandidate[]; cutK: number; busy: boolean;
   onConfirm: (request: BatchTransferUnitsRequest) => void; onReviewChange: (reviewing: boolean) => void;
+  /** The result spans several group files (see buildAutomaticAssignmentRequest). */
+  multiSource?: boolean;
 }): ReactElement {
   const [choices, setChoices] = useState<Record<string, Mapping>>({});
   const [prepared, setPrepared] = useState<BatchTransferUnitsRequest | null>(null);
@@ -41,7 +45,7 @@ export function AutomaticAssignment({ result, selected, candidates, cutK, busy, 
   const update = (label: string, mapping: Mapping) => { setChoices(current => ({ ...current, [label]: mapping })); setError(''); };
   function review() {
     try {
-      const request = buildAutomaticAssignmentRequest(result, selected, plan.labels.map(choice), candidates, cutK);
+      const request = buildAutomaticAssignmentRequest(result, selected, plan.labels.map(choice), candidates, cutK, multiSource);
       setPrepared(request); onReviewChange(true); setError('');
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   }
@@ -63,8 +67,8 @@ export function AutomaticAssignment({ result, selected, candidates, cutK, busy, 
             } else update(label, { groupLabel: label, destinationPath: event.target.value });
           }}>
             <option value="">Choose a destination…</option>
-            <option value={result.data.path}>Keep in current group</option>
-            {candidates.filter(candidate => candidate.ready && candidate.path !== result.data.path).map(candidate => <option key={candidate.path} value={candidate.path}>{candidate.group?.group_name ?? candidate.path} — {candidate.path}</option>)}
+            <option value={multiSource ? KEEP_IN_SOURCE : result.data.path}>Keep in current group</option>
+            {candidates.filter(candidate => candidate.ready && (multiSource || candidate.path !== result.data.path)).map(candidate => <option key={candidate.path} value={candidate.path}>{candidate.group?.group_name ?? candidate.path}</option>)}
             <option value="__new__">Create a new group</option>
           </select></label>
           {isNew && <>
@@ -76,6 +80,6 @@ export function AutomaticAssignment({ result, selected, candidates, cutK, busy, 
       <button type="button" disabled={!plan.labels.length || !!plan.error} onClick={review}>Review assignments</button>
     </fieldset>
     {error && <p role="alert">{error}</p>}
-    {prepared && <BatchConfirmation request={prepared} selectedCount={selected.length} busy={busy} onConfirm={onConfirm} onCancel={() => { setPrepared(null); onReviewChange(false); }} />}
+    {prepared && <BatchConfirmation request={prepared} selectedCount={selected.length} busy={busy} multiSource={multiSource} onConfirm={onConfirm} onCancel={() => { setPrepared(null); onReviewChange(false); }} />}
   </section>;
 }

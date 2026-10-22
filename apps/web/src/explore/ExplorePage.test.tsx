@@ -104,8 +104,6 @@ function makeDeps(): ExploreDeps {
     groups,
     explore,
     exports,
-    getInitialDataset: async () => '',
-    onDatasetOpened: () => {},
   };
 }
 
@@ -115,21 +113,26 @@ test('explore renders the legacy view tabs; table hides hidden identity', async 
   for (const label of ['Dataset', 'Missing values', 'Univariate Plots', 'Crosstabs', 'Compositional Profile Plot']) {
     assert.ok(html.includes(label), `missing tab label: ${label}`);
   }
-  assert.ok(html.includes('Choose a group file…'), 'dataset select present');
+  assert.ok(html.includes('Dataset: No groups'), 'dataset picker present (groups load after mount)');
   // Effects do not run under renderToString; render the table directly with
   // loaded data to assert the hidden-identity and read-only guarantees.
   const rows = await deps.groups.rows('groups/Baca.parquet');
   const tableHtml = renderToString(
-    <DataTable data={rows} deps={deps} onSaved={() => {}} />,
+    <DataTable files={[{ path: rows.path, groupName: 'Baca', data: rows }]} deps={deps} onSaved={() => {}} />,
   );
   assert.ok(tableHtml.includes('anid'), 'visible id column header');
   assert.ok(tableHtml.includes('A1'), 'visible id cell');
   assert.ok(!tableHtml.includes('0197aaaa'), 'analytical_uuid never rendered');
   assert.ok(tableHtml.includes('locked-col'), 'elemental columns marked read-only');
   const missingId = { ...rows, rows: rows.rows.map(row => ({ ...row, visible_id: null })) };
-  const accessible = renderToString(<DataTable data={missingId} deps={deps} onSaved={() => {}} />);
+  const accessible = renderToString(
+    <DataTable files={[{ path: rows.path, groupName: 'Baca', data: missingId }]} deps={deps} onSaved={() => {}} />,
+  );
   assert.ok(!accessible.includes('0197aaaa'), 'missing visible IDs never expose internal UUIDs in accessible labels');
   assert.ok(accessible.includes('for row 1'));
+  // The synthetic group column shows each row's group and is read-only.
+  assert.ok(tableHtml.includes('<th>Group</th>'));
+  assert.ok(tableHtml.includes('<td class="locked-col">Baca</td>'));
 });
 
 test('explore missing view renders band table rows', async () => {

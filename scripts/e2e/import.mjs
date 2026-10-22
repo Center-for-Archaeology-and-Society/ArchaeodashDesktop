@@ -65,11 +65,17 @@ try {
 
   // Imported groups are available from the actual Cluster page selector.
   await page.goto(`${base}/cluster`);
-  const dataset = page.getByLabel(/^Dataset/);
-  await dataset.waitFor();
-  const options = await dataset.locator('option').allTextContents();
-  for (const name of ['North', 'South', 'All_Sites']) assert.ok(options.some(option => option.includes(name)), `${name} missing from Cluster dataset options: ${options.join(', ')}`);
-  await dataset.selectOption({ label: options.find(option => option.includes('North')) });
+  // The Dataset picker lists every group and selects all of them by default.
+  const datasetButton = page.getByRole('button', { name: /^Dataset:/ });
+  await page.getByRole('button', { name: /^Dataset: All groups/ }).waitFor();
+  await datasetButton.click();
+  const options = await page.locator('.multiselect-option').allTextContents();
+  for (const name of ['North', 'South', 'All Sites']) assert.ok(options.some(option => option.includes(name)), `${name} missing from Cluster dataset options: ${options.join(', ')}`);
+  assert.equal(await page.locator('.multiselect-option input:checked').count(), options.length, 'all groups selected by default');
+  await page.getByRole('button', { name: 'None', exact: true }).click();
+  await page.getByRole('option', { name: 'North', exact: true }).getByRole('checkbox').check();
+  await page.keyboard.press('Escape');
+  await page.locator('h1').first().click();
   assert.doesNotMatch(await body(), /[0-9a-f]{8}-[0-9a-f-]{27,}/i, 'internal UUIDs must not appear in Cluster UI');
   assert.deepEqual(pageErrors, []);
   console.log(JSON.stringify({

@@ -39,6 +39,7 @@ fn request(path: String, pc_count: Option<u32>) -> SubmitAnalysisJobRequest {
     SubmitAnalysisJobRequest {
         analysis: AnalysisJobRequest::ClusterFit(ClusterFitRequest {
             path,
+            extra_paths: vec![],
             columns: vec!["as".into(), "fe".into()],
             transformation: None,
             source: AnalysisSourceDto::Pca,

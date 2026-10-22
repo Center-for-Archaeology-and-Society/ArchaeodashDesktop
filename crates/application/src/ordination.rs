@@ -11,9 +11,10 @@ use archaeodash_contracts::{
     LdaRequest, LdaResponse, PcaRequest, PcaResponse, TransformationDefinition, UmapRequest,
     UmapResponse,
 };
-use archaeodash_data_io::{read_group_file, GroupFileData};
+use archaeodash_data_io::GroupFileData;
 use archaeodash_domain::DomainError;
 
+use super::combined::CombinedInput;
 use super::transforms::TransformService;
 
 fn validation(code: &str, message: impl Into<String>) -> DomainError {
@@ -21,10 +22,6 @@ fn validation(code: &str, message: impl Into<String>) -> DomainError {
 }
 
 fn io_err(e: std::io::Error) -> DomainError {
-    DomainError::Internal(Box::new(e))
-}
-
-fn import_err(e: archaeodash_data_io::ImportError) -> DomainError {
     DomainError::Internal(Box::new(e))
 }
 
@@ -108,42 +105,23 @@ impl OrdinationService {
         Ok(labels)
     }
 
-    /// Reads `path` followed by each `extra_paths` entry and concatenates
-    /// their per-file ordination matrices row-wise, in request order with
-    /// each file's rows in file order (the `GroupService::rows` order). Any
-    /// transformation is applied per file. Every file must expose all
-    /// requested columns.
+    /// Reads `path` followed by each `extra_paths` entry as one combined
+    /// input (`CombinedInput`: rows in request order, each file's rows in
+    /// file order — the `GroupService::rows` order) and builds the ordination
+    /// matrix over the pooled rows, so any transformation (e.g. z-score) is
+    /// applied to all rows together. Every file must expose all requested
+    /// columns.
     fn read_inputs(
         &self,
         path: &str,
         extra_paths: &[String],
         columns: &[String],
         transformation: Option<&TransformationDefinition>,
-    ) -> Result<(Vec<GroupFileData>, ColumnMatrix), DomainError> {
-        let mut seen = std::collections::HashSet::new();
-        let mut files = Vec::with_capacity(1 + extra_paths.len());
-        let mut matrix: Option<ColumnMatrix> = None;
-        for rel in std::iter::once(path).chain(extra_paths.iter().map(String::as_str)) {
-            if !seen.insert(rel) {
-                return Err(validation(
-                    "duplicate_ordination_path",
-                    format!("{rel}: group file is listed more than once"),
-                ));
-            }
-            let data = read_group_file(&self.root.join(rel)).map_err(import_err)?;
-            let part = Self::input_matrix(&data, columns, transformation, rel)?;
-            match matrix.as_mut() {
-                None => matrix = Some(part),
-                Some(acc) => {
-                    for (dst, src) in acc.cols.iter_mut().zip(part.cols) {
-                        dst.extend(src);
-                    }
-                }
-            }
-            files.push(data);
-        }
-        let matrix = matrix.ok_or_else(|| validation("ordination_empty", "no group files"))?;
-        Ok((files, matrix))
+    ) -> Result<(CombinedInput, ColumnMatrix), DomainError> {
+        let input = CombinedInput::read_local(&self.root, path, extra_paths)?;
+        input.require_inputs(columns, transformation)?;
+        let matrix = Self::input_matrix(&input.data, columns, transformation, &input.context())?;
+        Ok((input, matrix))
     }
 
     /// prcomp-parity PCA (Section 15.4 procedure 6) over one group file.
@@ -154,7 +132,7 @@ impl OrdinationService {
                 "PCA requires at least one column",
             ));
         }
-        let (files, matrix) = self.read_inputs(
+        let (input, matrix) = self.read_inputs(
             &req.path,
             &req.extra_paths,
             &req.columns,
@@ -179,7 +157,7 @@ impl OrdinationService {
 
         Ok(PcaResponse {
             path: req.path.clone(),
-            revision_id: files[0].profile.revision_id.clone(),
+            revision_id: input.data.profile.revision_id.clone(),
             column_names: req.columns.clone(),
             score_names,
             sdev: result.sdev,
@@ -201,26 +179,17 @@ impl OrdinationService {
                 "LDA requires at least one column",
             ));
         }
-        let (files, matrix) = self.read_inputs(
+        let (input, matrix) = self.read_inputs(
             &req.path,
             &req.extra_paths,
             &req.columns,
             req.transformation.as_ref(),
         )?;
         let groups = if req.group_by_file {
-            files
-                .iter()
-                .flat_map(|data| {
-                    std::iter::repeat_n(data.profile.group_name.clone(), data.rows.len())
-                })
-                .collect()
+            input.file_group_labels()
         } else {
-            let paths = std::iter::once(&req.path).chain(req.extra_paths.iter());
-            let mut labels = Vec::with_capacity(matrix.cols.first().map_or(0, Vec::len));
-            for (data, rel) in files.iter().zip(paths) {
-                labels.extend(Self::group_labels(data, &req.group_column, rel)?);
-            }
-            labels
+            input.require_columns([req.group_column.as_str()])?;
+            Self::group_labels(&input.data, &req.group_column, &input.context())?
         };
         // Legacy `getLDA` calls `validate_lda_groups` with its default of 3.
         let result = lda(&matrix, &groups, 3)?;
@@ -229,7 +198,7 @@ impl OrdinationService {
 
         Ok(LdaResponse {
             path: req.path.clone(),
-            revision_id: files[0].profile.revision_id.clone(),
+            revision_id: input.data.profile.revision_id.clone(),
             column_names: req.columns.clone(),
             levels: result.levels,
             prior: result.prior,
@@ -253,7 +222,7 @@ impl OrdinationService {
                 "UMAP requires at least one column",
             ));
         }
-        let (files, matrix) = self.read_inputs(
+        let (input, matrix) = self.read_inputs(
             &req.path,
             &req.extra_paths,
             &req.columns,
@@ -265,7 +234,7 @@ impl OrdinationService {
 
         Ok(UmapResponse {
             path: req.path.clone(),
-            revision_id: files[0].profile.revision_id.clone(),
+            revision_id: input.data.profile.revision_id.clone(),
             column_names: req.columns.clone(),
             score_names: (1..=k).map(|i| format!("V{i}")).collect(),
             embedding: result.layout,
@@ -597,7 +566,7 @@ mod tests {
             .expect_err("duplicate path");
         assert!(matches!(
             err,
-            DomainError::Validation { ref code, .. } if code == "duplicate_ordination_path"
+            DomainError::Validation { ref code, .. } if code == "duplicate_input_path"
         ));
         let _ = std::fs::remove_dir_all(&dir);
     }

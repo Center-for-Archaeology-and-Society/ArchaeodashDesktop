@@ -15,9 +15,10 @@ use archaeodash_contracts::{
     ExploreHistogramResponse, ExploreMissingProfileRequest, ExploreMissingProfileResponse,
     MissingProfileRow, TransformationDefinition,
 };
-use archaeodash_data_io::{parse_r_numeric, r_format_double, read_group_file, GroupFileData};
+use archaeodash_data_io::{parse_r_numeric, r_format_double, GroupFileData};
 use archaeodash_domain::DomainError;
 
+use super::combined::CombinedInput;
 use super::transforms::TransformService;
 
 fn validation(code: &str, message: impl Into<String>) -> DomainError {
@@ -25,10 +26,6 @@ fn validation(code: &str, message: impl Into<String>) -> DomainError {
 }
 
 fn io_err(e: std::io::Error) -> DomainError {
-    DomainError::Internal(Box::new(e))
-}
-
-fn import_err(e: archaeodash_data_io::ImportError) -> DomainError {
     DomainError::Internal(Box::new(e))
 }
 
@@ -170,7 +167,9 @@ impl ExploreService {
                 "missing profile requires at least one column",
             ));
         }
-        let data = read_group_file(&self.root.join(&req.path)).map_err(import_err)?;
+        let input = CombinedInput::read_local(&self.root, &req.path, &req.extra_paths)?;
+        input.require_inputs(&req.columns, req.transformation.as_ref())?;
+        let data = input.data;
         let matrix =
             Self::input_matrix(&data, &req.columns, req.transformation.as_ref(), &req.path)?;
         let rows = archaeodash_analysis::missing_profile(&matrix)
@@ -194,7 +193,12 @@ impl ExploreService {
         &self,
         req: &ExploreHistogramRequest,
     ) -> Result<ExploreHistogramResponse, DomainError> {
-        let data = read_group_file(&self.root.join(&req.path)).map_err(import_err)?;
+        let input = CombinedInput::read_local(&self.root, &req.path, &req.extra_paths)?;
+        input.require_inputs(
+            std::slice::from_ref(&req.column),
+            req.transformation.as_ref(),
+        )?;
+        let data = input.data;
         let matrix = Self::input_matrix(
             &data,
             std::slice::from_ref(&req.column),
@@ -218,7 +222,9 @@ impl ExploreService {
         &self,
         req: &ExploreCrosstabRequest,
     ) -> Result<ExploreCrosstabResponse, DomainError> {
-        let data = read_group_file(&self.root.join(&req.path)).map_err(import_err)?;
+        let input = CombinedInput::read_local(&self.root, &req.path, &req.extra_paths)?;
+        input.require_columns([req.group_column.as_str(), req.value_column.as_str()])?;
+        let data = input.data;
         let groups = Self::descriptive_column(&data, &req.group_column, &req.path)?;
         let method = CrosstabMethod::parse(&req.summary_method)?;
         let rows = match method {
@@ -284,7 +290,10 @@ impl ExploreService {
                 "compositional profile requires at least one column",
             ));
         }
-        let data = read_group_file(&self.root.join(&req.path)).map_err(import_err)?;
+        let input = CombinedInput::read_local(&self.root, &req.path, &req.extra_paths)?;
+        input.require_inputs(&req.columns, req.transformation.as_ref())?;
+        input.require_columns(req.group_column.as_deref())?;
+        let data = input.data;
         let matrix =
             Self::input_matrix(&data, &req.columns, req.transformation.as_ref(), &req.path)?;
         let labels = match &req.group_column {
@@ -397,6 +406,7 @@ mod tests {
         let response = service
             .missing_profile(&ExploreMissingProfileRequest {
                 path: merge.outputs[0].path.clone(),
+                extra_paths: vec![],
                 columns: vec!["fe".into(), "as".into()],
                 transformation: None,
             })
@@ -414,10 +424,98 @@ mod tests {
         let err = service
             .missing_profile(&ExploreMissingProfileRequest {
                 path: merge.outputs[0].path.clone(),
+                extra_paths: vec![],
                 columns: vec!["zz".into()],
                 transformation: None,
             })
             .expect_err("unknown column");
         assert!(err.to_string().contains("missing_elemental_column"));
+    }
+
+    #[test]
+    fn multi_file_crosstab_groups_by_synthetic_file_column() {
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "archaeodash-explore-multi-test-{}-{n}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(
+            dir.join("three.csv"),
+            "anid,Site,Ware,as,fe\nA1,A,x,1.5,3\nA2,A,y,2,4\nB1,B,x,5,6\nB2,B,x,6,8\nC1,C,y,9,1\n",
+        )
+        .expect("write source");
+        let import = crate::import::ImportService::new(&dir).expect("import service");
+        let commit = import
+            .commit(&ImportCommitRequest {
+                source: "three.csv".into(),
+                group_column: "Site".into(),
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+                group_name: None,
+            })
+            .expect("commit");
+        let paths: Vec<String> = commit.groups.iter().map(|g| g.path.clone()).collect();
+        let service = ExploreService::new(&dir).expect("explore service");
+        let response = service
+            .crosstab(&ExploreCrosstabRequest {
+                path: paths[0].clone(),
+                extra_paths: paths[1..].to_vec(),
+                group_column: "Group".into(),
+                value_column: "Ware".into(),
+                summary_method: "count".into(),
+            })
+            .expect("multi-file crosstab");
+        assert_eq!(response.path, paths[0]);
+        let CrosstabRows::Count { rows } = response.rows else {
+            panic!("expected count rows");
+        };
+        let triples: Vec<(Option<String>, Option<String>, u64)> = rows
+            .into_iter()
+            .map(|r| (r.group, r.value, r.count))
+            .collect();
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            triples,
+            vec![
+                (some("A"), some("x"), 1),
+                (some("A"), some("y"), 1),
+                (some("B"), some("x"), 2),
+                (some("C"), some("y"), 1),
+            ]
+        );
+
+        // The synthetic column also resolves for a single file.
+        let single = service
+            .crosstab(&ExploreCrosstabRequest {
+                path: paths[1].clone(),
+                extra_paths: vec![],
+                group_column: "Group".into(),
+                value_column: "as".into(),
+                summary_method: "mean".into(),
+            })
+            .expect("single-file crosstab");
+        let CrosstabRows::Summary { rows, .. } = single.rows else {
+            panic!("expected summary rows");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].group.as_deref(), Some("B"));
+        assert_eq!(rows[0].result, Some(5.5));
+
+        // A listed path twice is rejected.
+        let err = service
+            .crosstab(&ExploreCrosstabRequest {
+                path: paths[0].clone(),
+                extra_paths: vec![paths[0].clone()],
+                group_column: "Group".into(),
+                value_column: "Ware".into(),
+                summary_method: "count".into(),
+            })
+            .expect_err("duplicate path");
+        assert!(err.to_string().contains("duplicate_input_path"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

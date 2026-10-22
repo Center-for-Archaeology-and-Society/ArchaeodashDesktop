@@ -19,22 +19,21 @@ import type { Data } from 'plotly.js-dist-min';
 import { downloadExportResult } from '../exports.ts';
 import { PlotlyChart } from '../charts/PlotlyChart.tsx';
 import { groupColors } from '../visualize/visualize-model.ts';
+import {
+  asRowsResponse,
+  combineGroupFiles,
+  defaultGroupColumn,
+  inputPaths,
+  type LoadedGroupFile,
+} from '../visualize/combine.ts';
+import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
+import { useGroupFiles } from '../datasets/useGroupFiles.ts';
 import { HiddenIdNote } from './HiddenIdNote.tsx';
 export interface ExploreDeps {
   readonly groups: GroupsService;
   readonly explore: ExploreService;
   readonly exports: ExportsService;
-  /** Restored legacy `lastOpenedDataset` preference (Section 10.1/9.4). */
-  readonly getInitialDataset: () => Promise<string>;
-  /** Persist the legacy `lastOpenedDataset` preference on dataset open. */
-  readonly onDatasetOpened: (path: string) => void;
 }
-
-type LoadState =
-  | { kind: 'idle' }
-  | { kind: 'loading' }
-  | { kind: 'loaded'; data: GroupRowsResponse }
-  | { kind: 'error'; message: string };
 
 type AsyncState<T> =
   | { kind: 'idle' }
@@ -52,112 +51,137 @@ const VIEWS: readonly [ExploreView, string][] = [
   ['profile', 'Compositional Profile Plot'],
 ];
 
-/** One selected group's editable dataset table (descriptive edits only). */
+/**
+ * Dataset table over the selected groups (descriptive edits only). Rows from
+ * several group files are shown together; edits are saved back to each
+ * row's own file. The synthetic group column, and columns a row's file does
+ * not have, are read-only.
+ */
 export function DataTable({
-  data,
+  files,
   deps,
   onSaved,
 }: {
-  data: GroupRowsResponse;
+  files: readonly LoadedGroupFile[];
   deps: ExploreDeps;
   onSaved: () => void;
 }): ReactElement {
+  const combined = useMemo(() => combineGroupFiles(files), [files]);
   // Drafts key on uuid+NUL+column so batched edits address hidden identity
   // per column; the UUID itself is never rendered (Section 3.2).
   const [drafts, setDrafts] = useState<Map<string, string>>(new Map());
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | { error: string }>(
     'idle',
   );
+  const fileOf = useMemo(() => new Map(files.map((f) => [f.path, f])), [files]);
 
-  const editList = useMemo(
-    () =>
-      [...drafts.entries()].map(([key, value]) => {
-        const sep = key.indexOf('\u0000');
-        return {
-          analytical_uuid: key.slice(0, sep),
-          column: key.slice(sep + 1),
-          value,
-        };
-      }),
-    [drafts],
-  );
+  const editCount = drafts.size;
 
   const saveEdits = useCallback(async () => {
-    if (editList.length === 0) return;
+    if (drafts.size === 0) return;
     setSaveState('saving');
     try {
-      await deps.groups.patchDescriptiveValues({
-        path: data.path,
-        expected_revision: data.revision_id,
-        edits: editList,
-      });
+      const pathOfUuid = new Map(combined.rows.map((r, i) => [r.analytical_uuid, combined.pathOf[i]!]));
+      const byPath = new Map<string, { analytical_uuid: string; column: string; value: string }[]>();
+      for (const [key, value] of drafts) {
+        const sep = key.indexOf('\u0000');
+        const uuid = key.slice(0, sep);
+        const path = pathOfUuid.get(uuid);
+        if (!path) continue;
+        const list = byPath.get(path) ?? [];
+        list.push({ analytical_uuid: uuid, column: key.slice(sep + 1), value });
+        byPath.set(path, list);
+      }
+      for (const [path, edits] of byPath) {
+        const file = fileOf.get(path);
+        if (!file) continue;
+        await deps.groups.patchDescriptiveValues({
+          path,
+          expected_revision: file.data.revision_id,
+          edits,
+        });
+      }
       setDrafts(new Map());
       setSaveState('saved');
       onSaved();
     } catch (err: unknown) {
       setSaveState({ error: err instanceof Error ? err.message : String(err) });
+      // Some files may have saved; reload so revisions stay current.
+      onSaved();
     }
-  }, [deps, data, editList, onSaved]);
+  }, [deps, drafts, combined, fileOf, onSaved]);
 
   return (
     <div>
       <HiddenIdNote />
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>{data.visible_id_column}</th>
-            <th>{data.legacy_rowid_column}</th>
-            {data.descriptive_columns.map((c) => (
-              <th key={c}>{c}</th>
-            ))}
-            {data.elemental_columns.map((c) => (
-              <th key={c} className="locked-col" title="Measured elemental values are read-only">
-                {c}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {data.rows.map((row, rowIndex) => (
-            <tr key={row.analytical_uuid}>
-              <td>{row.visible_id ?? ''}</td>
-              <td>{row.legacy_rowid ?? ''}</td>
-              {row.descriptive.map((value, i) => {
-                const column = data.descriptive_columns[i] ?? '';
-                const key = `${row.analytical_uuid}\u0000${column}`;
-                const draft = drafts.get(key);
-                return (
-                  <td key={column}>
-                    <input
-                      value={draft ?? value ?? ''}
-                      aria-label={`${column} for ${row.visible_id ?? `row ${rowIndex + 1}`}`}
-                      onChange={(e) => setDrafts((prev) => new Map(prev).set(key, e.target.value))}
-                    />
-                  </td>
-                );
-              })}
-              {row.elemental.map((value, i) => (
-                <td key={data.elemental_columns[i] ?? i} className="locked-col">
-                  {value === null ? 'NA' : value}
-                </td>
+      <div className="table-scroll">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>{combined.visibleIdColumn}</th>
+              <th>{combined.legacyRowidColumn}</th>
+              {combined.descriptiveColumns.map((c) => (
+                <th key={c}>{c}</th>
+              ))}
+              {combined.elementalColumns.map((c) => (
+                <th key={c} className="locked-col" title="Measured elemental values are read-only">
+                  {c}
+                </th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {combined.rows.map((row, rowIndex) => {
+              const own = fileOf.get(combined.pathOf[rowIndex]!)?.data.descriptive_columns ?? [];
+              return (
+                <tr key={row.analytical_uuid}>
+                  <td>{row.visible_id ?? ''}</td>
+                  <td>{row.legacy_rowid ?? ''}</td>
+                  {row.descriptive.map((value, i) => {
+                    const column = combined.descriptiveColumns[i] ?? '';
+                    if (column === combined.groupColumn || !own.includes(column)) {
+                      return (
+                        <td key={column} className="locked-col">
+                          {value ?? ''}
+                        </td>
+                      );
+                    }
+                    const key = `${row.analytical_uuid}\u0000${column}`;
+                    const draft = drafts.get(key);
+                    return (
+                      <td key={column}>
+                        <input
+                          value={draft ?? value ?? ''}
+                          aria-label={`${column} for ${row.visible_id ?? `row ${rowIndex + 1}`}`}
+                          onChange={(e) => setDrafts((prev) => new Map(prev).set(key, e.target.value))}
+                        />
+                      </td>
+                    );
+                  })}
+                  {row.elemental.map((value, i) => (
+                    <td key={combined.elementalColumns[i] ?? i} className="locked-col">
+                      {value === null ? 'NA' : value}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
       <div className="table-actions">
         <button
           type="button"
-          disabled={editList.length === 0 || saveState === 'saving'}
+          disabled={editCount === 0 || saveState === 'saving'}
           onClick={() => void saveEdits()}
         >
-          Save descriptive edits ({editList.length})
+          Save descriptive edits ({editCount})
         </button>
         <button
           type="button"
           onClick={() =>
             void deps.exports
-              .measuredData({ path: data.path, raw_text: false })
+              .measuredData({ ...inputPaths(files), raw_text: false })
               .then(downloadExportResult)
               .catch((err: unknown) => setSaveState({ error: err instanceof Error ? err.message : String(err) }))
           }
@@ -173,14 +197,17 @@ export function DataTable({
   );
 }
 
+/** Request input over the selected group files. */
+type InputPaths = { path: string; extra_paths: string[] };
+
 /** Missing-value bands (Good ≤5% / OK ≤40% / Bad ≤80% / Remove). */
 function MissingView({
   deps,
-  path,
+  input,
   columns,
 }: {
   deps: ExploreDeps;
-  path: string;
+  input: InputPaths;
   columns: string[];
 }): ReactElement {
   const [state, setState] = useState<AsyncState<ExploreMissingProfileResponse>>({ kind: 'idle' });
@@ -188,12 +215,12 @@ function MissingView({
   useEffect(() => {
     setState({ kind: 'loading' });
     deps.explore
-      .missingProfile({ path, columns, transformation: null })
+      .missingProfile({ ...input, columns, transformation: null })
       .then((r) => setState({ kind: 'loaded', data: r }))
       .catch((err: unknown) =>
         setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) }),
       );
-  }, [deps, path, columns]);
+  }, [deps, input, columns]);
 
   if (state.kind === 'loading') return <p role="status">Computing missing profile…</p>;
   if (state.kind === 'error') return <p role="alert">Error: {state.message}</p>;
@@ -225,11 +252,11 @@ function MissingView({
 /** Histogram with the legacy bins 2–100, default 30. */
 function HistogramView({
   deps,
-  path,
+  input,
   columns,
 }: {
   deps: ExploreDeps;
-  path: string;
+  input: InputPaths;
   columns: string[];
 }): ReactElement {
   const [column, setColumn] = useState(columns[0] ?? '');
@@ -240,12 +267,12 @@ function HistogramView({
     if (!column) return;
     setState({ kind: 'loading' });
     deps.explore
-      .histogram({ path, column, bins, transformation: null })
+      .histogram({ ...input, column, bins, transformation: null })
       .then((r) => setState({ kind: 'loaded', data: r }))
       .catch((err: unknown) =>
         setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) }),
       );
-  }, [deps, path, column, bins]);
+  }, [deps, input, column, bins]);
 
   const maxCount = state.kind === 'loaded' ? Math.max(...state.data.counts, 1) : 1;
   return (
@@ -291,19 +318,21 @@ function HistogramView({
 /** Crosstab: counts or mean/median/sd of a numeric second field by group. */
 function CrosstabView({
   deps,
-  path,
+  input,
   data,
+  defaultGroupColumn,
 }: {
   deps: ExploreDeps;
-  path: string;
+  input: InputPaths;
   data: GroupRowsResponse;
+  defaultGroupColumn: string;
 }): ReactElement {
-  const [groupColumn, setGroupColumn] = useState(data.descriptive_columns[0] ?? '');
+  const [groupColumn, setGroupColumn] = useState(defaultGroupColumn);
   // Default to the first other descriptive field with two or more distinct
   // non-missing values; an all-missing column makes an empty-looking table.
   const [valueColumn, setValueColumn] = useState(() => {
     const informative = data.descriptive_columns.find((c, i) => {
-      if (i === 0) return false;
+      if (c === defaultGroupColumn) return false;
       const seen = new Set<string>();
       for (const row of data.rows) {
         const v = row.descriptive[i];
@@ -322,7 +351,7 @@ function CrosstabView({
     setState({ kind: 'loading' });
     deps.explore
       .crosstab({
-        path,
+        ...input,
         group_column: groupColumn,
         value_column: valueColumn,
         summary_method: method,
@@ -331,7 +360,7 @@ function CrosstabView({
       .catch((err: unknown) =>
         setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) }),
       );
-  }, [deps, path, groupColumn, valueColumn, method]);
+  }, [deps, input, groupColumn, valueColumn, method]);
 
   return (
     <div>
@@ -479,16 +508,18 @@ export function profileTraces(
 /** Compositional profile: one line per sample across ordered elements. */
 function ProfileView({
   deps,
-  path,
+  input,
   columns,
   groupColumns,
+  defaultGroupColumn,
 }: {
   deps: ExploreDeps;
-  path: string;
+  input: InputPaths;
   columns: string[];
   groupColumns: string[];
+  defaultGroupColumn: string;
 }): ReactElement {
-  const [groupColumn, setGroupColumn] = useState('');
+  const [groupColumn, setGroupColumn] = useState(defaultGroupColumn);
   const [logScale, setLogScale] = useState(true);
   const [state, setState] = useState<AsyncState<ExploreCompositionalProfileResponse>>({
     kind: 'idle',
@@ -499,7 +530,7 @@ function ProfileView({
     setState({ kind: 'loading' });
     deps.explore
       .compositionalProfile({
-        path,
+        ...input,
         columns,
         group_column: groupColumn || null,
         transformation: null,
@@ -514,7 +545,7 @@ function ProfileView({
     return () => {
       cancelled = true;
     };
-  }, [deps, path, columns, groupColumn]);
+  }, [deps, input, columns, groupColumn]);
 
   const traces = useMemo(
     () => (state.kind === 'loaded' ? profileTraces(state.data.rows, groupColumn !== '') : []),
@@ -559,54 +590,14 @@ function ProfileView({
 }
 
 export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
-  const [candidates, setCandidates] = useState<Awaited<ReturnType<GroupsService['scan']>>>([]);
-  const [selectedPath, setSelectedPath] = useState('');
-  const [loadState, setLoadState] = useState<LoadState>({ kind: 'idle' });
+  const dataset = useGroupFiles(deps.groups);
+  const { files, combined, load } = dataset;
   const [view, setView] = useState<ExploreView>('table');
 
-  const ready = useMemo(
-    () => candidates.filter((c) => c.ready && c.group !== null && c.group !== undefined),
-    [candidates],
-  );
-
-  const loadRows = useCallback(
-    (path: string) => {
-      setLoadState({ kind: 'loading' });
-      deps.groups
-        .rows(path)
-        .then((data) => setLoadState({ kind: 'loaded', data }))
-        .catch((err: unknown) =>
-          setLoadState({ kind: 'error', message: err instanceof Error ? err.message : String(err) }),
-        );
-    },
-    [deps],
-  );
-
-  useEffect(() => {
-    let cancelled = false;
-    void Promise.all([deps.getInitialDataset(), deps.groups.scan()])
-      .then(([stored, list]) => {
-        if (cancelled) return;
-        setCandidates(list);
-        const preferred =
-          (stored && list.find((c) => c.ready && c.path === stored)?.path) ||
-          list.find((c) => c.ready && c.group)?.path ||
-          '';
-        setSelectedPath((current) => current || preferred);
-      })
-      .catch(() => {
-        if (!cancelled) setCandidates([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [deps]);
-  useEffect(() => {
-    if (selectedPath) {
-      loadRows(selectedPath);
-      deps.onDatasetOpened(selectedPath);
-    }
-  }, [selectedPath, loadRows, deps]);
+  const data = useMemo(() => asRowsResponse(files, combined), [files, combined]);
+  const input = useMemo(() => inputPaths(files), [files]);
+  // Remount views when the selection or a file revision changes.
+  const viewKey = files.map((f) => `${f.path}@${f.data.revision_id}`).join('|');
 
   return (
     <section aria-labelledby="explore-heading">
@@ -614,22 +605,13 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
       <div className="explore-controls">
         <label>
           Dataset
-          <select
-            aria-label="Dataset"
-            value={selectedPath}
-            onChange={(e) => setSelectedPath(e.target.value)}
-          >
-            <option value="" disabled>
-              Choose a group file…
-            </option>
-            {ready.map((c) => (
-              <option key={c.path} value={c.path}>
-                {c.group?.group_name ?? c.path}
-              </option>
-            ))}
-          </select>
+          <GroupMultiSelect
+            options={dataset.options}
+            selected={dataset.selectedPaths}
+            onChange={dataset.setSelectedPaths}
+          />
         </label>
-        <button type="button" onClick={() => selectedPath && loadRows(selectedPath)}>
+        <button type="button" onClick={dataset.reload}>
           Reload
         </button>
       </div>
@@ -647,32 +629,31 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
           </button>
         ))}
       </div>
-      {loadState.kind === 'loading' && <p role="status">Loading dataset…</p>}
-      {loadState.kind === 'error' && <p role="alert">Load failed: {loadState.message}</p>}
-      {loadState.kind === 'loaded' && view === 'table' && (
-        <DataTable
-          key={loadState.data.revision_id}
-          data={loadState.data}
-          deps={deps}
-          onSaved={() => loadRows(loadState.data.path)}
-        />
+      {load.kind === 'loading' && <p role="status">Loading dataset…</p>}
+      {load.kind === 'error' && <p role="alert">Load failed: {load.message}</p>}
+      {dataset.orderedPaths.length === 0 && load.kind !== 'loading' && (
+        <p className="muted">Choose one or more groups in Dataset.</p>
       )}
-      {loadState.kind === 'loaded' && view === 'missing' && (
-        <MissingView deps={deps} path={loadState.data.path} columns={loadState.data.elemental_columns} />
-      )}
-      {loadState.kind === 'loaded' && view === 'histogram' && (
-        <HistogramView deps={deps} path={loadState.data.path} columns={loadState.data.elemental_columns} />
-      )}
-      {loadState.kind === 'loaded' && view === 'crosstab' && (
-        <CrosstabView deps={deps} path={loadState.data.path} data={loadState.data} />
-      )}
-      {loadState.kind === 'loaded' && view === 'profile' && (
-        <ProfileView
-          deps={deps}
-          path={loadState.data.path}
-          columns={loadState.data.elemental_columns}
-          groupColumns={loadState.data.descriptive_columns}
-        />
+      {load.kind === 'loaded' && files.length > 0 && (
+        <div key={viewKey}>
+          {view === 'table' && <DataTable files={files} deps={deps} onSaved={dataset.reload} />}
+          {view === 'missing' && <MissingView deps={deps} input={input} columns={combined.elementalColumns} />}
+          {view === 'histogram' && (
+            <HistogramView deps={deps} input={input} columns={combined.elementalColumns} />
+          )}
+          {view === 'crosstab' && (
+            <CrosstabView deps={deps} input={input} data={data} defaultGroupColumn={defaultGroupColumn(combined)} />
+          )}
+          {view === 'profile' && (
+            <ProfileView
+              deps={deps}
+              input={input}
+              columns={combined.elementalColumns}
+              groupColumns={combined.descriptiveColumns}
+              defaultGroupColumn={files.length > 1 ? combined.groupColumn : ''}
+            />
+          )}
+        </div>
       )}
     </section>
   );

@@ -9,6 +9,15 @@ async function api(path, body, method = 'POST') {
   assert.ok(response.ok, `${path}: ${JSON.stringify(value)}`);
   return value;
 }
+// The Dataset picker is a multi-select of group names (all groups by
+// default); narrow it to one group file by its path.
+async function showOnlyPath(page, path) {
+  await page.getByRole('button', { name: /^Dataset:/ }).click();
+  await page.getByRole('button', { name: 'None', exact: true }).click();
+  await page.locator(`.multiselect-option input[data-path="${path}"]`).check();
+  await page.keyboard.press('Escape');
+  await page.locator('h1').first().click();
+}
 const tag = `e2e-${Date.now()}`;
 const csv = 'ANID,Group,a,b,c\n' + Array.from({ length: 24 }, (_, i) => `S${i},${i < 8 ? 'A' : i < 16 ? 'B' : 'C'},${i + 1},${i * i % 17 + .3 * i + 1},${i * 7 % 19 + 1}\n`).join('');
 const upload = await fetch(`${base}/api/v1/files?path=${tag}.csv`, { method: 'POST', body: csv });
@@ -25,7 +34,7 @@ page.on('pageerror', error => pageErrors.push(String(error)));
 const begin = Date.now();
 try {
   await page.goto(`${base}/cluster`);
-  await page.getByLabel(/^Dataset/).selectOption(path);
+  await showOnlyPath(page, path);
   await page.getByLabel('Analysis source').selectOption('pca');
   await page.getByLabel('Input columns').selectOption(['a']);
   await page.waitForFunction(() => Array.from(document.querySelectorAll('input[type=number]')).some(el => el.value === '1' && el.max === '1'));
@@ -66,7 +75,7 @@ try {
   assert.deepEqual(after, original);
   for (const row of original.rows) assert.ok(!(await page.locator('body').innerText()).includes(row.analytical_uuid));
   await page.goto(`${base}/probabilities`);
-  await page.getByLabel(/^Dataset/).selectOption(path);
+  await showOnlyPath(page, path);
   await page.getByLabel('Analysis source').selectOption('lda');
   await page.getByRole('button', { name: 'Run analysis', exact: true }).click();
   await page.getByRole('region', { name: 'Analysis results', exact: true }).waitFor();
@@ -76,7 +85,7 @@ try {
   await page.getByRole('region', { name: 'Analysis results', exact: true }).waitFor();
   assert.match(await page.locator('body').innerText(), /Projection included/);
   await page.goto(`${base}/euclidean`);
-  await page.getByLabel(/^Dataset/).selectOption(path);
+  await showOnlyPath(page, path);
   await page.getByLabel('Analysis source').selectOption('umap');
   await page.getByLabel('Projection groups').selectOption(['B']);
   await page.getByRole('button', { name: 'Run analysis', exact: true }).click();
@@ -92,7 +101,7 @@ try {
   const fallbackPath = fallbackMerge.outputs[0].path;
   const fallbackBefore = await api(`groups/rows?path=${encodeURIComponent(fallbackPath)}`, undefined, 'GET');
   await page.goto(`${base}/probabilities`);
-  await page.getByLabel(/^Dataset/).selectOption(fallbackPath);
+  await showOnlyPath(page, fallbackPath);
   await page.getByLabel(/^Method/).selectOption('hotellings');
   await page.getByRole('button', { name: 'Run analysis', exact: true }).click();
   const fallbackResult = page.getByRole('region', { name: 'Analysis results', exact: true });
@@ -105,7 +114,7 @@ try {
   for (const row of fallbackBefore.rows) assert.ok(!(await page.locator('body').innerText()).includes(row.analytical_uuid));
   // Record a two-way partition through one reviewed transaction.
   await page.goto(`${base}/cluster`);
-  await page.getByLabel(/^Dataset/).selectOption(path);
+  await showOnlyPath(page, path);
   await page.getByRole('button', { name: 'Run analysis', exact: true }).click();
   await page.getByRole('region', { name: 'Analysis results', exact: true }).waitFor();
   await page.getByLabel('Color points by').selectOption('groups');

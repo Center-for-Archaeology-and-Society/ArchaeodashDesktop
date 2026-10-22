@@ -6,7 +6,7 @@ import { AnalysisPage, ResultTable, type AnalysisDeps } from './AnalysisPage.tsx
 test('all analysis routes disable execution until a dataset is available', () => {
   for (const kind of ['cluster', 'membership', 'euclidean'] as const) {
     const html = renderToStaticMarkup(<AnalysisPage kind={kind} deps={{} as AnalysisDeps} />);
-    assert.match(html, /Choose a group file/);
+    assert.match(html, /Dataset: No groups/);
     assert.match(html, /button disabled=""/);
     assert.doesNotMatch(html, /workflow lands/);
   }

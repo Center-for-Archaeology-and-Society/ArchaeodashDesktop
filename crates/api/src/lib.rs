@@ -1001,6 +1001,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(json_body(&ClusterDiagnosticsRequest {
                         path: path.clone(),
+                        extra_paths: vec![],
                         columns: vec!["as".into(), "fe".into()],
                         transformation: None,
                         max_k: 3,
@@ -1035,6 +1036,7 @@ mod tests {
                     .body(json_body(&ClusterFitRequest {
                         plot_group_column: None,
                         path: imported.groups[0].path.clone(),
+                        extra_paths: vec![],
                         columns: vec!["as".into(), "fe".into()],
                         transformation: None,
                         method: ClusterMethod::Kmeans,
@@ -1091,6 +1093,7 @@ mod tests {
                     .body(json_body(&ClusterFitRequest {
                         plot_group_column: None,
                         path: all_path.clone(),
+                        extra_paths: vec![],
                         columns: vec!["as".into(), "fe".into()],
                         transformation: None,
                         method: ClusterMethod::Kmeans,
@@ -1147,6 +1150,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(json_body(&MembershipProbabilitiesRequest {
                         path: all_path.clone(),
+                        extra_paths: vec![],
                         columns: vec!["as".into(), "fe".into(), "co".into(), "zn".into()],
                         group_column: "Site".into(),
                         id_column: "anid".into(),
@@ -1178,6 +1182,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(json_body(&EuclideanMatchesRequest {
                         path: all_path.clone(),
+                        extra_paths: vec![],
                         columns: vec!["as".into(), "fe".into()],
                         group_column: "Site".into(),
                         id_column: "anid".into(),
@@ -1401,6 +1406,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(json_body(&EuclideanMatchesRequest {
                         path: all_path,
+                        extra_paths: vec![],
                         columns: vec!["as".into(), "fe".into()],
                         group_column: "Site".into(),
                         id_column: "anid".into(),
@@ -2451,6 +2457,7 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&ExploreMissingProfileRequest {
                             path: group_path.clone(),
+                            extra_paths: vec![],
                             columns: vec!["as".into(), "fe".into()],
                             transformation: None,
                         })
@@ -2477,6 +2484,7 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&ExploreHistogramRequest {
                             path: group_path.clone(),
+                            extra_paths: vec![],
                             column: "as".into(),
                             bins: 2,
                             transformation: None,
@@ -2503,6 +2511,7 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&ExploreCrosstabRequest {
                             path: group_path.clone(),
+                            extra_paths: vec![],
                             group_column: "Site".into(),
                             value_column: "as".into(),
                             summary_method: "mean".into(),
@@ -2537,6 +2546,7 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&ExploreCompositionalProfileRequest {
                             path: group_path.clone(),
+                            extra_paths: vec![],
                             columns: vec!["as".into(), "fe".into()],
                             group_column: Some("Site".into()),
                             transformation: None,
@@ -2565,6 +2575,7 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&ExploreMissingProfileRequest {
                             path: group_path,
+                            extra_paths: vec![],
                             columns: vec!["zz".into()],
                             transformation: None,
                         })
@@ -2733,6 +2744,7 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&ExportMeasuredDataRequest {
                             path: path.clone(),
+                            extra_paths: vec![],
                             raw_text: false,
                         })
                         .unwrap(),
@@ -2775,6 +2787,7 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&ExportTransformedRequest {
                             path: path.clone(),
+                            extra_paths: vec![],
                             definition,
                             raw_text: false,
                         })
@@ -2799,6 +2812,7 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&ExportPcaScoresRequest {
                             path: path.clone(),
+                            extra_paths: vec![],
                             columns: vec!["as".into(), "fe".into()],
                             scale: false,
                             transformation: None,
@@ -2824,6 +2838,7 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&ExportPcaScoresRequest {
                             path,
+                            extra_paths: vec![],
                             columns: vec!["cu".into()],
                             scale: false,
                             transformation: None,

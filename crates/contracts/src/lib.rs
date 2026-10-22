@@ -692,6 +692,10 @@ pub struct UmapResponse {
 pub struct ExploreMissingProfileRequest {
     /// Project-relative group file path.
     pub path: String,
+    /// Extra project-relative group files read together with `path`: rows
+    /// are `path`'s rows then each entry's rows, in request order.
+    #[serde(default)]
+    pub extra_paths: Vec<String>,
     /// Columns to profile: measured elemental names, or post-transform
     /// output names when `transformation` is present.
     pub columns: Vec<String>,
@@ -725,6 +729,10 @@ pub struct ExploreMissingProfileResponse {
 pub struct ExploreHistogramRequest {
     /// Project-relative group file path.
     pub path: String,
+    /// Extra project-relative group files read together with `path`: rows
+    /// are `path`'s rows then each entry's rows, in request order.
+    #[serde(default)]
+    pub extra_paths: Vec<String>,
     /// Single elemental (or post-transform) column to bin.
     pub column: String,
     /// `hist(..., breaks = bins)` suggestion; defaults to the legacy 30.
@@ -758,6 +766,10 @@ pub struct ExploreHistogramResponse {
 pub struct ExploreCrosstabRequest {
     /// Project-relative group file path.
     pub path: String,
+    /// Extra project-relative group files read together with `path`: rows
+    /// are `path`'s rows then each entry's rows, in request order.
+    #[serde(default)]
+    pub extra_paths: Vec<String>,
     /// Descriptive (text) grouping column.
     pub group_column: String,
     /// Second column: raw text for `count`, numeric for the summaries.
@@ -815,6 +827,10 @@ pub struct ExploreCrosstabResponse {
 pub struct ExploreCompositionalProfileRequest {
     /// Project-relative group file path.
     pub path: String,
+    /// Extra project-relative group files read together with `path`: rows
+    /// are `path`'s rows then each entry's rows, in request order.
+    #[serde(default)]
+    pub extra_paths: Vec<String>,
     /// Elemental (or post-transform) columns, in plot order.
     pub columns: Vec<String>,
     /// Optional descriptive column for line coloring; `rep(groups, each =
@@ -897,6 +913,10 @@ pub enum ClusterLinkageDto {
 pub struct ClusterDiagnosticsRequest {
     /// Project-relative group file path.
     pub path: String,
+    /// Extra project-relative group files read together with `path`: rows
+    /// are `path`'s rows then each entry's rows, in request order.
+    #[serde(default)]
+    pub extra_paths: Vec<String>,
     /// Columns to cluster: measured elemental names, or post-transform
     /// output names when `transformation` is present.
     pub columns: Vec<String>,
@@ -969,6 +989,10 @@ pub struct ClusterDiagnosticsResponse {
 pub struct ClusterFitRequest {
     /// Project-relative group file path.
     pub path: String,
+    /// Extra project-relative group files read together with `path`: rows
+    /// are `path`'s rows then each entry's rows, in request order.
+    #[serde(default)]
+    pub extra_paths: Vec<String>,
     /// Columns to cluster: measured elemental names, or post-transform
     /// output names when `transformation` is present.
     pub columns: Vec<String>,
@@ -1095,6 +1119,10 @@ pub enum MembershipMethodDto {
 pub struct MembershipProbabilitiesRequest {
     /// Project-relative group file path.
     pub path: String,
+    /// Extra project-relative group files read together with `path`: rows
+    /// are `path`'s rows then each entry's rows, in request order.
+    #[serde(default)]
+    pub extra_paths: Vec<String>,
     /// Measured elemental (or post-transform) analysis columns; a `PC1`
     /// column switches to every `PC*` column (legacy principal-components
     /// branch).
@@ -1168,6 +1196,10 @@ pub struct MembershipProbabilitiesResponse {
 pub struct EuclideanMatchesRequest {
     /// Project-relative group file path.
     pub path: String,
+    /// Extra project-relative group files read together with `path`: rows
+    /// are `path`'s rows then each entry's rows, in request order.
+    #[serde(default)]
+    pub extra_paths: Vec<String>,
     /// Measured elemental (or post-transform) analysis columns.
     pub columns: Vec<String>,
     #[serde(default)]
@@ -1236,6 +1268,10 @@ pub struct EuclideanMatchesResponse {
 pub struct ExportMeasuredDataRequest {
     /// Project-relative group file path.
     pub path: String,
+    /// Extra project-relative group files read together with `path`: rows
+    /// are `path`'s rows then each entry's rows, in request order.
+    #[serde(default)]
+    pub extra_paths: Vec<String>,
     /// `true` disables the Section 7.3 formula-injection guard and reproduces
     /// the byte-exact legacy `fwrite` output for the measured-data case.
     #[serde(default)]
@@ -1249,6 +1285,10 @@ pub struct ExportMeasuredDataRequest {
 pub struct ExportTransformedRequest {
     /// Project-relative group file path.
     pub path: String,
+    /// Extra project-relative group files read together with `path`: rows
+    /// are `path`'s rows then each entry's rows, in request order.
+    #[serde(default)]
+    pub extra_paths: Vec<String>,
     /// Inline definition applied on demand before export.
     pub definition: TransformationDefinition,
     /// `true` disables the Section 7.3 formula-injection guard.
@@ -1263,6 +1303,10 @@ pub struct ExportTransformedRequest {
 pub struct ExportPcaScoresRequest {
     /// Project-relative group file path.
     pub path: String,
+    /// Extra project-relative group files read together with `path`: rows
+    /// are `path`'s rows then each entry's rows, in request order.
+    #[serde(default)]
+    pub extra_paths: Vec<String>,
     /// Columns to ordinate: measured elemental names, or post-transform
     /// output names when `transformation` is present.
     pub columns: Vec<String>,
@@ -1743,6 +1787,7 @@ mod cluster_membership_dto_tests {
 
         let diagnostics = ClusterDiagnosticsRequest {
             path: "groups/Baca.parquet".into(),
+            extra_paths: vec![],
             columns: vec!["as".into(), "fe".into()],
             transformation: None,
             source: AnalysisSourceDto::Elements,
@@ -1836,6 +1881,7 @@ mod cluster_membership_dto_tests {
     fn membership_and_euclidean_dtos_round_trip() {
         let request = MembershipProbabilitiesRequest {
             path: "groups/Baca.parquet".into(),
+            extra_paths: vec![],
             columns: vec!["as".into(), "fe".into()],
             transformation: None,
             source: AnalysisSourceDto::Elements,
@@ -1880,6 +1926,7 @@ mod cluster_membership_dto_tests {
 
         let matches = EuclideanMatchesRequest {
             path: "groups/Baca.parquet".into(),
+            extra_paths: vec![],
             columns: vec!["as".into(), "fe".into()],
             transformation: None,
             source: AnalysisSourceDto::Elements,
@@ -1930,6 +1977,7 @@ mod explore_dto_tests {
     fn explore_dtos_round_trip() {
         let missing = ExploreMissingProfileRequest {
             path: "groups/Baca.parquet".into(),
+            extra_paths: vec![],
             columns: vec!["as".into(), "fe".into()],
             transformation: None,
         };
@@ -2008,6 +2056,7 @@ mod export_dto_tests {
     fn export_dtos_round_trip() {
         let measured = ExportMeasuredDataRequest {
             path: "groups/Baca.parquet".into(),
+            extra_paths: vec![],
             raw_text: false,
         };
         let json = serde_json::to_string(&measured).unwrap();
@@ -2040,6 +2089,7 @@ mod export_dto_tests {
         };
         let transformed = ExportTransformedRequest {
             path: "groups/Baca.parquet".into(),
+            extra_paths: vec![],
             definition: definition.clone(),
             raw_text: true,
         };
@@ -2052,6 +2102,7 @@ mod export_dto_tests {
 
         let pca = ExportPcaScoresRequest {
             path: "groups/Baca.parquet".into(),
+            extra_paths: vec![],
             columns: vec!["as".into(), "fe".into()],
             scale: false,
             transformation: Some(definition),

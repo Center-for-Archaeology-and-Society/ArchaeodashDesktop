@@ -8,6 +8,9 @@ export interface AssignmentRecommendation {
   groupLabel: string;
 }
 
+/** Destination value meaning "leave these units in their own group". */
+export const KEEP_IN_SOURCE = '__keep__';
+
 export interface AutomaticDestinationMapping {
   groupLabel: string;
   destinationPath: string;
@@ -107,6 +110,7 @@ export function buildAutomaticAssignmentRequest(
   mappings: readonly AutomaticDestinationMapping[],
   candidates: readonly GroupCandidate[],
   cutK = 2,
+  multiSource = false,
 ): BatchTransferUnitsRequest {
   const recommendations = recommendedAssignments(result, selectedUuids, cutK);
   const sourcePath = result.data.path;
@@ -121,9 +125,13 @@ export function buildAutomaticAssignmentRequest(
     if (!requiredLabels.has(mapping.groupLabel) || byLabel.has(mapping.groupLabel)) {
       throw new Error('Destination mappings must include each recommended group exactly once.');
     }
-    const keepInSource = mapping.destinationPath === sourcePath && mapping.newGroupName === undefined;
-    if (!safePath(mapping.destinationPath) || (paths.has(mapping.destinationPath) && !keepInSource) ||
-        (mapping.destinationPath === sourcePath && !keepInSource)) {
+    // Several source files: "keep" is a sentinel (each unit stays in its own
+    // file) and every real group, the first file included, is a destination.
+    const keepInSource = multiSource
+      ? mapping.destinationPath === KEEP_IN_SOURCE
+      : mapping.destinationPath === sourcePath && mapping.newGroupName === undefined;
+    if ((!keepInSource && !safePath(mapping.destinationPath)) || (paths.has(mapping.destinationPath) && !keepInSource) ||
+        (!multiSource && mapping.destinationPath === sourcePath && !keepInSource)) {
       throw new Error('Choose distinct, safe destination paths; only Keep in current group may use the source path.');
     }
     byLabel.set(mapping.groupLabel, mapping);
@@ -137,7 +145,8 @@ export function buildAutomaticAssignmentRequest(
     groupUuids.push(recommendation.analyticalUuid);
     uuidsByLabel.set(recommendation.groupLabel, groupUuids);
   }
-  const targets = mappings.filter(mapping => mapping.destinationPath !== sourcePath).map(mapping => {
+  const keep = multiSource ? KEEP_IN_SOURCE : sourcePath;
+  const targets = mappings.filter(mapping => mapping.destinationPath !== keep).map(mapping => {
     const selected = uuidsByLabel.get(mapping.groupLabel)!;
     const candidate = candidates.find(item => item.path === mapping.destinationPath);
     if (mapping.newGroupName !== undefined) {

@@ -23,6 +23,7 @@ use archaeodash_contracts::{
 use archaeodash_data_io::{read_group_file, GroupFileData};
 use archaeodash_domain::DomainError;
 
+use super::combined::CombinedInput;
 use super::transforms::TransformService;
 
 /// Legacy `set.seed(seed + k)` base seed of the diagnostic series (golden
@@ -111,6 +112,16 @@ impl ClusterService {
             other => import_err(other),
         })?;
         read_group_file(&path).map_err(import_err)
+    }
+
+    /// Reads `path` plus `extra_paths` as one combined input; each file goes
+    /// through the per-file path safety and read-limit checks.
+    fn read_inputs(
+        &self,
+        path: &str,
+        extra_paths: &[String],
+    ) -> Result<CombinedInput, DomainError> {
+        CombinedInput::read_with(path, extra_paths, |rel| self.read_group(rel))
     }
 
     fn validate_dimensions(
@@ -582,7 +593,10 @@ impl ClusterService {
                 "clustering requires at least one column",
             ));
         }
-        let data = self.read_group(&req.path)?;
+        let input = self.read_inputs(&req.path, &req.extra_paths)?;
+        input.require_inputs(&req.columns, req.transformation.as_ref())?;
+        input.require_columns(req.source_group_column.as_deref())?;
+        let data = input.data;
         Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, true)?;
         let matrix = Self::source_matrix(
             &data,
@@ -700,7 +714,15 @@ impl ClusterService {
                 "clustering requires at least one column",
             ));
         }
-        let data = self.read_group(&req.path)?;
+        let input = self.read_inputs(&req.path, &req.extra_paths)?;
+        input.require_inputs(&req.columns, req.transformation.as_ref())?;
+        input.require_columns(
+            req.source_group_column
+                .as_deref()
+                .into_iter()
+                .chain(req.plot_group_column.as_deref()),
+        )?;
+        let data = input.data;
         Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, true)?;
         let matrix = Self::source_matrix(
             &data,
@@ -891,7 +913,14 @@ impl ClusterService {
         cancel: &CancellationToken,
     ) -> Result<MembershipProbabilitiesResponse, DomainError> {
         cancel.check()?;
-        let data = self.read_group(&req.path)?;
+        let input = self.read_inputs(&req.path, &req.extra_paths)?;
+        input.require_inputs(&req.columns, req.transformation.as_ref())?;
+        input.require_columns(
+            [req.group_column.as_str(), req.id_column.as_str()]
+                .into_iter()
+                .chain(req.source_group_column.as_deref()),
+        )?;
+        let data = input.data;
         Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, false)?;
         let matrix = Self::source_matrix(
             &data,
@@ -1014,7 +1043,14 @@ impl ClusterService {
                 "limit must lie between 1 and 100",
             ));
         }
-        let data = self.read_group(&req.path)?;
+        let input = self.read_inputs(&req.path, &req.extra_paths)?;
+        input.require_inputs(&req.columns, req.transformation.as_ref())?;
+        input.require_columns(
+            [req.group_column.as_str(), req.id_column.as_str()]
+                .into_iter()
+                .chain(req.source_group_column.as_deref()),
+        )?;
+        let data = input.data;
         Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, false)?;
         if data.rows.len().saturating_mul(data.rows.len()) > MAX_DISTANCE_CELLS {
             return Err(validation(
@@ -1174,6 +1210,7 @@ mod tests {
                 linkage: ClusterLinkageDto::WardD2,
                 diagnostic_method: archaeodash_contracts::ClusterDiagnosticMethodDto::Kmeans,
                 path: path.clone(),
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
                 max_k: 10,
@@ -1202,6 +1239,7 @@ mod tests {
                 linkage: ClusterLinkageDto::WardD2,
                 diagnostic_method: archaeodash_contracts::ClusterDiagnosticMethodDto::Kmeans,
                 path: path.clone(),
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
                 max_k: 10,
@@ -1215,6 +1253,7 @@ mod tests {
         let pam_diagnostics = service
             .cluster_diagnostics(&ClusterDiagnosticsRequest {
                 path: path.clone(),
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
                 source: AnalysisSourceDto::Elements,
@@ -1249,6 +1288,7 @@ mod tests {
                 linkage: ClusterLinkageDto::WardD2,
                 diagnostic_method: archaeodash_contracts::ClusterDiagnosticMethodDto::Kmeans,
                 path,
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
                 max_k: 500,
@@ -1270,6 +1310,7 @@ mod tests {
                 minkowski_p: 2.0,
                 linkage: ClusterLinkageDto::WardD2,
                 path,
+                extra_paths: vec![],
                 columns: vec!["cu".into()],
                 transformation: None,
                 method: ClusterMethod::Kmeans,
@@ -1308,6 +1349,7 @@ mod tests {
                     minkowski_p: 2.0,
                     linkage: ClusterLinkageDto::WardD2,
                     path: request_path.into(),
+                    extra_paths: vec![],
                     columns: vec!["as".into()],
                     transformation: None,
                     method: ClusterMethod::Kmeans,
@@ -1339,6 +1381,7 @@ mod tests {
             minkowski_p: 2.0,
             linkage: ClusterLinkageDto::WardD2,
             path: path.clone(),
+            extra_paths: vec![],
             columns: vec!["as".into(), "fe".into()],
             transformation: None,
             method,
@@ -1456,6 +1499,7 @@ mod tests {
                 linkage: ClusterLinkageDto::WardD2,
                 diagnostic_method: archaeodash_contracts::ClusterDiagnosticMethodDto::Kmeans,
                 path: commit.groups[0].path.clone(),
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
                 max_k: 10,
@@ -1478,6 +1522,7 @@ mod tests {
         let revision = data.profile.revision_id.clone();
         let mut request = ClusterFitRequest {
             path: path.clone(),
+            extra_paths: vec![],
             columns: vec!["as".into(), "fe".into()],
             transformation: None,
             source: AnalysisSourceDto::Pca,
@@ -1527,6 +1572,7 @@ mod tests {
             let fit = service
                 .cluster_fit(&ClusterFitRequest {
                     path: path.clone(),
+                    extra_paths: vec![],
                     columns: vec!["as".into(), "fe".into()],
                     transformation: None,
                     source,
@@ -1552,6 +1598,7 @@ mod tests {
         let err = service
             .cluster_fit(&ClusterFitRequest {
                 path: path.clone(),
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
                 source: AnalysisSourceDto::Lda,
@@ -1576,6 +1623,7 @@ mod tests {
         let response = service
             .euclidean_matches(&EuclideanMatchesRequest {
                 path: path.clone(),
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
                 source: AnalysisSourceDto::Elements,
@@ -1667,6 +1715,7 @@ mod tests {
                 umap_seed: None,
                 projection_groups: None,
                 path: path.clone(),
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into(), "co".into(), "zn".into()],
                 group_column: "Site".into(),
                 id_column: "anid".into(),
@@ -1714,6 +1763,7 @@ mod tests {
         let before = std::fs::read(dir.join(&path)).expect("source bytes");
         let mut request = MembershipProbabilitiesRequest {
             path: path.clone(),
+            extra_paths: vec![],
             columns: vec!["as".into(), "fe".into(), "co".into(), "zn".into()],
             transformation: None,
             source: AnalysisSourceDto::Pca,
@@ -1762,6 +1812,7 @@ mod tests {
                 umap_seed: None,
                 projection_groups: None,
                 path: path.clone(),
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into(), "co".into(), "zn".into()],
                 group_column: "Site".into(),
                 id_column: "anid".into(),
@@ -1795,6 +1846,7 @@ mod tests {
             umap_seed: None,
             projection_groups: None,
             path: path.clone(),
+            extra_paths: vec![],
             columns: vec!["as".into(), "fe".into(), "co".into(), "zn".into()],
             group_column: "Site".into(),
             id_column: "anid".into(),
@@ -1862,6 +1914,7 @@ mod tests {
                 umap_seed: None,
                 projection_groups: None,
                 path,
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 group_column: "Site".into(),
                 id_column: "anid".into(),
@@ -1887,6 +1940,7 @@ mod tests {
             umap_seed: None,
             projection_groups: None,
             path: path.clone(),
+            extra_paths: vec![],
             columns: vec!["as".into(), "fe".into()],
             group_column: "Site".into(),
             id_column: "anid".into(),
@@ -1970,6 +2024,7 @@ mod tests {
                 umap_seed: None,
                 projection_groups: None,
                 path,
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 group_column: "Site".into(),
                 id_column: "anid".into(),
@@ -2004,6 +2059,7 @@ mod tests {
         let response = service
             .euclidean_matches(&EuclideanMatchesRequest {
                 path,
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
                 source: AnalysisSourceDto::Elements,
@@ -2040,6 +2096,7 @@ mod tests {
                 umap_seed: None,
                 projection_groups: None,
                 path,
+                extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
                 group_column: "Site".into(),
                 id_column: "anid".into(),
@@ -2090,6 +2147,7 @@ mod tests {
                 minkowski_p: 2.0,
                 linkage: ClusterLinkageDto::WardD2,
                 path: path.clone(),
+                extra_paths: vec![],
                 columns: vec!["as".into()],
                 transformation: None,
                 method: ClusterMethod::Kmeans,
@@ -2115,6 +2173,7 @@ mod tests {
                 linkage: ClusterLinkageDto::WardD2,
                 diagnostic_method: archaeodash_contracts::ClusterDiagnosticMethodDto::Kmeans,
                 path,
+                extra_paths: vec![],
                 columns: vec!["as".into()],
                 transformation: None,
                 max_k: 3,
@@ -2125,6 +2184,148 @@ mod tests {
             err,
             DomainError::Validation { ref code, .. } if code == "cluster_seed_range"
         ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Imports `csv` split by `Site` (one group file per site) without
+    /// merging, returning the per-site group paths in import order.
+    fn per_site_files(csv: &str) -> (ClusterService, std::path::PathBuf, Vec<String>) {
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "archaeodash-cluster-multi-test-{}-{n}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(dir.join("multi.csv"), csv).expect("write source");
+        let import = ImportService::new(&dir).expect("import service");
+        let commit = import
+            .commit(&ImportCommitRequest {
+                source: "multi.csv".into(),
+                group_column: "Site".into(),
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+                group_name: None,
+            })
+            .expect("commit");
+        (
+            ClusterService::new(&dir).expect("cluster service"),
+            dir,
+            commit.groups.iter().map(|g| g.path.clone()).collect(),
+        )
+    }
+
+    #[test]
+    fn multi_file_fit_covers_all_rows_and_plots_by_file_group() {
+        let sites = ["A", "B", "C"];
+        let mut csv = String::from("anid,Site,as,fe\n");
+        for i in 0..12u32 {
+            csv.push_str(&format!(
+                "X{i},{},{},{}\n",
+                sites[(i % 3) as usize],
+                1.0 + f64::from(i) * 0.1,
+                3.0 + f64::from(i % 5) * 0.05
+            ));
+        }
+        let (service, dir, paths) = per_site_files(&csv);
+        assert_eq!(paths.len(), 3);
+        let fit = service
+            .cluster_fit(&ClusterFitRequest {
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                metric: ClusterDistanceMetricDto::Euclidean,
+                minkowski_p: 2.0,
+                linkage: ClusterLinkageDto::WardD2,
+                path: paths[0].clone(),
+                extra_paths: paths[1..].to_vec(),
+                columns: vec!["as".into(), "fe".into()],
+                transformation: None,
+                method: ClusterMethod::Kmeans,
+                k: Some(2),
+                iter_max: 100,
+                nstart: 25,
+                seed: Some(20260914),
+                plot_group_column: Some("Group".into()),
+            })
+            .expect("multi-file fit");
+        assert_eq!(fit.path, paths[0]);
+        assert_eq!(fit.n_rows, 12);
+        assert_eq!(fit.analytical_uuids.len(), 12);
+        let mut expected_uuids = Vec::new();
+        for p in &paths {
+            let data = read_group_file(&dir.join(p)).expect("rows");
+            expected_uuids.extend(data.rows.iter().map(|r| r.uuid.to_string()));
+        }
+        assert_eq!(fit.analytical_uuids, expected_uuids);
+        assert_eq!(
+            fit.plot_groups,
+            ["A", "B", "C"]
+                .iter()
+                .flat_map(|g| std::iter::repeat_n(g.to_string(), 4))
+                .collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn multi_file_membership_groups_by_synthetic_column() {
+        let mut csv = String::from("anid,Site,as,fe,co,zn\n");
+        let mut i = 0u32;
+        for site in ["A", "B", "C"] {
+            for _ in 0..8 {
+                let v = f64::from(i);
+                csv.push_str(&format!(
+                    "X{i},{site},{},{},{},{}\n",
+                    2.0 + (v * 0.37).sin(),
+                    3.0 + (v * 0.23).cos(),
+                    5.0 + (v * 0.61 + 0.3).sin(),
+                    2.0 + (v * 0.47 + 0.8).cos()
+                ));
+                i += 1;
+            }
+        }
+        let (service, dir, paths) = per_site_files(&csv);
+        let request =
+            |group_column: &str, projection: Option<Vec<String>>| MembershipProbabilitiesRequest {
+                transformation: None,
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                projection_groups: projection,
+                path: paths[0].clone(),
+                extra_paths: paths[1..].to_vec(),
+                columns: vec!["as".into(), "fe".into(), "co".into(), "zn".into()],
+                group_column: group_column.into(),
+                id_column: "anid".into(),
+                method: MembershipMethodDto::Hotellings,
+            };
+        let by_file = service
+            .membership_probabilities(&request("Group", None))
+            .expect("membership by file group");
+        assert_eq!(by_file.eligible_groups, vec!["A", "B", "C"]);
+        assert_eq!(by_file.ids.len(), 24);
+        assert_eq!(by_file.analytical_uuids.len(), 24);
+        assert_eq!(by_file.groups[0], "A");
+        assert_eq!(by_file.groups[23], "C");
+        // Site labels equal the file group names here, so results agree.
+        let by_site = service
+            .membership_probabilities(&request("Site", None))
+            .expect("membership by site");
+        assert_eq!(by_site.probabilities, by_file.probabilities);
+        // projection_groups refers to file group names.
+        let projected = service
+            .membership_probabilities(&request("Group", Some(vec!["A".into(), "B".into()])))
+            .expect("projected membership");
+        assert_eq!(projected.eligible_groups, vec!["A", "B"]);
+        let err = service
+            .membership_probabilities(&request("Group", Some(vec!["Z".into()])))
+            .expect_err("unknown projection group");
+        assert!(err.to_string().contains("membership_projection_group"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

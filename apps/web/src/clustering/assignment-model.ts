@@ -56,11 +56,18 @@ export function selectableRows(result: AnalysisResult, cutK = 2): SelectableRow[
   return selectable;
 }
 
+/**
+ * Build a manual move. With `multiSource`, the result spans several group
+ * files: the request's source is a placeholder that the caller splits per
+ * unit's own file, so any group (including the first file) may be the
+ * destination.
+ */
 export function buildAssignmentRequest(
   result: AnalysisResult,
   selectedUuids: readonly string[],
   destinationPath: string,
   destinationGroupName?: string,
+  multiSource = false,
 ): TransferUnitsRequest {
   const validRows = selectableRows(result);
   const valid = new Set(validRows.map(row => row.analyticalUuid));
@@ -69,7 +76,7 @@ export function buildAssignmentRequest(
     throw new Error('Selection must contain valid analytical units from this result.');
   }
   const path = result.data.path;
-  if (!path.trim() || !destinationPath.trim() || path === destinationPath) throw new Error('Choose a distinct, non-empty destination path.');
+  if (!path.trim() || !destinationPath.trim() || (!multiSource && path === destinationPath)) throw new Error('Choose a distinct, non-empty destination path.');
   if (!result.data.revision_id.trim()) throw new Error('The analysis result has no source revision.');
   if (destinationGroupName !== undefined && !destinationGroupName.trim()) throw new Error('Destination group name cannot be empty.');
   return {

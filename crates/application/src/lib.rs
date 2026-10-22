@@ -7,6 +7,7 @@ use archaeodash_contracts::AppInfo;
 
 pub mod analysis_jobs;
 pub mod clustering;
+pub mod combined;
 pub mod explore;
 pub mod exports;
 pub mod files;
@@ -18,6 +19,7 @@ pub mod transforms;
 
 pub use analysis_jobs::{AnalysisJobRegistry, AnalysisJobs, JobContext};
 pub use clustering::ClusterService;
+pub use combined::{synthetic_group_column, CombinedInput};
 pub use explore::ExploreService;
 pub use exports::{ensure_csv_extension, ExportService};
 pub use files::SourceFileService;

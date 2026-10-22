@@ -8,16 +8,19 @@
  * assignment of the selected units to an existing or new group via the
  * atomic transfer-units transaction.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
 import type {
   ExportsService,
-  GroupCandidate,
   GroupRowDto,
   GroupsService,
   OrdinationService,
 } from '@archaeodash/client';
 import { notifyGroupsChanged } from '../data-manager/events.ts';
-import { combineGroupFiles, selectionBySource, type LoadedGroupFile } from './combine.ts';
+import { selectionBySource } from './combine.ts';
+import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
+import { useGroupFiles } from '../datasets/useGroupFiles.ts';
+
+export { GroupMultiSelect };
 import { VisualizeScatter, type ScatterPoint, type ScatterTraceSpec } from './VisualizeScatter.tsx';
 import { Multiplot } from './Multiplot.tsx';
 import {
@@ -121,89 +124,7 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Dropdown with checkboxes: pick any subset of the project's group files. */
-export function GroupMultiSelect({
-  options,
-  selected,
-  onChange,
-}: {
-  options: readonly { path: string; name: string }[];
-  selected: readonly string[];
-  onChange: (paths: string[]) => void;
-}): ReactElement {
-  const [open, setOpen] = useState(false);
-  const holder = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (event: MouseEvent) => {
-      if (holder.current && !holder.current.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [open]);
-  const names = options.filter((o) => selected.includes(o.path)).map((o) => o.name);
-  const summary =
-    names.length === 0
-      ? 'No groups'
-      : names.length === options.length && options.length > 1
-        ? `All groups (${names.length})`
-        : names.join(', ');
-  const toggle = (path: string, on: boolean) =>
-    onChange(options.map((o) => o.path).filter((p) => (p === path ? on : selected.includes(p))));
-  return (
-    <div className="multiselect" ref={holder}>
-      <button
-        type="button"
-        className="multiselect-button"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label={`Dataset: ${summary}`}
-        onClick={() => setOpen((v) => !v)}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') setOpen(false);
-        }}
-      >
-        <span className="multiselect-summary">{summary}</span> ▾
-      </button>
-      {open && (
-        <div
-          className="multiselect-menu"
-          role="listbox"
-          aria-multiselectable="true"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') setOpen(false);
-          }}
-        >
-          <div className="multiselect-actions">
-            <button type="button" onClick={() => onChange(options.map((o) => o.path))}>
-              All
-            </button>
-            <button type="button" onClick={() => onChange([])}>
-              None
-            </button>
-          </div>
-          {options.map((o) => (
-            <label key={o.path} className="multiselect-option" role="option" aria-selected={selected.includes(o.path)}>
-              <input
-                type="checkbox"
-                checked={selected.includes(o.path)}
-                onChange={(e) => toggle(o.path, e.target.checked)}
-              />{' '}
-              {o.name}
-            </label>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
-  const [candidates, setCandidates] = useState<GroupCandidate[]>([]);
-  const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
-  const [files, setFiles] = useState<LoadedGroupFile[]>([]);
-  const [loadState, setLoadState] = useState<AsyncState<null>>({ kind: 'idle' });
-  const [reloadToken, setReloadToken] = useState(0);
   const [source, setSource] = useState<AxisSource>('elements');
   const [scores, setScores] = useState<AsyncState<Scores>>({ kind: 'idle' });
   const [xIdx, setXIdx] = useState(0);
@@ -219,66 +140,14 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
   const [newGroupName, setNewGroupName] = useState('');
   const [assignState, setAssignState] = useState<AsyncState<null>>({ kind: 'idle' });
 
-  const ready = useMemo(
-    () => candidates.filter((c) => c.ready && c.group !== null && c.group !== undefined),
-    [candidates],
-  );
-  const groupOptions = useMemo(
-    () => ready.map((c) => ({ path: c.path, name: c.group?.group_name ?? c.path })),
-    [ready],
-  );
+  const dataset = useGroupFiles(deps.groups);
+  const { ready, options: groupOptions, selectedPaths, setSelectedPaths, orderedPaths, files, combined, rescan } = dataset;
+  const loadState = dataset.load;
 
-  const rescan = useCallback(
-    async (keep?: (paths: string[]) => string[]) => {
-      const list = await deps.groups.scan();
-      setCandidates(list);
-      const all = list.filter((c) => c.ready && c.group).map((c) => c.path);
-      setSelectedPaths((current) => (keep ? keep(all) : current.length > 0 ? current.filter((p) => all.includes(p)) : all));
-    },
-    [deps],
-  );
-
-  // Every ready group is selected by default.
+  // A new set of rows invalidates the current selection.
   useEffect(() => {
-    void rescan().catch(() => setCandidates([]));
-  }, [rescan]);
-
-  // Selected paths in project order, so rows and ordination scores align.
-  const orderedPaths = useMemo(
-    () => ready.map((c) => c.path).filter((p) => selectedPaths.includes(p)),
-    [ready, selectedPaths],
-  );
-
-  useEffect(() => {
-    if (orderedPaths.length === 0) {
-      setFiles([]);
-      setLoadState({ kind: 'idle' });
-      return;
-    }
-    let cancelled = false;
-    setLoadState({ kind: 'loading' });
     setSelection(clearSelection({ uuids: new Set() }));
-    Promise.all(
-      orderedPaths.map(async (path) => ({
-        path,
-        groupName: ready.find((c) => c.path === path)?.group?.group_name ?? path,
-        data: await deps.groups.rows(path),
-      })),
-    )
-      .then((loaded) => {
-        if (cancelled) return;
-        setFiles(loaded);
-        setLoadState({ kind: 'loaded', data: null });
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setLoadState({ kind: 'error', message: errorText(err) });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [deps, orderedPaths, ready, reloadToken]);
-
-  const combined = useMemo(() => combineGroupFiles(files), [files]);
+  }, [files]);
   const colors = useMemo(() => groupColors(combined.groupNames.length), [combined]);
   const colorOf = useCallback(
     (group: string) => colors[combined.groupNames.indexOf(group)] ?? '#888',
@@ -479,12 +348,12 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       await rescan((all) =>
         all.filter((p) => p === destinationPath || selectedPaths.includes(p)),
       );
-      setReloadToken((t) => t + 1);
+      dataset.reload();
       notifyGroupsChanged();
     } catch (err: unknown) {
       setAssignState({ kind: 'error', message: errorText(err) });
     }
-  }, [deps, combined, files, selection, assignTarget, newGroupName, orderedPaths, selectedPaths, rescan]);
+  }, [deps, combined, files, selection, assignTarget, newGroupName, orderedPaths, selectedPaths, rescan, dataset]);
 
   const scoreState =
     source === 'elements' ? null : scores.kind === 'loading' ? 'loading' : scores.kind === 'error' ? scores.message : null;

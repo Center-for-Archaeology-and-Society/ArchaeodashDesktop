@@ -31,6 +31,7 @@ async fn get_snapshot(app: &Router, id: &str) -> AnalysisJobSnapshot {
 fn fit(path: String, pc_count: Option<u32>) -> ClusterFitRequest {
     ClusterFitRequest {
         path,
+        extra_paths: vec![],
         columns: vec!["as".into(), "fe".into()],
         transformation: None,
         source: AnalysisSourceDto::Pca,

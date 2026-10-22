@@ -18,6 +18,10 @@ import type {
 import type { Data } from 'plotly.js-dist-min';
 import { downloadExportResult } from '../exports.ts';
 import { PlotlyChart } from '../charts/PlotlyChart.tsx';
+import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
+import { useGroupFiles } from '../datasets/useGroupFiles.ts';
+import { asRowsResponse, defaultGroupColumn, inputPaths } from '../visualize/combine.ts';
+import { groupColors } from '../visualize/visualize-model.ts';
 
 export interface OrdinationDeps {
   readonly groups: GroupsService;
@@ -72,39 +76,46 @@ function ScoreTable({
   );
 }
 
-/** Score scatter with labelled axes (Plotly, SVG renderer). */
+/** Score scatter with labelled axes (Plotly, SVG renderer), colored by group. */
 function ScatterPlot({
   x,
   y,
   xLabel,
   yLabel,
+  groups,
 }: {
   x: number[];
   y: number[];
   xLabel: string;
   yLabel: string;
+  /** Group name per point; omitted or mismatched draws one series. */
+  groups?: readonly string[];
 }): ReactElement | null {
-  const data = useMemo(
-    () => [
-      {
+  const data = useMemo(() => {
+    const labels = groups && groups.length === x.length ? groups : x.map(() => 'All rows');
+    const names = [...new Set(labels)];
+    const colors = names.length === 1 ? ['#1e8f66'] : groupColors(names.length);
+    return names.map((name, gi) => {
+      const idx = labels.flatMap((g, i) => (g === name ? [i] : []));
+      return {
         type: 'scatter',
         mode: 'markers',
-        x,
-        y,
-        text: x.map((_, i) => `Row ${i + 1}`),
+        name,
+        x: idx.map((i) => x[i]),
+        y: idx.map((i) => y[i]),
+        text: idx.map((i) => `${name} · row ${i + 1}`),
         hovertemplate: `%{text}<br>${xLabel}: %{x:.3f}<br>${yLabel}: %{y:.3f}<extra></extra>`,
-        marker: { color: '#1e8f66', size: 7, opacity: 0.8 },
-      } as Data,
-    ],
-    [x, y, xLabel, yLabel],
-  );
+        marker: { color: colors[gi], size: 7, opacity: 0.85 },
+      } as Data;
+    });
+  }, [x, y, xLabel, yLabel, groups]);
   const layout = useMemo(
     () => ({
       xaxis: { title: { text: xLabel }, zeroline: true },
       yaxis: { title: { text: yLabel }, zeroline: true },
-      showlegend: false,
+      showlegend: data.length > 1,
     }),
-    [xLabel, yLabel],
+    [xLabel, yLabel, data.length],
   );
   if (x.length === 0 || x.length !== y.length) return null;
   return (
@@ -125,10 +136,12 @@ export function PcaResult({
   result,
   onRecompute,
   onExportScores,
+  groups,
 }: {
   result: PcaResponse;
   onRecompute: () => void;
   onExportScores?: () => void;
+  groups?: readonly string[];
 }): ReactElement {
   const k = Math.min(SCREE_COMPONENTS, result.explained_variance.length);
   const names = result.score_names.slice(0, k);
@@ -201,6 +214,7 @@ export function PcaResult({
         y={result.scores.map((r) => r[1] ?? 0)}
         xLabel={pc1}
         yLabel={pc2}
+        groups={groups}
       />
       <details>
         <summary>Score table</summary>
@@ -241,17 +255,20 @@ function useOrdination<TResp>(
   return { state, reload: () => void run() };
 }
 
-function PcaView({
-  deps,
-  data,
-}: {
-  deps: OrdinationDeps;
-  data: GroupRowsResponse;
-}): ReactElement {
-  const { state, reload } = useOrdination<PcaResponse>(
-    () => deps.ordination.pca({ path: data.path, columns: data.elemental_columns }),
-    [deps, data],
+/** The rows being ordinated: combined selected groups, request paths, and
+ *  the group name of each row (for coloring). */
+interface OrdinationInput {
+  readonly data: GroupRowsResponse;
+  readonly extraPaths: readonly string[];
+  readonly groups?: readonly string[];
+}
+
+function PcaView({ deps, data, extraPaths, groups }: { deps: OrdinationDeps } & OrdinationInput): ReactElement {
+  const request = useMemo(
+    () => ({ path: data.path, extra_paths: [...extraPaths], columns: data.elemental_columns }),
+    [data, extraPaths],
   );
+  const { state, reload } = useOrdination<PcaResponse>(() => deps.ordination.pca(request), [deps, request]);
   return (
     <>
       {state.kind === 'loading' && <p role="status">Computing PCA…</p>}
@@ -259,10 +276,11 @@ function PcaView({
       {state.kind === 'loaded' && (
         <PcaResult
           result={state.data}
+          groups={groups}
           onRecompute={reload}
           onExportScores={() =>
             void deps.exports
-              .pcaScores({ path: data.path, columns: data.elemental_columns })
+              .pcaScores(request)
               .then(downloadExportResult)
               .catch((err: unknown) => console.error(err))
           }
@@ -273,25 +291,25 @@ function PcaView({
   );
 }
 
-function UmapView({
-  deps,
-  data,
-}: {
-  deps: OrdinationDeps;
-  data: GroupRowsResponse;
-}): ReactElement {
+function UmapView({ deps, data, extraPaths, groups }: { deps: OrdinationDeps } & OrdinationInput): ReactElement {
   const { state } = useOrdination<UmapResponse>(
-    () => deps.ordination.umap({ path: data.path, columns: data.elemental_columns, seed: 20260914 }),
-    [deps, data],
+    () =>
+      deps.ordination.umap({
+        path: data.path,
+        extra_paths: [...extraPaths],
+        columns: data.elemental_columns,
+        seed: 20260914,
+      }),
+    [deps, data, extraPaths],
   );
   if (state.kind === 'loading') return <p role="status">Computing UMAP…</p>;
   if (state.kind === 'error') return <p role="alert">Error: {state.message}</p>;
   if (state.kind !== 'loaded') return <p>No UMAP yet.</p>;
-  return <UmapResult result={state.data} />;
+  return <UmapResult result={state.data} groups={groups} />;
 }
 
 /** Pure UMAP result presentation (seed echo, embedding scatter, score table). */
-export function UmapResult({ result }: { result: UmapResponse }): ReactElement {
+export function UmapResult({ result, groups }: { result: UmapResponse; groups?: readonly string[] }): ReactElement {
   return (
     <div>
       <p className="muted">
@@ -303,97 +321,96 @@ export function UmapResult({ result }: { result: UmapResponse }): ReactElement {
         y={result.embedding.map((r) => r[1] ?? 0)}
         xLabel="V1"
         yLabel="V2"
+        groups={groups}
       />
-      <ScoreTable scoreNames={result.score_names} scores={result.embedding} rowPrefix="Row" />
+      <details>
+        <summary>Score table</summary>
+        <ScoreTable scoreNames={result.score_names} scores={result.embedding} rowPrefix="Row" />
+      </details>
       <p className="muted">Re-run uses the same seed: the embedding is reproducible.</p>
     </div>
   );
 }
 
+/** Stable default: a fresh `[]` per render would refetch LDA every render. */
+const NO_EXTRA_PATHS: readonly string[] = [];
+
 export function LdaView({
   deps,
   data,
-}: {
-  deps: OrdinationDeps;
-  data: GroupRowsResponse;
+  extraPaths = NO_EXTRA_PATHS,
+  defaultGroupColumn,
+}: { deps: OrdinationDeps; defaultGroupColumn?: string } & Omit<OrdinationInput, 'extraPaths'> & {
+  extraPaths?: readonly string[];
 }): ReactElement {
-  const groupColumn = data.descriptive_columns[0] ?? '';
-  const { state, reload } = useOrdination<LdaResponse>(
-    () => deps.ordination.lda({ path: data.path, columns: data.elemental_columns, group_column: groupColumn }),
-    [deps, data, groupColumn],
+  const [groupColumn, setGroupColumn] = useState(
+    defaultGroupColumn ?? data.descriptive_columns[0] ?? '',
+  );
+  const { state } = useOrdination<LdaResponse>(
+    () =>
+      deps.ordination.lda({
+        path: data.path,
+        extra_paths: [...extraPaths],
+        columns: data.elemental_columns,
+        group_column: groupColumn,
+      }),
+    [deps, data, extraPaths, groupColumn],
   );
 
   if (!groupColumn) {
     return <p role="alert">LDA needs a descriptive group column; this dataset has none.</p>;
   }
-  if (state.kind === 'loading') return <p role="status">Computing LDA…</p>;
-  if (state.kind === 'error') return <p role="alert">Error: {state.message}</p>;
-  if (state.kind !== 'loaded') return <p>No LDA yet.</p>;
+  const colorBy = data.rows.map(
+    (r) => r.descriptive[data.descriptive_columns.indexOf(groupColumn)] ?? '(Missing)',
+  );
   return (
     <div>
-      <p className="muted">
-        Groups: {state.data.levels.join(', ')} — priors{' '}
-        {state.data.prior.map((p) => p.toFixed(3)).join(', ')}
-      </p>
-      {state.data.warnings.length > 0 && (
-        <p role="status">Warnings: {state.data.warnings.join('; ')}</p>
+      <label>
+        Group column
+        <select value={groupColumn} onChange={(e) => setGroupColumn(e.target.value)}>
+          {data.descriptive_columns.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+      </label>
+      {state.kind === 'loading' && <p role="status">Computing LDA…</p>}
+      {state.kind === 'error' && <p role="alert">Error: {state.message}</p>}
+      {state.kind === 'idle' && <p>No LDA yet.</p>}
+      {state.kind === 'loaded' && (
+        <>
+          <p className="muted">
+            Groups: {state.data.levels.join(', ')} — priors{' '}
+            {state.data.prior.map((p) => p.toFixed(3)).join(', ')}
+          </p>
+          {state.data.warnings.length > 0 && (
+            <p role="status">Warnings: {state.data.warnings.join('; ')}</p>
+          )}
+          <ScatterPlot
+            x={state.data.scores.map((r) => r[0] ?? 0)}
+            y={state.data.scores.map((r) => r[1] ?? 0)}
+            xLabel="LD1"
+            yLabel="LD2"
+            groups={colorBy}
+          />
+          <details>
+            <summary>Score table</summary>
+            <ScoreTable scoreNames={state.data.score_names} scores={state.data.scores} rowPrefix="Row" />
+          </details>
+        </>
       )}
-      <ScatterPlot
-        x={state.data.scores.map((r) => r[0] ?? 0)}
-        y={state.data.scores.map((r) => r[1] ?? 0)}
-        xLabel="LD1"
-        yLabel="LD2"
-      />
-      <ScoreTable scoreNames={state.data.score_names} scores={state.data.scores} rowPrefix="Row" />
     </div>
   );
 }
 
 export function OrdinationPage({ deps }: { deps: OrdinationDeps }): ReactElement {
-  const [candidates, setCandidates] = useState<Awaited<ReturnType<GroupsService['scan']>>>([]);
-  const [selectedPath, setSelectedPath] = useState('');
-  const [data, setData] = useState<GroupRowsResponse | null>(null);
+  const dataset = useGroupFiles(deps.groups);
+  const { files, combined, load } = dataset;
   const [view, setView] = useState<OrdinationView>('pca');
-
-  const ready = useMemo(
-    () => candidates.filter((c) => c.ready && c.group !== null && c.group !== undefined),
-    [candidates],
-  );
-
-  useEffect(() => {
-    let cancelled = false;
-    deps.groups
-      .scan()
-      .then((list) => {
-        if (cancelled) return;
-        setCandidates(list);
-        const first = list.find((c) => c.ready && c.group);
-        setSelectedPath((current) => current || first?.path || '');
-      })
-      .catch(() => {
-        if (!cancelled) setCandidates([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [deps]);
-
-  useEffect(() => {
-    if (!selectedPath) return;
-    let cancelled = false;
-    setData(null);
-    deps.groups
-      .rows(selectedPath)
-      .then((rows) => {
-        if (!cancelled) setData(rows);
-      })
-      .catch(() => {
-        if (!cancelled) setData(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [deps, selectedPath]);
+  const data = useMemo(() => asRowsResponse(files, combined), [files, combined]);
+  const extraPaths = useMemo(() => inputPaths(files).extra_paths, [files]);
+  const viewKey = files.map((f) => `${f.path}@${f.data.revision_id}`).join('|');
 
   return (
     <section aria-labelledby="ordination-heading">
@@ -401,20 +418,11 @@ export function OrdinationPage({ deps }: { deps: OrdinationDeps }): ReactElement
       <div className="explore-controls">
         <label>
           Dataset
-          <select
-            aria-label="Dataset"
-            value={selectedPath}
-            onChange={(e) => setSelectedPath(e.target.value)}
-          >
-            <option value="" disabled>
-              Choose a group file…
-            </option>
-            {ready.map((c) => (
-              <option key={c.path} value={c.path}>
-                {c.group?.group_name ?? c.path}
-              </option>
-            ))}
-          </select>
+          <GroupMultiSelect
+            options={dataset.options}
+            selected={dataset.selectedPaths}
+            onChange={dataset.setSelectedPaths}
+          />
         </label>
       </div>
       <div role="tablist" aria-label="Ordination views" className="pills">
@@ -431,10 +439,25 @@ export function OrdinationPage({ deps }: { deps: OrdinationDeps }): ReactElement
           </button>
         ))}
       </div>
-      {!data && <p role="status">Load a dataset to run ordination.</p>}
-      {data && view === 'pca' && <PcaView deps={deps} data={data} />}
-      {data && view === 'umap' && <UmapView deps={deps} data={data} />}
-      {data && view === 'lda' && <LdaView deps={deps} data={data} />}
+      {load.kind === 'loading' && <p role="status">Loading dataset…</p>}
+      {load.kind === 'error' && <p role="alert">Load failed: {load.message}</p>}
+      {(load.kind !== 'loaded' || files.length === 0) && load.kind !== 'loading' && (
+        <p role="status">Load a dataset to run ordination.</p>
+      )}
+      {load.kind === 'loaded' && files.length > 0 && (
+        <div key={viewKey}>
+          {view === 'pca' && <PcaView deps={deps} data={data} extraPaths={extraPaths} groups={combined.groupOf} />}
+          {view === 'umap' && <UmapView deps={deps} data={data} extraPaths={extraPaths} groups={combined.groupOf} />}
+          {view === 'lda' && (
+            <LdaView
+              deps={deps}
+              data={data}
+              extraPaths={extraPaths}
+              defaultGroupColumn={defaultGroupColumn(combined)}
+            />
+          )}
+        </div>
+      )}
     </section>
   );
 }

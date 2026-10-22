@@ -135,21 +135,6 @@ export function createAppRouter(transport: Transport) {
     groups: transport.groups,
     explore: transport.explore,
     exports: transport.exports,
-    // Legacy `lastOpenedDataset` selector default (Section 10.1): hydrate on
-    // mount, persist on every dataset open. Stable callbacks so the router
-    // never remounts Explore when the preference changes.
-    getInitialDataset: async () => {
-      try {
-        const prefs = await transport.preferences.get();
-        const pref = prefs.preferences.find((p) => p.key === 'lastOpenedDataset');
-        return typeof pref?.value === 'string' ? pref.value : '';
-      } catch {
-        return '';
-      }
-    },
-    onDatasetOpened: (path: string) => {
-      void transport.preferences.put('lastOpenedDataset', path).catch(() => {});
-    },
   };
   const ordinationDeps: OrdinationDeps = {
     groups: transport.groups,
