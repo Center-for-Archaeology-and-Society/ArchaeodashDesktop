@@ -15,7 +15,10 @@ import type {
   GroupRowsResponse,
   GroupsService,
 } from '@archaeodash/client';
+import type { Data } from 'plotly.js-dist-min';
 import { downloadExportResult } from '../exports.ts';
+import { PlotlyChart } from '../charts/PlotlyChart.tsx';
+import { groupColors } from '../visualize/visualize-model.ts';
 import { HiddenIdNote } from './HiddenIdNote.tsx';
 export interface ExploreDeps {
   readonly groups: GroupsService;
@@ -296,9 +299,21 @@ function CrosstabView({
   data: GroupRowsResponse;
 }): ReactElement {
   const [groupColumn, setGroupColumn] = useState(data.descriptive_columns[0] ?? '');
-  const [valueColumn, setValueColumn] = useState(
-    data.descriptive_columns[1] ?? data.elemental_columns[0] ?? '',
-  );
+  // Default to the first other descriptive field with two or more distinct
+  // non-missing values; an all-missing column makes an empty-looking table.
+  const [valueColumn, setValueColumn] = useState(() => {
+    const informative = data.descriptive_columns.find((c, i) => {
+      if (i === 0) return false;
+      const seen = new Set<string>();
+      for (const row of data.rows) {
+        const v = row.descriptive[i];
+        if (v !== null && v !== undefined && v.trim() !== '') seen.add(v);
+        if (seen.size > 1) return true;
+      }
+      return false;
+    });
+    return informative ?? data.descriptive_columns[1] ?? data.elemental_columns[0] ?? '';
+  });
   const [method, setMethod] = useState<'count' | 'mean' | 'median' | 'sd'>('count');
   const [state, setState] = useState<AsyncState<ExploreCrosstabResponse>>({ kind: 'idle' });
 
@@ -351,36 +366,19 @@ function CrosstabView({
       </label>
       {state.kind === 'loading' && <p role="status">Computing crosstab…</p>}
       {state.kind === 'error' && <p role="alert">Error: {state.message}</p>}
-      {state.kind === 'loaded' && state.data.rows.kind === 'count' && (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Group</th>
-              <th>Value</th>
-              <th>Count</th>
-            </tr>
-          </thead>
-          <tbody>
-            {state.data.rows.rows.map((row, i) => (
-              <tr key={i}>
-                <td>{row.group ?? '(Missing)'}</td>
-                <td>{row.value ?? '(Missing)'}</td>
-                <td>{row.count}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {state.kind === 'loaded' && state.data.kind === 'count' && (
+        <CrosstabCountTable rows={state.data.rows} groupLabel={groupColumn} valueLabel={valueColumn} />
       )}
-      {state.kind === 'loaded' && state.data.rows.kind === 'summary' && (
+      {state.kind === 'loaded' && state.data.kind === 'summary' && (
         <table className="data-table">
           <thead>
             <tr>
-              <th>Group</th>
-              <th>{state.data.rows.result_column}</th>
+              <th>{groupColumn}</th>
+              <th>{state.data.result_column}</th>
             </tr>
           </thead>
           <tbody>
-            {state.data.rows.rows.map((row, i) => (
+            {state.data.rows.map((row, i) => (
               <tr key={i}>
                 <td>{row.group ?? '(Missing)'}</td>
                 <td>{row.result === null ? '(Missing)' : row.result.toFixed(3)}</td>
@@ -393,22 +391,132 @@ function CrosstabView({
   );
 }
 
-/** Compositional profile: one polyline per group across ordered predictors. */
+/**
+ * Count crosstab pivoted into a contingency table: one row per group level,
+ * one column per value level, with row/column totals. NA levels sort last.
+ */
+export function CrosstabCountTable({
+  rows,
+  groupLabel,
+  valueLabel,
+}: {
+  rows: readonly { group: string | null; value: string | null; count: number }[];
+  groupLabel: string;
+  valueLabel: string;
+}): ReactElement {
+  const label = (v: string | null) => v ?? '(Missing)';
+  const groups = [...new Set(rows.map((r) => label(r.group)))];
+  const values = [...new Set(rows.map((r) => label(r.value)))];
+  const counts = new Map(rows.map((r) => [`${label(r.group)}\u0000${label(r.value)}`, r.count]));
+  const cell = (g: string, v: string) => counts.get(`${g}\u0000${v}`) ?? 0;
+  const total = rows.reduce((sum, r) => sum + r.count, 0);
+  return (
+    <div className="table-scroll">
+      <table className="data-table crosstab-table">
+        <thead>
+          <tr>
+            <th scope="col">
+              {groupLabel} \ {valueLabel}
+            </th>
+            {values.map((v) => (
+              <th key={v} scope="col">
+                {v}
+              </th>
+            ))}
+            <th scope="col">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {groups.map((g) => (
+            <tr key={g}>
+              <th scope="row">{g}</th>
+              {values.map((v) => (
+                <td key={v}>{cell(g, v)}</td>
+              ))}
+              <td>{values.reduce((sum, v) => sum + cell(g, v), 0)}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <tr>
+            <th scope="row">Total</th>
+            {values.map((v) => (
+              <td key={v}>{groups.reduce((sum, g) => sum + cell(g, v), 0)}</td>
+            ))}
+            <td>{total}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
+/**
+ * Plotly traces for the legacy `comp.profile`: one translucent line per
+ * sample across the ordered elements, colored by group (or a single red
+ * series when ungrouped), on a log concentration axis. Samples of one group
+ * share a trace, separated by null gaps, so the legend lists groups.
+ */
+export function profileTraces(
+  rows: readonly { rowid: number; element: string; value: number | null; group_label: string | null }[],
+  grouped: boolean,
+): Data[] {
+  const byGroup = new Map<string, { x: (string | null)[]; y: (number | null)[]; lastRow: number }>();
+  for (const r of rows) {
+    const key = grouped ? (r.group_label ?? '(Missing)') : 'All samples';
+    let series = byGroup.get(key);
+    if (!series) {
+      series = { x: [], y: [], lastRow: r.rowid };
+      byGroup.set(key, series);
+    }
+    if (series.lastRow !== r.rowid) {
+      series.x.push(null);
+      series.y.push(null);
+      series.lastRow = r.rowid;
+    }
+    series.x.push(r.element);
+    // Log axis: non-positive concentrations cannot be drawn, so they gap.
+    series.y.push(r.value !== null && r.value > 0 ? r.value : null);
+  }
+  const names = [...byGroup.keys()].sort();
+  const colors = groupColors(names.length);
+  return names.map((name, i) => {
+    const series = byGroup.get(name)!;
+    return {
+      // SVG, not WebGL: WebKitGTK webviews often lack WebGL.
+      type: 'scatter',
+      mode: 'lines',
+      name,
+      x: series.x,
+      y: series.y,
+      connectgaps: false,
+      opacity: grouped ? 0.45 : 0.25,
+      line: { color: grouped ? colors[i] : '#d62728', width: 1 },
+      hovertemplate: `${name}<br>%{x}: %{y}<extra></extra>`,
+    } as Data;
+  });
+}
+
+/** Compositional profile: one line per sample across ordered elements. */
 function ProfileView({
   deps,
   path,
   columns,
+  groupColumns,
 }: {
   deps: ExploreDeps;
   path: string;
   columns: string[];
+  groupColumns: string[];
 }): ReactElement {
   const [groupColumn, setGroupColumn] = useState('');
+  const [logScale, setLogScale] = useState(true);
   const [state, setState] = useState<AsyncState<ExploreCompositionalProfileResponse>>({
     kind: 'idle',
   });
 
   useEffect(() => {
+    let cancelled = false;
     setState({ kind: 'loading' });
     deps.explore
       .compositionalProfile({
@@ -417,73 +525,56 @@ function ProfileView({
         group_column: groupColumn || null,
         transformation: null,
       })
-      .then((r) => setState({ kind: 'loaded', data: r }))
-      .catch((err: unknown) =>
-        setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) }),
-      );
+      .then((r) => {
+        if (!cancelled) setState({ kind: 'loaded', data: r });
+      })
+      .catch((err: unknown) => {
+        if (!cancelled)
+          setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [deps, path, columns, groupColumn]);
 
-  const elements = useMemo(
-    () => [...new Set(state.kind === 'loaded' ? state.data.rows.map((r) => r.element) : [])],
-    [state],
+  const traces = useMemo(
+    () => (state.kind === 'loaded' ? profileTraces(state.data.rows, groupColumn !== '') : []),
+    [state, groupColumn],
   );
-  const groups = useMemo(
-    () =>
-      [
-        ...new Set(
-          state.kind === 'loaded' ? state.data.rows.map((r) => r.group_label ?? '(Missing)') : [],
-        ),
-      ],
-    [state],
+  const layout = useMemo(
+    () => ({
+      xaxis: { title: { text: '' }, categoryorder: 'array' as const, categoryarray: columns },
+      yaxis: { title: { text: 'Concentration (ppm)' }, type: logScale ? ('log' as const) : ('linear' as const) },
+      showlegend: groupColumn !== '',
+      hovermode: 'closest' as const,
+    }),
+    [columns, logScale, groupColumn],
   );
 
   return (
     <div>
-      <label>
-        Color by group
-        <select value={groupColumn} onChange={(e) => setGroupColumn(e.target.value)}>
-          <option value="">(none)</option>
-          {columns.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="explore-controls">
+        <label>
+          Color by
+          <select value={groupColumn} onChange={(e) => setGroupColumn(e.target.value)}>
+            <option value="">(none)</option>
+            {groupColumns.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <input type="checkbox" checked={logScale} onChange={(e) => setLogScale(e.target.checked)} /> Log scale
+        </label>
+      </div>
       {state.kind === 'loading' && <p role="status">Computing profile…</p>}
       {state.kind === 'error' && <p role="alert">Error: {state.message}</p>}
-      {state.kind === 'loaded' && elements.length > 0 && (
-        <svg
-          className="profile-plot"
-          role="img"
-          aria-label="Compositional profile"
-          viewBox="0 0 100 100"
-          preserveAspectRatio="none"
-        >
-          {groups.map((group, gi) => (
-            <polyline
-              key={group}
-              className="profile-line"
-              fill="none"
-              stroke={`var(--chart-${gi % 8})`}
-              strokeWidth="0.5"
-              points={elements
-                .map((element, xi) => {
-                  const row = state.data.rows.find(
-                    (r) => r.element === element && (r.group_label ?? '(Missing)') === group,
-                  );
-                  if (!row || row.value === null) return null;
-                  const x = (xi / Math.max(elements.length - 1, 1)) * 100;
-                  const y = 100 - row.value * 10;
-                  return `${x},${Math.max(0, Math.min(100, y))}`;
-                })
-                .filter((p): p is string => p !== null)
-                .join(' ')}
-            />
-          ))}
-        </svg>
+      {state.kind === 'loaded' && traces.length > 0 && (
+        <PlotlyChart data={traces} layout={layout} ariaLabel="Compositional profile" height={480} />
       )}
-      <p className="muted">Compositional profile across ordered predictors, one line per group.</p>
+      <p className="muted">One line per sample across the measured elements.</p>
     </div>
   );
 }
@@ -554,7 +645,7 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
             </option>
             {ready.map((c) => (
               <option key={c.path} value={c.path}>
-                {c.group?.group_name} ({c.path})
+                {c.group?.group_name ?? c.path}
               </option>
             ))}
           </select>
@@ -597,7 +688,12 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
         <CrosstabView deps={deps} path={loadState.data.path} data={loadState.data} />
       )}
       {loadState.kind === 'loaded' && view === 'profile' && (
-        <ProfileView deps={deps} path={loadState.data.path} columns={loadState.data.elemental_columns} />
+        <ProfileView
+          deps={deps}
+          path={loadState.data.path}
+          columns={loadState.data.elemental_columns}
+          groupColumns={loadState.data.descriptive_columns}
+        />
       )}
     </section>
   );

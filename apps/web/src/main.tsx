@@ -6,9 +6,8 @@
  */
 import { StrictMode, useEffect, useRef, useState, type ReactElement } from 'react';
 import { createRoot } from 'react-dom/client';
-import { createBrowserRouter, Outlet, RouterProvider, type RouteObject } from 'react-router';
+import { createBrowserRouter, Navigate, Outlet, RouterProvider, type RouteObject } from 'react-router';
 import type { AppInfo, Transport } from '@archaeodash/client';
-import { DataManager } from './data-manager/DataManager.tsx';
 import { AppShell } from './shell/AppShell.tsx';
 import {
   HelpPage,
@@ -81,6 +80,7 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
       }}
       appInfo={appInfo}
       projects={transport.projects}
+      dataManager={transport}
       projectPath={projectPath}
       projectName={projectName}
       projectGeneration={projectGeneration}
@@ -97,7 +97,8 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
 function routeChildren(deps: ExploreDeps, ordinationDeps: OrdinationDeps, visualizeDeps: VisualizeDeps, analysisDeps: AnalysisDeps, transport: Transport): RouteObject[] {
   return [
     { index: true, element: <HomePage /> },
-    { path: 'data', element: <DataManager transport={transport} /> },
+    // The Data Manager now lives in the sidebar; keep old /data links working.
+    { path: 'data', element: <Navigate to="/" replace /> },
     { path: 'explore', element: <ExplorePage deps={deps} /> },
     { path: 'visualize', element: <VisualizePage deps={visualizeDeps} /> },
     { path: 'ordination', element: <OrdinationPage deps={ordinationDeps} /> },

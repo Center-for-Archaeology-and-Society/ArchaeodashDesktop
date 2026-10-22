@@ -90,7 +90,12 @@ try {
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(String(error)));
   await page.goto(`${base}/visualize`);
-  await page.getByLabel('Dataset').selectOption(path);
+  // Dataset is a multi-select of group names; show only the merged group.
+  await page.getByRole('button', { name: /^Dataset:/ }).click();
+  await page.getByRole('button', { name: 'None', exact: true }).click();
+  await page.getByRole('option', { name: 'Combined', exact: true }).getByRole('checkbox').check();
+  await page.keyboard.press('Escape');
+  await page.locator('h1').click();
   const timer = await page.evaluate(() => performance.now());
   await page.getByLabel('Plot mode').selectOption('multiplot');
   await page.getByLabel('Render mode').selectOption('interactive');

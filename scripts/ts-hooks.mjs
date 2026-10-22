@@ -28,6 +28,10 @@ export async function load(url, context, next) {
     const source = await readFile(path, 'utf8');
     return { format: 'module', source: `export default ${JSON.stringify(source)};`, shortCircuit: true };
   }
+  // Vite-style side-effect stylesheet imports: no-op under node:test.
+  if (url.endsWith('.css')) {
+    return { format: 'module', source: 'export default {};', shortCircuit: true };
+  }
   if (url.endsWith('.tsx')) {
     const source = await readFile(fileURLToPath(url), 'utf8');
     const code = await jsxTransform(source, 'tsx');

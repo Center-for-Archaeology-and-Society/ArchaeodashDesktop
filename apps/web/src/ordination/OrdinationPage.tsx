@@ -15,7 +15,9 @@ import type {
   PcaResponse,
   UmapResponse,
 } from '@archaeodash/client';
+import type { Data } from 'plotly.js-dist-min';
 import { downloadExportResult } from '../exports.ts';
+import { PlotlyChart } from '../charts/PlotlyChart.tsx';
 
 export interface OrdinationDeps {
   readonly groups: GroupsService;
@@ -70,6 +72,7 @@ function ScoreTable({
   );
 }
 
+/** Score scatter with labelled axes (Plotly, SVG renderer). */
 function ScatterPlot({
   x,
   y,
@@ -81,36 +84,43 @@ function ScatterPlot({
   xLabel: string;
   yLabel: string;
 }): ReactElement | null {
+  const data = useMemo(
+    () => [
+      {
+        type: 'scatter',
+        mode: 'markers',
+        x,
+        y,
+        text: x.map((_, i) => `Row ${i + 1}`),
+        hovertemplate: `%{text}<br>${xLabel}: %{x:.3f}<br>${yLabel}: %{y:.3f}<extra></extra>`,
+        marker: { color: '#1e8f66', size: 7, opacity: 0.8 },
+      } as Data,
+    ],
+    [x, y, xLabel, yLabel],
+  );
+  const layout = useMemo(
+    () => ({
+      xaxis: { title: { text: xLabel }, zeroline: true },
+      yaxis: { title: { text: yLabel }, zeroline: true },
+      showlegend: false,
+    }),
+    [xLabel, yLabel],
+  );
   if (x.length === 0 || x.length !== y.length) return null;
-  const xMin = Math.min(...x);
-  const xMax = Math.max(...x);
-  const yMin = Math.min(...y);
-  const yMax = Math.max(...y);
-  const spanX = xMax - xMin || 1;
-  const spanY = yMax - yMin || 1;
-  const points = x.map((xi, i) => {
-    const px = ((xi - xMin) / spanX) * 90 + 5;
-    const yi = y[i] ?? yMin;
-    const py = 95 - ((yi - yMin) / spanY) * 90;
-    return `${px},${py}`;
-  });
   return (
-    <svg
-      className="profile-plot"
-      role="img"
-      aria-label={`Scatter of ${yLabel} by ${xLabel}`}
-      viewBox="0 0 100 100"
-      preserveAspectRatio="none"
-    >
-      {points.map((p, i) => {
-        const [cx, cy] = p.split(',');
-        return <circle key={i} cx={cx} cy={cy} r="0.8" className="plot-point" />;
-      })}
-    </svg>
+    <PlotlyChart
+      data={data}
+      layout={layout}
+      ariaLabel={`Scatter of ${yLabel} by ${xLabel}`}
+      className="plotly-chart plot-point-scatter"
+    />
   );
 }
 
-/** Pure PCA result presentation (variance bars, scatter, score table). */
+/** Components shown in the scree chart and variance table. */
+const SCREE_COMPONENTS = 10;
+
+/** Pure PCA result presentation (scree chart, variance table, scores). */
 export function PcaResult({
   result,
   onRecompute,
@@ -120,36 +130,92 @@ export function PcaResult({
   onRecompute: () => void;
   onExportScores?: () => void;
 }): ReactElement {
+  const k = Math.min(SCREE_COMPONENTS, result.explained_variance.length);
+  const names = result.score_names.slice(0, k);
+  const pct = (v: number | undefined) => `${((v ?? 0) * 100).toFixed(1)}%`;
+  const scree = useMemo(
+    () => [
+      {
+        type: 'bar',
+        name: 'Explained',
+        x: names,
+        y: result.explained_variance.slice(0, k).map((v) => v * 100),
+        marker: { color: '#48c895' },
+        hovertemplate: '%{x}: %{y:.1f}%<extra></extra>',
+      } as Data,
+      {
+        type: 'scatter',
+        mode: 'lines+markers',
+        name: 'Cumulative',
+        x: names,
+        y: result.cumulative_variance.slice(0, k).map((v) => v * 100),
+        line: { color: '#163126' },
+        hovertemplate: '%{x}: %{y:.1f}% cumulative<extra></extra>',
+      } as Data,
+    ],
+    [result, k, names],
+  );
+  const screeLayout = useMemo(
+    () => ({
+      yaxis: { title: { text: '% of variance' }, range: [0, 105] as [number, number] },
+      legend: { orientation: 'h' as const, y: 1.12 },
+      bargap: 0.25,
+    }),
+    [],
+  );
+  const pc1 = `${result.score_names[0] ?? 'PC1'} (${pct(result.explained_variance[0])})`;
+  const pc2 = `${result.score_names[1] ?? 'PC2'} (${pct(result.explained_variance[1])})`;
   return (
     <div>
-      <div className="variance-bars" role="img" aria-label="Explained variance per component">
-        {result.explained_variance.map((v, i) => (
-          <div
-            key={i}
-            className="histogram-bar"
-            style={{ height: `${Math.max(v * 100, 1)}%` }}
-            title={`PC${i + 1}: ${(v * 100).toFixed(1)}%`}
-          />
-        ))}
+      <h2>Explained variance</h2>
+      <div className="ordination-scree">
+        <PlotlyChart data={scree} layout={screeLayout} ariaLabel="Explained variance per component" height={300} />
+        <table className="data-table variance-table">
+          <thead>
+            <tr>
+              <th>Component</th>
+              <th>Variance</th>
+              <th>Cumulative</th>
+            </tr>
+          </thead>
+          <tbody>
+            {names.map((name, i) => (
+              <tr key={name}>
+                <td>{name}</td>
+                <td>{pct(result.explained_variance[i])}</td>
+                <td>{pct(result.cumulative_variance[i])}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
-      <p className="muted">
-        Cumulative: {result.cumulative_variance.map((v) => `${(v * 100).toFixed(1)}%`).join(', ')}
-      </p>
+      {result.scale === null || result.scale === undefined ? (
+        <p className="muted">
+          Unscaled PCA on raw values: elements with large concentrations (e.g. Fe, Na, K) dominate
+          the first components. Apply a log transformation for compositional work.
+        </p>
+      ) : null}
+      <h2>Scores</h2>
       <ScatterPlot
         x={result.scores.map((r) => r[0] ?? 0)}
         y={result.scores.map((r) => r[1] ?? 0)}
-        xLabel="PC1"
-        yLabel="PC2"
+        xLabel={pc1}
+        yLabel={pc2}
       />
-      <ScoreTable scoreNames={result.score_names} scores={result.scores} rowPrefix="Row" />
-      <button type="button" onClick={onRecompute}>
-        Recompute
-      </button>
-      {onExportScores && (
-        <button type="button" onClick={onExportScores}>
-          Export PCA scores (CSV)
+      <details>
+        <summary>Score table</summary>
+        <ScoreTable scoreNames={result.score_names} scores={result.scores} rowPrefix="Row" />
+      </details>
+      <div className="table-actions">
+        <button type="button" onClick={onRecompute}>
+          Recompute
         </button>
-      )}
+        {onExportScores && (
+          <button type="button" onClick={onExportScores}>
+            Export PCA scores (CSV)
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -345,7 +411,7 @@ export function OrdinationPage({ deps }: { deps: OrdinationDeps }): ReactElement
             </option>
             {ready.map((c) => (
               <option key={c.path} value={c.path}>
-                {c.group?.group_name} ({c.path})
+                {c.group?.group_name ?? c.path}
               </option>
             ))}
           </select>

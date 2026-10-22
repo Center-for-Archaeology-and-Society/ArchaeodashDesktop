@@ -1542,6 +1542,7 @@ mod tests {
                 columns: vec!["as".into()],
                 scale: false,
                 transformation: None,
+                extra_paths: vec![],
             })
             .expect_err("no project open");
         assert!(err.contains("no project open"));
@@ -1585,6 +1586,7 @@ mod tests {
                 columns: vec!["as".into(), "fe".into()],
                 scale: false,
                 transformation: None,
+                extra_paths: vec![],
             })
             .expect("pca");
         assert_eq!(pca.score_names, vec!["PC1", "PC2"]);
@@ -1602,6 +1604,8 @@ mod tests {
                 columns: vec!["as".into(), "fe".into()],
                 group_column: "Site".into(),
                 transformation: None,
+                extra_paths: vec![],
+                group_by_file: false,
             })
             .expect("lda");
         assert_eq!(lda.levels.len(), 3);
@@ -1637,6 +1641,7 @@ mod tests {
                 columns: vec!["as".into(), "fe".into()],
                 transformation: None,
                 seed: None,
+                extra_paths: vec![],
             })
             .expect("umap");
         assert_eq!(umap.score_names, vec!["V1", "V2"]);
@@ -1650,6 +1655,7 @@ mod tests {
                 columns: vec!["as".into(), "fe".into()],
                 scale: false,
                 transformation: None,
+                extra_paths: vec![],
             })
             .expect_err("missing group file");
         assert!(!err.contains("no project open"));

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToString } from 'react-dom/server';
 import type { ExploreService, ExportsService, GroupsService } from '@archaeodash/client';
-import { ExplorePage, DataTable, type ExploreDeps } from './ExplorePage.tsx';
+import { CrosstabCountTable, ExplorePage, DataTable, profileTraces, type ExploreDeps } from './ExplorePage.tsx';
 function makeDeps(): ExploreDeps {
   const groups = {
     scan: async () => [
@@ -77,9 +77,10 @@ function makeDeps(): ExploreDeps {
     crosstab: async () => ({
       path: 'p',
       revision_id: 'r',
-      column_names: ['Ti', 'Sr'],
       summary_method: 'count',
-      rows: { kind: 'count' as const, rows: [{ group: 'Baca', value: 'A1', count: 2 }] },
+      // The API flattens the tagged rows enum to the top level.
+      kind: 'count' as const,
+      rows: [{ group: 'Baca', value: 'A1', count: 2 }],
     }),
     compositionalProfile: async () => ({
       path: 'p',
@@ -135,4 +136,43 @@ test('explore missing view renders band table rows', async () => {
   const deps = makeDeps();
   const html = renderToString(<ExplorePage deps={deps} />);
   assert.ok(html.includes('Missing values'));
+});
+
+test('count crosstab pivots into a contingency table with totals', () => {
+  const html = renderToString(
+    <CrosstabCountTable
+      groupLabel="Site"
+      valueLabel="Ware"
+      rows={[
+        { group: 'Baca', value: 'Glaze', count: 2 },
+        { group: 'Baca', value: 'WMRW', count: 1 },
+        { group: 'Hooper', value: 'WMRW', count: 4 },
+        { group: null, value: 'Glaze', count: 1 },
+      ]}
+    />,
+  );
+  for (const text of ['Glaze', 'WMRW', 'Hooper', '(Missing)', 'Total']) {
+    assert.ok(html.includes(text), `missing ${text}`);
+  }
+  // Grand total = 2 + 1 + 4 + 1.
+  assert.ok(html.includes('<td>8</td>'));
+});
+
+test('profile traces draw one gapped line per sample, grouped, log-safe', () => {
+  const traces = profileTraces(
+    [
+      { rowid: 1, element: 'as', value: 3, group_label: 'A' },
+      { rowid: 1, element: 'fe', value: 15000, group_label: 'A' },
+      { rowid: 2, element: 'as', value: 0, group_label: 'A' },
+      { rowid: 2, element: 'fe', value: 12000, group_label: 'A' },
+      { rowid: 3, element: 'as', value: 5, group_label: 'B' },
+      { rowid: 3, element: 'fe', value: null, group_label: 'B' },
+    ],
+    true,
+  ) as { name: string; x: unknown[]; y: unknown[] }[];
+  assert.deepEqual(traces.map((t) => t.name), ['A', 'B']);
+  assert.deepEqual(traces[0]!.x, ['as', 'fe', null, 'as', 'fe']);
+  // Non-positive values gap on the log axis.
+  assert.deepEqual(traces[0]!.y, [3, 15000, null, null, 12000]);
+  assert.deepEqual(traces[1]!.y, [5, null]);
 });

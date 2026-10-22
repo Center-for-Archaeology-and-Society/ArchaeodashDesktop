@@ -45,6 +45,19 @@ export function colorFor(index: number): string {
   return VIRIDIS[((index % VIRIDIS.length) + VIRIDIS.length) % VIRIDIS.length] as string;
 }
 
+/**
+ * Distinct colors for `count` groups: viridis anchors spread evenly across
+ * the palette so a handful of groups never land on neighbouring shades;
+ * more than ten groups cycle the anchors.
+ */
+export function groupColors(count: number): string[] {
+  if (count <= 0) return [];
+  if (count === 1) return [VIRIDIS[3] as string];
+  if (count > VIRIDIS.length) return Array.from({ length: count }, (_, i) => colorFor(i));
+  const step = (VIRIDIS.length - 1) / (count - 1);
+  return Array.from({ length: count }, (_, i) => VIRIDIS[Math.round(i * step)] as string);
+}
+
 /** Metadata filter display: missing cells normalize to the literal `(Missing)`. */
 export function normalizeFilterValue(value: string | null | undefined): string {
   if (value === null || value === undefined || value.trim() === '') return '(Missing)';

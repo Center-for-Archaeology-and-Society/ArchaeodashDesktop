@@ -220,6 +220,7 @@ impl ExportService {
             columns: req.columns.clone(),
             scale: req.scale,
             transformation: req.transformation.clone(),
+            extra_paths: vec![],
         })?;
         let data = read_group_file(&self.root.join(&req.path)).map_err(import_err)?;
         let roles = &data.profile.roles;

@@ -91,3 +91,13 @@ test('ellipse outlines a closed path around the data mean', () => {
 test('ellipse of fewer than two points is empty', () => {
   assert.deepEqual(ellipsePoints([1], [2], 0.95), { px: [], py: [] });
 });
+
+test('groupColors spreads distinct viridis anchors across few groups', async () => {
+  const { groupColors, VIRIDIS } = await import('./visualize-model.ts');
+  const five = groupColors(5);
+  assert.equal(new Set(five).size, 5);
+  assert.equal(five[0], VIRIDIS[0]);
+  assert.equal(five[4], VIRIDIS[9]);
+  assert.equal(groupColors(12).length, 12);
+  assert.deepEqual(groupColors(0), []);
+});

@@ -541,6 +541,12 @@ pub struct PcaRequest {
     /// Optional transformation applied to the group matrix first (Section 8.2
     /// definition, applied on demand from measured values).
     pub transformation: Option<TransformationDefinition>,
+    /// Additional project-relative group files ordinated together with
+    /// `path`: input rows are `path`'s rows followed by each entry's rows, in
+    /// order (each file in file order), and scores align with that
+    /// concatenation. Empty keeps single-file behaviour.
+    #[serde(default)]
+    pub extra_paths: Vec<String>,
 }
 
 /// PCA result: `prcomp` parity outputs with deterministic component signs
@@ -579,10 +585,22 @@ pub struct LdaRequest {
     /// Columns to ordinate: measured elemental names, or post-transform
     /// output names when `transformation` is present.
     pub columns: Vec<String>,
-    /// Descriptive column holding the grouping factor.
+    /// Descriptive column holding the grouping factor (ignored, and may be
+    /// empty, when `group_by_file` is true).
+    #[serde(default)]
     pub group_column: String,
     /// Optional transformation applied to the group matrix first.
     pub transformation: Option<TransformationDefinition>,
+    /// Additional project-relative group files ordinated together with
+    /// `path`: input rows are `path`'s rows followed by each entry's rows, in
+    /// order (each file in file order), and scores align with that
+    /// concatenation. Empty keeps single-file behaviour.
+    #[serde(default)]
+    pub extra_paths: Vec<String>,
+    /// Label each row with its file's `profile.group_name` instead of a
+    /// descriptive `group_column` value.
+    #[serde(default)]
+    pub group_by_file: bool,
 }
 
 /// LDA result: priors, group means, discriminant scaling, singular values,
@@ -632,6 +650,12 @@ pub struct UmapRequest {
     /// (class-D fixed-seed golden). Defaults to the golden-fixture seed.
     #[serde(default)]
     pub seed: Option<u64>,
+    /// Additional project-relative group files ordinated together with
+    /// `path`: input rows are `path`'s rows followed by each entry's rows, in
+    /// order (each file in file order), and scores align with that
+    /// concatenation. Empty keeps single-file behaviour.
+    #[serde(default)]
+    pub extra_paths: Vec<String>,
 }
 
 /// UMAP result: seeded, deterministic `V1`/`V2` embedding with the resolved
@@ -1570,6 +1594,7 @@ mod tests {
             columns: vec!["as".into(), "fe".into()],
             scale: false,
             transformation: None,
+            extra_paths: vec!["groups/Hooper.parquet".into()],
         };
         let json = serde_json::to_string(&pca_request).unwrap();
         assert_eq!(
@@ -1610,6 +1635,8 @@ mod tests {
             columns: vec!["as".into(), "fe".into()],
             group_column: "Site".into(),
             transformation: None,
+            extra_paths: vec![],
+            group_by_file: false,
         };
         let json = serde_json::to_string(&lda_request).unwrap();
         assert_eq!(
@@ -1642,6 +1669,7 @@ mod tests {
             columns: vec!["as".into(), "fe".into()],
             transformation: None,
             seed: None,
+            extra_paths: vec![],
         };
         let json = serde_json::to_string(&umap_request).unwrap();
         assert_eq!(
@@ -1656,6 +1684,17 @@ mod tests {
         });
         let request: UmapRequest = serde_json::from_value(omitted).unwrap();
         assert_eq!(request.seed, None);
+        assert!(request.extra_paths.is_empty());
+        // Multi-file LDA fields default when omitted (legacy wire shape).
+        let legacy: LdaRequest = serde_json::from_value(serde_json::json!({
+            "path": "groups/Baca.parquet",
+            "columns": ["as"],
+            "group_column": "Site",
+            "transformation": null,
+        }))
+        .unwrap();
+        assert!(legacy.extra_paths.is_empty());
+        assert!(!legacy.group_by_file);
 
         let umap_response = UmapResponse {
             path: "groups/Baca.parquet".into(),

@@ -3,9 +3,10 @@
  * Data Manager sidebar on wide screens, drawer/below-content on narrow
  * screens, and the theme selector. Semantic nav with accessible names.
  */
-import { useRef, useState, type ReactElement } from 'react';
+import { useCallback, useRef, useState, type ReactElement } from 'react';
 import { NavLink, Outlet } from 'react-router';
 import { navRoutes } from './nav.ts';
+import { DataManager, type DataManagerTransport } from '../data-manager/DataManager.tsx';
 import type { ProjectInfo } from '@archaeodash/contracts';
 import type { ProjectsService } from '@archaeodash/client';
 
@@ -19,6 +20,8 @@ export interface AppShellProps {
   readonly projectName?: string;
   readonly projectGeneration?: number;
   readonly onProjectOpened?: (project: ProjectInfo) => void;
+  /** Transport slice for the sidebar file manager; omitted in static tests. */
+  readonly dataManager?: DataManagerTransport;
 }
 
 export function AppShell({
@@ -30,12 +33,19 @@ export function AppShell({
   projectName = '',
   projectGeneration = 0,
   onProjectOpened,
+  dataManager,
 }: AppShellProps): ReactElement {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [infoOpen, setInfoOpen] = useState(false);
   const [projectError, setProjectError] = useState('');
   const [openingProject, setOpeningProject] = useState(false);
   const openingProjectRef = useRef(false);
+  // Bumped when the sidebar changes project data so the routed page remounts
+  // and rescans. Changes announced via notifyGroupsChanged() only refresh the
+  // sidebar tree (the page that fired it already has fresh data).
+  const [dataVersion, setDataVersion] = useState(0);
+  const bumpDataVersion = useCallback(() => setDataVersion((version) => version + 1), []);
+  const projectOpen = !projects || Boolean(projectPath);
 
   const openProject = async () => {
     if (!projects || openingProjectRef.current) return;
@@ -131,14 +141,28 @@ export function AppShell({
       <div className="app-body">
         <aside
           id="data-manager-sidebar"
-          className="sidebar"
+          className={dataManager ? 'sidebar sidebar-file-manager' : 'sidebar'}
           aria-label="Data Manager"
           hidden={!sidebarOpen}
         >
           <h2>Data Manager</h2>
-          {projectName && <p aria-label="Current project">Project: {projectName}</p>}
-          <NavLink to="/data">Import and manage data</NavLink>
-          <p className="sidebar-note">Import source files, inspect project groups, then choose a group in an analysis view.</p>
+          {dataManager && projectOpen ? (
+            <DataManager
+              key={`${projectGeneration}:${projectPath}`}
+              transport={dataManager}
+              projectName={projectName}
+              onDataChanged={bumpDataVersion}
+            />
+          ) : (
+            <>
+              {projectName && <p aria-label="Current project">Project: {projectName}</p>}
+              <p className="sidebar-note">
+                {projects && !projectPath
+                  ? 'Open a project folder to see its group files here.'
+                  : 'Import source files, inspect project groups, then choose a group in an analysis view.'}
+              </p>
+            </>
+          )}
           {appInfo && (
             <p className="sidebar-footer">
               {appInfo.app} {appInfo.version}
@@ -151,7 +175,7 @@ export function AppShell({
           {projects && !projectPath ? (
             <p>Open a project folder to browse groups and run analyses.</p>
           ) : (
-            <div key={`${projectGeneration}:${projectPath}`}>
+            <div key={`${projectGeneration}:${projectPath}:${dataVersion}`}>
               <Outlet />
             </div>
           )}

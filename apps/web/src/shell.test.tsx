@@ -23,6 +23,7 @@ import {
   VerifyEmailPage,
 } from './shell/AccountPage.tsx';
 import type { AuthService } from '@archaeodash/client';
+import type { DataManagerTransport } from './data-manager/DataManager.tsx';
 import { normalizeTheme, themes } from '@archaeodash/client';
 
 function renderShell(theme = 'light'): string {
@@ -99,6 +100,31 @@ test('native project picker is shown only for transports that support it', () =>
   assert.ok(html.includes('Open a project folder to browse groups and run analyses.'));
 });
 
+test('sidebar hosts the file manager when a transport is provided', () => {
+  const dataManager = { kind: 'http', groups: { scan: async () => [] } } as unknown as DataManagerTransport;
+  const html = renderToString(
+    <MemoryRouter initialEntries={['/']}>
+      <AppShell theme="light" onThemeChange={() => {}} dataManager={dataManager} projectName="Sample" appInfo={{ app: 'ArchaeoDash', version: '9.9.9', ready: true }} />
+    </MemoryRouter>,
+  );
+  assert.ok(html.includes('role="tree"'), 'file tree in sidebar');
+  assert.ok(html.includes('Import…'));
+  assert.ok(html.includes('sidebar-file-manager'));
+  assert.ok(!html.includes('href="/data"'), 'no link to the retired /data page');
+  assert.ok(html.includes('9.9.9'), 'app-info footer kept');
+});
+
+test('sidebar shows a hint instead of the tree until a project is open', () => {
+  const dataManager = { kind: 'tauri', groups: { scan: async () => [] } } as unknown as DataManagerTransport;
+  const html = renderToString(
+    <MemoryRouter initialEntries={['/']}>
+      <AppShell theme="light" onThemeChange={() => {}} dataManager={dataManager} projects={{ open: async () => null, current: async () => null }} />
+    </MemoryRouter>,
+  );
+  assert.ok(!html.includes('role="tree"'));
+  assert.ok(html.includes('Open a project folder to see its group files here.'));
+});
+
 test('info routes render the legacy markdown content in-app (no iframe)', () => {
   const help = renderAt(<HelpPage />);
   assert.ok(help.includes('<h1'), 'help renders as HTML');
@@ -112,6 +138,8 @@ test('home route renders the project entry guidance', () => {
   const html = renderToString(<MemoryRouter><HomePage /></MemoryRouter>);
   assert.ok(html.includes('Home'));
   assert.ok(html.includes('Data Manager'));
+  assert.ok(html.includes('sidebar'));
+  assert.ok(!html.includes('href="/data"'));
 });
 
 test('account page renders the signed-out sign-in form in hosted mode', () => {

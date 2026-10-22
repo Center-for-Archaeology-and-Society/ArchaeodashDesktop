@@ -1,7 +1,8 @@
 //! Ordination use cases (Phase 4, Section 8.5): PCA, LDA, and UMAP over one
-//! group file's measured elemental values, optionally after an ephemeral
-//! transformation. Results are returned to the caller and never persisted
-//! (Section 5 storage invariant: no ordination values reach group files).
+//! group file's measured elemental values (or several files concatenated
+//! row-wise), optionally after an ephemeral transformation. Results are
+//! returned to the caller and never persisted (Section 5 storage invariant:
+//! no ordination values reach group files).
 
 use std::path::PathBuf;
 
@@ -107,6 +108,44 @@ impl OrdinationService {
         Ok(labels)
     }
 
+    /// Reads `path` followed by each `extra_paths` entry and concatenates
+    /// their per-file ordination matrices row-wise, in request order with
+    /// each file's rows in file order (the `GroupService::rows` order). Any
+    /// transformation is applied per file. Every file must expose all
+    /// requested columns.
+    fn read_inputs(
+        &self,
+        path: &str,
+        extra_paths: &[String],
+        columns: &[String],
+        transformation: Option<&TransformationDefinition>,
+    ) -> Result<(Vec<GroupFileData>, ColumnMatrix), DomainError> {
+        let mut seen = std::collections::HashSet::new();
+        let mut files = Vec::with_capacity(1 + extra_paths.len());
+        let mut matrix: Option<ColumnMatrix> = None;
+        for rel in std::iter::once(path).chain(extra_paths.iter().map(String::as_str)) {
+            if !seen.insert(rel) {
+                return Err(validation(
+                    "duplicate_ordination_path",
+                    format!("{rel}: group file is listed more than once"),
+                ));
+            }
+            let data = read_group_file(&self.root.join(rel)).map_err(import_err)?;
+            let part = Self::input_matrix(&data, columns, transformation, rel)?;
+            match matrix.as_mut() {
+                None => matrix = Some(part),
+                Some(acc) => {
+                    for (dst, src) in acc.cols.iter_mut().zip(part.cols) {
+                        dst.extend(src);
+                    }
+                }
+            }
+            files.push(data);
+        }
+        let matrix = matrix.ok_or_else(|| validation("ordination_empty", "no group files"))?;
+        Ok((files, matrix))
+    }
+
     /// prcomp-parity PCA (Section 15.4 procedure 6) over one group file.
     pub fn pca(&self, req: &PcaRequest) -> Result<PcaResponse, DomainError> {
         if req.columns.is_empty() {
@@ -115,9 +154,12 @@ impl OrdinationService {
                 "PCA requires at least one column",
             ));
         }
-        let data = read_group_file(&self.root.join(&req.path)).map_err(import_err)?;
-        let matrix =
-            Self::input_matrix(&data, &req.columns, req.transformation.as_ref(), &req.path)?;
+        let (files, matrix) = self.read_inputs(
+            &req.path,
+            &req.extra_paths,
+            &req.columns,
+            req.transformation.as_ref(),
+        )?;
         let result = pca(&matrix, req.scale)?;
 
         // Explained variance shares from sdev^2; zero total (degenerate
@@ -137,7 +179,7 @@ impl OrdinationService {
 
         Ok(PcaResponse {
             path: req.path.clone(),
-            revision_id: data.profile.revision_id.clone(),
+            revision_id: files[0].profile.revision_id.clone(),
             column_names: req.columns.clone(),
             score_names,
             sdev: result.sdev,
@@ -159,10 +201,27 @@ impl OrdinationService {
                 "LDA requires at least one column",
             ));
         }
-        let data = read_group_file(&self.root.join(&req.path)).map_err(import_err)?;
-        let matrix =
-            Self::input_matrix(&data, &req.columns, req.transformation.as_ref(), &req.path)?;
-        let groups = Self::group_labels(&data, &req.group_column, &req.path)?;
+        let (files, matrix) = self.read_inputs(
+            &req.path,
+            &req.extra_paths,
+            &req.columns,
+            req.transformation.as_ref(),
+        )?;
+        let groups = if req.group_by_file {
+            files
+                .iter()
+                .flat_map(|data| {
+                    std::iter::repeat_n(data.profile.group_name.clone(), data.rows.len())
+                })
+                .collect()
+        } else {
+            let paths = std::iter::once(&req.path).chain(req.extra_paths.iter());
+            let mut labels = Vec::with_capacity(matrix.cols.first().map_or(0, Vec::len));
+            for (data, rel) in files.iter().zip(paths) {
+                labels.extend(Self::group_labels(data, &req.group_column, rel)?);
+            }
+            labels
+        };
         // Legacy `getLDA` calls `validate_lda_groups` with its default of 3.
         let result = lda(&matrix, &groups, 3)?;
         let rank = result.svd.len();
@@ -170,7 +229,7 @@ impl OrdinationService {
 
         Ok(LdaResponse {
             path: req.path.clone(),
-            revision_id: data.profile.revision_id.clone(),
+            revision_id: files[0].profile.revision_id.clone(),
             column_names: req.columns.clone(),
             levels: result.levels,
             prior: result.prior,
@@ -194,16 +253,19 @@ impl OrdinationService {
                 "UMAP requires at least one column",
             ));
         }
-        let data = read_group_file(&self.root.join(&req.path)).map_err(import_err)?;
-        let matrix =
-            Self::input_matrix(&data, &req.columns, req.transformation.as_ref(), &req.path)?;
+        let (files, matrix) = self.read_inputs(
+            &req.path,
+            &req.extra_paths,
+            &req.columns,
+            req.transformation.as_ref(),
+        )?;
         let seed = req.seed.unwrap_or(DEFAULT_SEED);
         let result = umap(&matrix, seed)?;
         let k = result.config.n_components;
 
         Ok(UmapResponse {
             path: req.path.clone(),
-            revision_id: data.profile.revision_id.clone(),
+            revision_id: files[0].profile.revision_id.clone(),
             column_names: req.columns.clone(),
             score_names: (1..=k).map(|i| format!("V{i}")).collect(),
             embedding: result.layout,
@@ -283,6 +345,7 @@ mod tests {
                 columns: vec!["as".into(), "fe".into()],
                 scale: false,
                 transformation: None,
+                extra_paths: vec![],
             })
             .expect("pca");
         assert_eq!(response.column_names, vec!["as", "fe"]);
@@ -310,6 +373,7 @@ mod tests {
                 columns: vec!["cu".into()],
                 scale: false,
                 transformation: None,
+                extra_paths: vec![],
             })
             .expect_err("non-elemental column");
         assert!(matches!(
@@ -327,6 +391,8 @@ mod tests {
                 columns: vec!["as".into(), "fe".into()],
                 group_column: "Site".into(),
                 transformation: None,
+                extra_paths: vec![],
+                group_by_file: false,
             })
             .expect("lda");
         assert_eq!(response.levels, vec!["A", "B", "C"]);
@@ -390,6 +456,8 @@ mod tests {
                 columns: vec!["as".into(), "fe".into()],
                 group_column: "Site".into(),
                 transformation: None,
+                extra_paths: vec![],
+                group_by_file: false,
             })
             .expect_err("two groups rejected");
         assert!(err
@@ -424,6 +492,7 @@ mod tests {
                     }],
                     ratio_mode: RatioMode::Append,
                 }),
+                extra_paths: vec![],
             })
             .expect("pca after transform");
         assert_eq!(response.column_names, vec!["as", "fe", "as_fe"]);
@@ -447,8 +516,182 @@ mod tests {
                 columns: vec!["as".into()],
                 group_column: "Site".into(),
                 transformation: None,
+                extra_paths: vec![],
+                group_by_file: false,
             })
             .expect_err("missing group file");
         assert!(matches!(err, DomainError::Internal(_)));
+    }
+
+    /// Imports the three-group source without merging: one group file per
+    /// site (A, B, C; two rows each), returned in import order.
+    fn service_with_group_files() -> (OrdinationService, std::path::PathBuf, Vec<String>) {
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "archaeodash-ordination-multi-{}-{n}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(
+            dir.join("mini.csv"),
+            "anid,Site,as,fe\nA1,A,1.5,3\nA2,A,2,4\nB1,B,5,6\nB2,B,6,8\nC1,C,9,1\nC2,C,11,2\n",
+        )
+        .expect("write source");
+        let import = crate::import::ImportService::new(&dir).expect("import service");
+        let commit = import
+            .commit(&ImportCommitRequest {
+                source: "mini.csv".into(),
+                group_column: "Site".into(),
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+                group_name: None,
+            })
+            .expect("commit");
+        let paths = commit.groups.iter().map(|g| g.path.clone()).collect();
+        (
+            OrdinationService::new(&dir).expect("ordination service"),
+            dir,
+            paths,
+        )
+    }
+
+    #[test]
+    fn pca_over_multiple_group_files_concatenates_rows() {
+        let (service, dir, paths) = service_with_group_files();
+        assert_eq!(paths.len(), 3);
+        let groups = GroupService::new(&dir).expect("group service");
+        let expected_rows: usize = paths
+            .iter()
+            .map(|p| groups.rows(p).expect("rows").rows.len())
+            .sum();
+        let first_revision = groups.rows(&paths[0]).expect("rows").revision_id;
+        let response = service
+            .pca(&PcaRequest {
+                path: paths[0].clone(),
+                columns: vec!["as".into(), "fe".into()],
+                scale: false,
+                transformation: None,
+                extra_paths: paths[1..].to_vec(),
+            })
+            .expect("multi-file pca");
+        assert_eq!(expected_rows, 6);
+        assert_eq!(response.scores.len(), expected_rows);
+        assert_eq!(response.path, paths[0]);
+        assert_eq!(response.revision_id, first_revision);
+        // The center is the mean over the concatenated rows (all six units).
+        assert!((response.center[0] - 34.5 / 6.0).abs() < 1e-12);
+        assert!((response.center[1] - 24.0 / 6.0).abs() < 1e-12);
+
+        // Listing a file twice is rejected rather than double-counting rows.
+        let err = service
+            .pca(&PcaRequest {
+                path: paths[0].clone(),
+                columns: vec!["as".into()],
+                scale: false,
+                transformation: None,
+                extra_paths: vec![paths[0].clone()],
+            })
+            .expect_err("duplicate path");
+        assert!(matches!(
+            err,
+            DomainError::Validation { ref code, .. } if code == "duplicate_ordination_path"
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lda_group_by_file_uses_file_group_names() {
+        let (service, dir, paths) = service_with_group_files();
+        let response = service
+            .lda(&LdaRequest {
+                path: paths[0].clone(),
+                columns: vec!["as".into(), "fe".into()],
+                group_column: String::new(),
+                transformation: None,
+                extra_paths: paths[1..].to_vec(),
+                group_by_file: true,
+            })
+            .expect("lda by file");
+        assert_eq!(response.levels, vec!["A", "B", "C"]);
+        assert_eq!(response.counts, vec![2, 2, 2]);
+        assert_eq!(response.scores.len(), 6);
+
+        // Same rows labelled by the descriptive Site column agree exactly.
+        let by_column = service
+            .lda(&LdaRequest {
+                path: paths[0].clone(),
+                columns: vec!["as".into(), "fe".into()],
+                group_column: "Site".into(),
+                transformation: None,
+                extra_paths: paths[1..].to_vec(),
+                group_by_file: false,
+            })
+            .expect("lda by column");
+        assert_eq!(by_column.levels, response.levels);
+        assert_eq!(by_column.scores, response.scores);
+
+        // The legacy three-group minimum still applies to file labels.
+        let err = service
+            .lda(&LdaRequest {
+                path: paths[0].clone(),
+                columns: vec!["as".into(), "fe".into()],
+                group_column: String::new(),
+                transformation: None,
+                extra_paths: vec![paths[1].clone()],
+                group_by_file: true,
+            })
+            .expect_err("two files rejected");
+        assert!(err
+            .to_string()
+            .contains("LDA requires at least 3 groups. Current selection has 2."));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn multi_file_ordination_requires_columns_in_every_file() {
+        let (service, dir, paths) = service_with_group_files();
+        std::fs::write(
+            dir.join("other.csv"),
+            "anid,Site,as,cu\nD1,D,1,2\nD2,D,3,4\n",
+        )
+        .expect("write source");
+        let import = crate::import::ImportService::new(&dir).expect("import service");
+        let other = import
+            .commit(&ImportCommitRequest {
+                source: "other.csv".into(),
+                group_column: "Site".into(),
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+                group_name: None,
+            })
+            .expect("commit other");
+        let other_path = other.groups[0].path.clone();
+        let err = service
+            .pca(&PcaRequest {
+                path: paths[0].clone(),
+                columns: vec!["as".into(), "fe".into()],
+                scale: false,
+                transformation: None,
+                extra_paths: vec![other_path.clone()],
+            })
+            .expect_err("missing column in extra file");
+        match err {
+            DomainError::Validation {
+                ref code,
+                ref message,
+                ..
+            } => {
+                assert_eq!(code, "missing_elemental_column");
+                assert!(message.contains(&other_path), "{message}");
+                assert!(message.contains("\"fe\""), "{message}");
+            }
+            other => panic!("unexpected error {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

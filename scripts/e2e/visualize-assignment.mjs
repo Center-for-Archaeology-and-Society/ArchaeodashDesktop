@@ -23,10 +23,21 @@ async function api(path, body, method = 'POST') {
   return value;
 }
 
+// Data points live in traces that carry customdata; ellipse and legend-swatch
+// traces do not.
 async function chartRows(page) {
   return page.locator('.visualize-scatter').evaluate((graph) =>
-    (graph.data ?? []).reduce((sum, trace) => sum + (trace.x?.length ?? 0), 0),
+    (graph.data ?? []).reduce((sum, trace) => sum + (trace.customdata?.length ?? 0), 0),
   );
+}
+
+// The Dataset picker is a multi-select of group names (all groups by default).
+async function showOnlyGroup(page, groupName) {
+  await page.getByRole('button', { name: /^Dataset:/ }).click();
+  await page.getByRole('button', { name: 'None', exact: true }).click();
+  await page.getByRole('option', { name: groupName, exact: true }).getByRole('checkbox').check();
+  await page.keyboard.press('Escape');
+  await page.locator('h1').click();
 }
 
 async function chartUuids(page) {
@@ -78,7 +89,7 @@ try {
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(String(error)));
   await page.goto(`${base}/visualize`);
-  await page.getByLabel('Dataset').selectOption(source.path);
+  await showOnlyGroup(page, 'Source');
 
   const holder = page.locator('.visualize-scatter');
   await page.waitForFunction(() => {
@@ -166,16 +177,16 @@ try {
 
   // Reload and revisit both group files to verify the committed membership is durable.
   await page.reload();
-  await page.getByLabel('Dataset').selectOption(source.path);
+  await showOnlyGroup(page, 'Source');
   await page.waitForFunction((expected) => {
     const graph = document.querySelector('.visualize-scatter');
     return graph?.dataset.renderState === 'complete'
       && graph.querySelector('.main-svg')
-      && (graph.data ?? []).reduce((sum, trace) => sum + (trace.x?.length ?? 0), 0) === expected;
+      && (graph.data ?? []).reduce((sum, trace) => sum + (trace.customdata?.length ?? 0), 0) === expected;
   }, sourceAfter.rows.length);
   assert.ok(!(await chartUuids(page)).includes(movedBefore.analytical_uuid));
   assert.ok(!(await page.locator('body').innerText()).includes(movedBefore.analytical_uuid));
-  await page.getByLabel('Dataset').selectOption(target.path);
+  await showOnlyGroup(page, 'Target');
   await page.waitForFunction((uuid) => {
     const graph = document.querySelector('.visualize-scatter');
     return graph?.dataset.renderState === 'complete'

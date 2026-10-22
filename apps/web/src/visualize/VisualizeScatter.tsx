@@ -40,7 +40,16 @@ export interface VisualizeScatterProps {
   readonly onClearSelection: () => void;
   /** Interactive selection requires a browser; SSR renders the placeholder. */
   readonly interactive?: boolean;
+  /** Legend-only entries explaining the per-point "Symbols by" map. */
+  readonly symbolLegend?: readonly { readonly name: string; readonly symbol: string }[];
 }
+
+/** Above this many points the WebGL renderer is used; SVG below it keeps
+ *  text labels crisp and works in webviews without WebGL. */
+export const WEBGL_POINT_THRESHOLD = 3000;
+
+/** Stable default so the plot effect does not re-run every render. */
+const NO_SYMBOL_LEGEND: readonly { readonly name: string; readonly symbol: string }[] = [];
 
 type PlotlyModule = typeof import('plotly.js-dist-min');
 
@@ -79,6 +88,7 @@ export function VisualizeScatter({
   onSelect,
   onClearSelection,
   interactive = true,
+  symbolLegend = NO_SYMBOL_LEGEND,
 }: VisualizeScatterProps): ReactElement {
   const holder = useRef<HTMLDivElement | null>(null);
   const callbacks = useRef<ScatterCallbacks>({ onSelect, onClearSelection });
@@ -98,6 +108,8 @@ export function VisualizeScatter({
       const Plotly = (await import('plotly.js-dist-min')) as PlotlyModule;
       if (disposed || !holder.current) return;
       const wrapped: Data[] = [];
+      const totalPoints = traces.reduce((sum, t) => sum + t.points.length, 0);
+      const pointType = totalPoints > WEBGL_POINT_THRESHOLD ? 'scattergl' : 'scatter';
       for (const t of traces) {
         if (t.ellipse && t.ellipse.px.length > 0) {
           wrapped.push({
@@ -106,13 +118,14 @@ export function VisualizeScatter({
             name: `${t.name} ellipse`,
             x: [...t.ellipse.px],
             y: [...t.ellipse.py],
-            line: { color: t.color, width: 1, dash: 'dash' },
+            line: { color: t.color, width: 1.5 },
+            legendgroup: t.name,
             hoverinfo: 'skip',
             showlegend: false,
           });
         }
         wrapped.push({
-          type: 'scattergl',
+          type: pointType,
           mode: t.showLabels ? 'markers+text' : 'markers',
           name: t.name,
           x: t.points.map((p) => p.x),
@@ -122,13 +135,42 @@ export function VisualizeScatter({
           textposition: 'top center',
           // Hover shows the display label and group, never the uuid.
           hovertemplate: '%{customdata[1]}<extra></extra>',
+          legendgroup: t.name,
+          // Points carry per-point symbols, so a plain swatch trace below
+          // stands in for the group in the legend.
+          showlegend: false,
           marker: {
             color: t.color,
-            symbol: t.symbol,
+            // Per-point symbols carry the "Symbols by" field.
+            symbol: t.points.map((p) => p.symbol),
             size: 8,
+            line: { color: 'rgba(0,0,0,0.35)', width: 0.5 },
           },
           meta: t.name,
         } as Data);
+        wrapped.push({
+          type: 'scatter',
+          mode: 'markers',
+          name: t.name,
+          x: [null],
+          y: [null],
+          legendgroup: t.name,
+          hoverinfo: 'skip',
+          marker: { color: t.color, symbol: 'circle', size: 9 },
+        } as unknown as Data);
+      }
+      for (const entry of symbolLegend) {
+        wrapped.push({
+          type: 'scatter',
+          mode: 'markers',
+          name: entry.name,
+          x: [null],
+          y: [null],
+          legendgroup: '__symbols__',
+          legendgrouptitle: { text: 'Symbols' },
+          hoverinfo: 'skip',
+          marker: { color: '#777', symbol: entry.symbol, size: 8 },
+        } as unknown as Data);
       }
       const layout = {
         dragmode: dragMode,
@@ -150,7 +192,7 @@ export function VisualizeScatter({
     return () => {
       disposed = true;
     };
-  }, [traces, xLabel, yLabel, dragMode, interactive]);
+  }, [traces, xLabel, yLabel, dragMode, interactive, symbolLegend]);
 
   return (
     <>

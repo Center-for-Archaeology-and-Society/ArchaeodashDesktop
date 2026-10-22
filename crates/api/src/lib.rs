@@ -2127,6 +2127,7 @@ mod tests {
                             columns: vec!["as".into(), "fe".into()],
                             scale: false,
                             transformation: None,
+                            extra_paths: vec![],
                         })
                         .unwrap(),
                     ))
@@ -2155,6 +2156,7 @@ mod tests {
                             columns: vec!["cu".into()],
                             scale: false,
                             transformation: None,
+                            extra_paths: vec![],
                         })
                         .unwrap(),
                     ))
@@ -2251,6 +2253,8 @@ mod tests {
                             columns: vec!["as".into(), "fe".into()],
                             group_column: "Site".into(),
                             transformation: None,
+                            extra_paths: vec![],
+                            group_by_file: false,
                         })
                         .unwrap(),
                     ))
@@ -2304,6 +2308,8 @@ mod tests {
                             columns: vec!["as".into(), "fe".into()],
                             group_column: "Site".into(),
                             transformation: None,
+                            extra_paths: vec![],
+                            group_by_file: false,
                         })
                         .unwrap(),
                     ))
@@ -2377,6 +2383,7 @@ mod tests {
                         columns,
                         transformation: None,
                         seed: None,
+                        extra_paths: vec![],
                     })
                     .unwrap(),
                 ))

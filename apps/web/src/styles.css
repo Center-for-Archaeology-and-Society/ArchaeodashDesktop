@@ -373,3 +373,106 @@ body {
 .data-manager-page label { display: inline-flex; align-items: center; gap: 0.4rem; margin: 0.4rem 1rem 0.4rem 0; }
 .data-manager-page select, .data-manager-page input:not([type=checkbox]):not([type=radio]) { max-width: 100%; }
 .data-manager-page li { margin-block: 0.35rem; overflow-wrap: anywhere; }
+
+/* Shared Plotly chart holder (profile, ordination). */
+.plotly-chart {
+  width: 100%;
+  min-height: 240px;
+}
+
+.table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.crosstab-table td {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.crosstab-table tfoot th,
+.crosstab-table tfoot td,
+.crosstab-table td:last-child {
+  font-weight: 600;
+}
+
+/* Group multiselect dropdown (Visualize & Assign dataset picker). */
+.multiselect {
+  position: relative;
+  display: inline-block;
+}
+
+.multiselect-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 22rem;
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid color-mix(in srgb, var(--muted) 45%, transparent);
+  border-radius: 6px;
+  padding: 0.2rem 0.5rem;
+  cursor: pointer;
+}
+
+.multiselect-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.multiselect-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 12rem;
+  max-height: 18rem;
+  overflow-y: auto;
+  padding: 0.4rem;
+  background: var(--bg);
+  border: 1px solid color-mix(in srgb, var(--muted) 45%, transparent);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+}
+
+.multiselect-actions {
+  display: flex;
+  gap: 0.4rem;
+  padding-bottom: 0.3rem;
+  margin-bottom: 0.3rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--muted) 25%, transparent);
+}
+
+.multiselect-option {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.2rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.multiselect-option:hover {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+
+/* Ordination PCA: scree chart beside its variance table. */
+.ordination-scree {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: start;
+}
+
+@media (max-width: 50rem) {
+  .ordination-scree {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.variance-table td:not(:first-child) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}

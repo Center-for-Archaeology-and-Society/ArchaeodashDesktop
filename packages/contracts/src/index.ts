@@ -310,6 +310,9 @@ export type OrdinationResponseBase = {
 
 export interface PcaRequest extends OrdinationRequestBase {
   scale?: boolean;
+  /** Extra group files ordinated with `path`; rows are `path`'s rows then
+   *  each entry's rows, in order. */
+  extra_paths?: string[];
 }
 
 export interface PcaResponse extends OrdinationResponseBase {
@@ -324,7 +327,13 @@ export interface PcaResponse extends OrdinationResponseBase {
 }
 
 export interface LdaRequest extends OrdinationRequestBase {
+  /** Ignored (may be "") when `group_by_file` is true. */
   group_column: string;
+  /** Extra group files ordinated with `path`; rows are `path`'s rows then
+   *  each entry's rows, in order. */
+  extra_paths?: string[];
+  /** Label each row with its file's group name instead of `group_column`. */
+  group_by_file?: boolean;
 }
 
 export interface LdaResponse extends OrdinationResponseBase {
@@ -341,6 +350,9 @@ export interface LdaResponse extends OrdinationResponseBase {
 
 export interface UmapRequest extends OrdinationRequestBase {
   seed?: number | null;
+  /** Extra group files ordinated with `path`; rows are `path`'s rows then
+   *  each entry's rows, in order. */
+  extra_paths?: string[];
 }
 
 export interface UmapResponse extends OrdinationResponseBase {
@@ -531,10 +543,13 @@ export interface CrosstabSummaryRow {
 
 export type CrosstabRows = CrosstabCountRow | CrosstabSummaryRow;
 
-export interface ExploreCrosstabResponse extends OrdinationResponseBase {
+/** The Rust response flattens the tagged `CrosstabRows` enum, so `kind`,
+ *  `rows` (and `result_column` for summaries) sit at the top level. */
+export type ExploreCrosstabResponse = {
+  path: string;
+  revision_id: string;
   summary_method: string;
-  rows: CrosstabRows;
-}
+} & CrosstabRows;
 
 export interface ExploreCompositionalProfileRequest extends OrdinationRequestBase {
   group_column?: string | null;

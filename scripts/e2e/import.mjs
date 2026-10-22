@@ -22,8 +22,10 @@ page.on('pageerror', error => pageErrors.push(String(error)));
 const body = () => page.locator('body').innerText();
 const started = Date.now();
 try {
-  await page.goto(`${base}/data`);
-  await page.getByRole('heading', { name: 'Data Manager', level: 1 }).waitFor();
+  // The Data Manager is a sidebar file manager; Import… opens the wizard dialog.
+  await page.goto(`${base}/`);
+  await page.getByRole('button', { name: 'Import…', exact: true }).click();
+  await page.getByRole('dialog').waitFor();
   await page.getByLabel(/Choose a CSV, TSV, or XLSX file/).setInputFiles(csvPaths[0]);
   await page.getByText('12 rows; 6 columns', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Import groups' }).count(), 0, 'import must wait for a grouping mode');

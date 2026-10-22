@@ -17,7 +17,7 @@ import {
   type PlotPair,
   type SamplingPlan,
 } from './multiplot-model.ts';
-import { colorFor } from './visualize-model.ts';
+import { colorFor, groupColors } from './visualize-model.ts';
 
 export const MIN_HEIGHT = 500;
 export const MAX_HEIGHT = 2000;
@@ -69,10 +69,12 @@ export function panelPoints(
     if (bucket) bucket.push(point);
     else byGroup.set(name, [point]);
   }
+  // Same spread palette as the single plot, so a group keeps its color.
+  const palette = groupColors(props.groupNames.length);
   return {
     traces: [...byGroup.entries()].map(([name, points], gi) => ({
       name,
-      color: colorFor(props.groupNames.indexOf(name) >= 0 ? props.groupNames.indexOf(name) : gi),
+      color: palette[props.groupNames.indexOf(name)] ?? colorFor(gi),
       points,
     })),
     drawn: [...byGroup.values()].reduce((n, pts) => n + pts.length, 0),

@@ -157,12 +157,12 @@ test('ordination page renders the legacy PCA/UMAP/LDA tab order', () => {
   assert.ok(html.includes('Load a dataset to run ordination.'));
 });
 
-test('PCA view shows variance bars, cumulative summary, and score table', () => {
+test('PCA view shows the scree chart, variance table, and score table', () => {
   const html = renderToString(<PcaResult result={pca} onRecompute={() => {}} />);
   assert.ok(html.includes('Explained variance per component'));
   assert.ok(html.includes('84.0%'), 'cumulative variance summary');
   assert.ok(html.includes('PC1') && html.includes('PC2'));
-  assert.ok(html.includes('variance-bars') && html.includes('plot-point'));
+  assert.ok(html.includes('variance-table') && html.includes('Score table'));
 });
 
 test('UMAP view surfaces the fixed legacy seed and warnings', () => {
