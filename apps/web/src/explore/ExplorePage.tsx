@@ -4,7 +4,15 @@
  * views over one loaded group file. Legacy tab set: Dataset, Crosstabs,
  * Univariate Plots, Compositional Profile Plot.
  */
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactElement,
+} from 'react';
 import type {
   ExploreCrosstabResponse,
   ExploreHistogramResponse,
@@ -29,6 +37,7 @@ import {
 import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
 import { useGroupFiles } from '../datasets/useGroupFiles.ts';
 import { HiddenIdNote } from './HiddenIdNote.tsx';
+import { CellAutosave, cellKey } from './autosave.ts';
 export interface ExploreDeps {
   readonly groups: GroupsService;
   readonly explore: ExploreService;
@@ -52,68 +61,153 @@ const VIEWS: readonly [ExploreView, string][] = [
 ];
 
 /**
- * Dataset table over the selected groups (descriptive edits only). Rows from
- * several group files are shown together; edits are saved back to each
- * row's own file. The synthetic group column, and columns a row's file does
- * not have, are read-only.
+ * Dataset table over the selected groups (descriptive edits only). Edits
+ * autosave when a cell loses focus (or on Enter); Escape reverts the cell.
+ * Saves go to each row's own group file through `CellAutosave`, which also
+ * provides undo/redo. The synthetic group column, and columns a row's file
+ * does not have, are read-only.
  */
 export function DataTable({
   files,
   deps,
-  onSaved,
+  autosave,
+  onReload,
 }: {
   files: readonly LoadedGroupFile[];
   deps: ExploreDeps;
-  onSaved: () => void;
+  autosave: CellAutosave;
+  /** Reload the groups from disk (after a conflict). */
+  onReload: () => void;
 }): ReactElement {
   const combined = useMemo(() => combineGroupFiles(files), [files]);
-  // Drafts key on uuid+NUL+column so batched edits address hidden identity
-  // per column; the UUID itself is never rendered (Section 3.2).
+  // Drafts key on uuid+NUL+column (the UUID itself is never rendered).
   const [drafts, setDrafts] = useState<Map<string, string>>(new Map());
-  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | { error: string }>(
-    'idle',
-  );
+  const [, setTick] = useState(0);
+  const [exportError, setExportError] = useState('');
   const fileOf = useMemo(() => new Map(files.map((f) => [f.path, f])), [files]);
 
-  const editCount = drafts.size;
+  useEffect(() => autosave.onChange(() => setTick((t) => t + 1)), [autosave]);
 
-  const saveEdits = useCallback(async () => {
-    if (drafts.size === 0) return;
-    setSaveState('saving');
-    try {
-      const pathOfUuid = new Map(combined.rows.map((r, i) => [r.analytical_uuid, combined.pathOf[i]!]));
-      const byPath = new Map<string, { analytical_uuid: string; column: string; value: string }[]>();
-      for (const [key, value] of drafts) {
-        const sep = key.indexOf('\u0000');
-        const uuid = key.slice(0, sep);
-        const path = pathOfUuid.get(uuid);
-        if (!path) continue;
-        const list = byPath.get(path) ?? [];
-        list.push({ analytical_uuid: uuid, column: key.slice(sep + 1), value });
-        byPath.set(path, list);
+  const cellRef = useRef(new Map<string, { path: string; uuid: string; column: string; label: string }>());
+  const savedValue = useCallback(
+    (key: string, original: string | null): string | null =>
+      autosave.saved.has(key) ? (autosave.saved.get(key) ?? null) : original,
+    [autosave],
+  );
+
+  const commitKey = useCallback(
+    (key: string, draft: string, original: string | null) => {
+      const cell = cellRef.current.get(key);
+      setDrafts((prev) => {
+        if (!prev.has(key)) return prev;
+        const next = new Map(prev);
+        next.delete(key);
+        return next;
+      });
+      if (!cell) return;
+      autosave.commit({ ...cell, before: savedValue(key, original), after: draft });
+    },
+    [autosave, savedValue],
+  );
+
+  // Commit unsaved drafts when the table goes away (tab switch, page change)
+  // or the window is hidden/closed; blur does not fire reliably then.
+  const draftsRef = useRef(drafts);
+  draftsRef.current = drafts;
+  const originals = useRef(new Map<string, string | null>());
+  useEffect(() => {
+    const flushDrafts = () => {
+      for (const [key, draft] of draftsRef.current) {
+        const cell = cellRef.current.get(key);
+        if (cell) autosave.commit({ ...cell, before: savedValue(key, originals.current.get(key) ?? null), after: draft });
       }
-      for (const [path, edits] of byPath) {
-        const file = fileOf.get(path);
-        if (!file) continue;
-        await deps.groups.patchDescriptiveValues({
-          path,
-          expected_revision: file.data.revision_id,
-          edits,
-        });
-      }
-      setDrafts(new Map());
-      setSaveState('saved');
-      onSaved();
-    } catch (err: unknown) {
-      setSaveState({ error: err instanceof Error ? err.message : String(err) });
-      // Some files may have saved; reload so revisions stay current.
-      onSaved();
+      draftsRef.current = new Map();
+    };
+    window.addEventListener('pagehide', flushDrafts);
+    return () => {
+      window.removeEventListener('pagehide', flushDrafts);
+      flushDrafts();
+    };
+  }, [autosave, savedValue]);
+
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const mod = event.ctrlKey || event.metaKey;
+    if (!mod) return;
+    const key = event.key.toLowerCase();
+    const target = event.target as HTMLElement;
+    // While a cell has unsaved typing, leave Ctrl+Z to the text field.
+    const editing = target instanceof HTMLInputElement && target.dataset.dirty === 'true';
+    if (editing) return;
+    if (key === 'z' && !event.shiftKey) {
+      event.preventDefault();
+      autosave.undo();
+    } else if ((key === 'z' && event.shiftKey) || key === 'y') {
+      event.preventDefault();
+      autosave.redo();
     }
-  }, [deps, drafts, combined, fileOf, onSaved]);
+  };
+
+  const nextUndo = autosave.undoStack.at(-1);
+  const nextRedo = autosave.redoStack.at(-1);
+  const status = autosave.saving
+    ? 'Saving…'
+    : autosave.failedCount > 0
+      ? `${autosave.failedCount} edit${autosave.failedCount === 1 ? '' : 's'} not saved`
+      : 'All changes saved';
 
   return (
-    <div>
+    <div onKeyDown={onKeyDown}>
       <HiddenIdNote />
+      <div className="table-actions autosave-bar">
+        <button
+          type="button"
+          disabled={!nextUndo}
+          title={nextUndo ? `Undo ${nextUndo.label} (Ctrl+Z)` : 'Nothing to undo'}
+          onClick={() => autosave.undo()}
+        >
+          Undo
+        </button>
+        <button
+          type="button"
+          disabled={!nextRedo}
+          title={nextRedo ? `Redo ${nextRedo.label} (Ctrl+Shift+Z)` : 'Nothing to redo'}
+          onClick={() => autosave.redo()}
+        >
+          Redo
+        </button>
+        <span role="status" className={autosave.failedCount > 0 ? 'autosave-status error' : 'autosave-status'}>
+          {status}
+        </span>
+        {autosave.failedCount > 0 && autosave.conflicts.size === 0 && (
+          <button type="button" onClick={() => autosave.retry()}>
+            Retry
+          </button>
+        )}
+        {autosave.conflicts.size > 0 && (
+          <button type="button" onClick={onReload}>
+            Reload changed groups
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() =>
+            void autosave
+              .idle()
+              .then(() => deps.exports.measuredData({ ...inputPaths(files), raw_text: false }))
+              .then(downloadExportResult)
+              .catch((err: unknown) => setExportError(err instanceof Error ? err.message : String(err)))
+          }
+        >
+          Export measured data (CSV)
+        </button>
+      </div>
+      {autosave.error && autosave.failedCount > 0 && (
+        <p role="alert">
+          Save failed: {autosave.error}
+          {autosave.conflicts.size > 0 && ' Reload to see the current values; unsaved edits are lost.'}
+        </p>
+      )}
+      {exportError && <p role="alert">Export failed: {exportError}</p>}
       <div className="table-scroll">
         <table className="data-table">
           <thead>
@@ -132,7 +226,9 @@ export function DataTable({
           </thead>
           <tbody>
             {combined.rows.map((row, rowIndex) => {
-              const own = fileOf.get(combined.pathOf[rowIndex]!)?.data.descriptive_columns ?? [];
+              const path = combined.pathOf[rowIndex]!;
+              const own = fileOf.get(path)?.data.descriptive_columns ?? [];
+              const rowLabel = row.visible_id ?? `row ${rowIndex + 1}`;
               return (
                 <tr key={row.analytical_uuid}>
                   <td>{row.visible_id ?? ''}</td>
@@ -146,21 +242,51 @@ export function DataTable({
                         </td>
                       );
                     }
-                    const key = `${row.analytical_uuid}\u0000${column}`;
+                    const key = cellKey(row.analytical_uuid, column);
+                    cellRef.current.set(key, {
+                      path,
+                      uuid: row.analytical_uuid,
+                      column,
+                      label: `${column} for ${rowLabel}`,
+                    });
+                    originals.current.set(key, value ?? null);
                     const draft = drafts.get(key);
+                    const cellStatus = autosave.status.get(key);
                     return (
-                      <td key={column}>
+                      <td key={column} className={cellStatus ? `cell-${cellStatus}` : undefined}>
                         <input
-                          value={draft ?? value ?? ''}
-                          aria-label={`${column} for ${row.visible_id ?? `row ${rowIndex + 1}`}`}
-                          onChange={(e) => setDrafts((prev) => new Map(prev).set(key, e.target.value))}
+                          data-dirty={draft !== undefined ? 'true' : undefined}
+                          value={draft ?? savedValue(key, value ?? null) ?? ''}
+                          aria-label={`${column} for ${rowLabel}`}
+                          aria-invalid={cellStatus === 'error' ? true : undefined}
+                          title={cellStatus === 'error' ? 'Not saved' : undefined}
+                          onChange={(e) => {
+                            const text = e.target.value;
+                            setDrafts((prev) => new Map(prev).set(key, text));
+                          }}
+                          onBlur={() => {
+                            if (draft !== undefined) commitKey(key, draft, value ?? null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && draft !== undefined) {
+                              e.preventDefault();
+                              commitKey(key, draft, value ?? null);
+                            } else if (e.key === 'Escape' && draft !== undefined) {
+                              e.preventDefault();
+                              setDrafts((prev) => {
+                                const next = new Map(prev);
+                                next.delete(key);
+                                return next;
+                              });
+                            }
+                          }}
                         />
                       </td>
                     );
                   })}
-                  {row.elemental.map((value, i) => (
+                  {row.elemental.map((v, i) => (
                     <td key={combined.elementalColumns[i] ?? i} className="locked-col">
-                      {value === null ? 'NA' : value}
+                      {v === null ? 'NA' : v}
                     </td>
                   ))}
                 </tr>
@@ -168,30 +294,6 @@ export function DataTable({
             })}
           </tbody>
         </table>
-      </div>
-      <div className="table-actions">
-        <button
-          type="button"
-          disabled={editCount === 0 || saveState === 'saving'}
-          onClick={() => void saveEdits()}
-        >
-          Save descriptive edits ({editCount})
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            void deps.exports
-              .measuredData({ ...inputPaths(files), raw_text: false })
-              .then(downloadExportResult)
-              .catch((err: unknown) => setSaveState({ error: err instanceof Error ? err.message : String(err) }))
-          }
-        >
-          Export measured data (CSV)
-        </button>
-        {saveState === 'saved' && <span role="status">Saved.</span>}
-        {typeof saveState === 'object' && 'error' in saveState && (
-          <span role="alert">Save failed: {saveState.error}</span>
-        )}
       </div>
     </div>
   );
@@ -595,6 +697,22 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
   const [view, setView] = useState<ExploreView>('table');
 
   const data = useMemo(() => asRowsResponse(files, combined), [files, combined]);
+  // One autosave (and undo history) per loaded set of files, kept while you
+  // switch Explore tabs. Saves update revisions in place, without reloading.
+  const autosave = useMemo(
+    () =>
+      new CellAutosave(
+        (request) => deps.groups.patchDescriptiveValues(request),
+        new Map(files.map((f) => [f.path, f.data.revision_id])),
+      ),
+    [deps, files],
+  );
+  // Views that read from disk wait for pending saves first.
+  const [savesSettled, setSavesSettled] = useState(true);
+  useEffect(() => {
+    setSavesSettled(!autosave.saving);
+    return autosave.onChange(() => setSavesSettled(!autosave.saving));
+  }, [autosave]);
   const input = useMemo(() => inputPaths(files), [files]);
   // Remount views when the selection or a file revision changes.
   const viewKey = files.map((f) => `${f.path}@${f.data.revision_id}`).join('|');
@@ -636,15 +754,18 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
       )}
       {load.kind === 'loaded' && files.length > 0 && (
         <div key={viewKey}>
-          {view === 'table' && <DataTable files={files} deps={deps} onSaved={dataset.reload} />}
-          {view === 'missing' && <MissingView deps={deps} input={input} columns={combined.elementalColumns} />}
-          {view === 'histogram' && (
+          {view === 'table' && (
+            <DataTable files={files} deps={deps} autosave={autosave} onReload={dataset.reload} />
+          )}
+          {view !== 'table' && !savesSettled && <p role="status">Saving table edits…</p>}
+          {savesSettled && view === 'missing' && <MissingView deps={deps} input={input} columns={combined.elementalColumns} />}
+          {savesSettled && view === 'histogram' && (
             <HistogramView deps={deps} input={input} columns={combined.elementalColumns} />
           )}
-          {view === 'crosstab' && (
+          {savesSettled && view === 'crosstab' && (
             <CrosstabView deps={deps} input={input} data={data} defaultGroupColumn={defaultGroupColumn(combined)} />
           )}
-          {view === 'profile' && (
+          {savesSettled && view === 'profile' && (
             <ProfileView
               deps={deps}
               input={input}

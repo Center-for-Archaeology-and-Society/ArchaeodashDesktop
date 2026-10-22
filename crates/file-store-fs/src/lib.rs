@@ -34,6 +34,11 @@ const ORIGINALS_DIR: &str = "originals";
 const STAGED_PREFIX: &str = "staged-";
 /// Bounded prior-revision archive per group path (Section 6.8).
 const MAX_HISTORY_PER_GROUP: usize = 3;
+/// Descriptive edits autosave one cell at a time. So the bounded history is
+/// not flooded with near-identical single-cell revisions, a run of edits to
+/// one group shares one prior-revision snapshot for this long; any other
+/// transaction on the group starts a new snapshot.
+const EDIT_SNAPSHOT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 #[cfg(test)]
 thread_local! { static FAIL_PUBLISH_INDEX: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) }; }
@@ -227,11 +232,16 @@ impl FsGroupFileStore {
 
     /// Copies an existing file into the transaction's originals area and
     /// archives one bounded prior revision under `.archaeodash/history`.
+    ///
+    /// `edit_session` (descriptive edits) skips the history snapshot when the
+    /// group's newest snapshot was taken by an edit less than
+    /// `EDIT_SNAPSHOT_INTERVAL` ago; the transaction backup is still made.
     fn backup_original(
         &self,
         tx_dir: &Path,
         rel: &str,
         revision_id: &str,
+        edit_session: bool,
     ) -> Result<Option<BackupRecord>, StoreError> {
         let current = self.resolve(rel)?;
         if !current.exists() {
@@ -249,7 +259,7 @@ impl FsGroupFileStore {
             Ok(entries) => entries,
             Err(e) => return Err(io_err(e)),
         };
-        let mut seq: usize = entries
+        let seq: usize = entries
             .filter_map(|e| e.ok())
             .filter_map(|e| {
                 e.file_name()
@@ -262,6 +272,28 @@ impl FsGroupFileStore {
             .max()
             .map(|m| m + 1)
             .unwrap_or(0);
+        // Marker beside (not inside) the group's history dir: "<seq>" of the
+        // snapshot an edit session took. It only counts while that snapshot
+        // is still the newest and the session is recent.
+        let marker = self.history_root().join(format!("{key}.edit-session"));
+        if edit_session && seq > 0 {
+            let newest = seq - 1;
+            let recent = fs::metadata(&marker)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| SystemTime::now().duration_since(t).ok())
+                .is_some_and(|age| age < EDIT_SNAPSHOT_INTERVAL);
+            let same = fs::read_to_string(&marker)
+                .ok()
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                == Some(newest);
+            if recent && same {
+                return Ok(Some(BackupRecord {
+                    path: rel.to_string(),
+                    backup_file,
+                }));
+            }
+        }
         // Prune to the bounded archive before writing the newest revision.
         let mut archived: Vec<PathBuf> = fs::read_dir(&history_group)
             .map_err(io_err)?
@@ -273,9 +305,11 @@ impl FsGroupFileStore {
             let oldest = archived.remove(0);
             fs::remove_file(oldest).map_err(io_err)?;
         }
-        let _ = &mut seq;
         let history_name = format!("{seq:06}-{revision_id}.parquet");
         fs::copy(&current, history_group.join(history_name)).map_err(io_err)?;
+        if edit_session {
+            fs::write(&marker, seq.to_string()).map_err(io_err)?;
+        }
 
         Ok(Some(BackupRecord {
             path: rel.to_string(),
@@ -297,6 +331,11 @@ impl GroupFileStore for FsGroupFileStore {
 
     fn execute(&self, tx: &Transaction) -> Result<String, StoreError> {
         let _project_lock = self.project_lock()?;
+        // Descriptive edits share a history snapshot per edit session.
+        let edit_session = matches!(
+            tx.action,
+            archaeodash_storage::TransactionAction::PatchDescriptive
+        );
         let input_paths: std::collections::HashSet<&str> =
             tx.inputs.iter().map(|i| i.path.as_str()).collect();
         let create_only: std::collections::HashSet<&str> = tx
@@ -421,13 +460,14 @@ impl GroupFileStore for FsGroupFileStore {
                 ));
                 continue;
             }
-            let record = match self.backup_original(&tx_dir, &out.path, &out.revision_id) {
-                Ok(record) => record,
-                Err(e) => {
-                    abort(&tx_dir, &backups, &created_by_tx)?;
-                    return Err(e);
-                }
-            };
+            let record =
+                match self.backup_original(&tx_dir, &out.path, &out.revision_id, edit_session) {
+                    Ok(record) => record,
+                    Err(e) => {
+                        abort(&tx_dir, &backups, &created_by_tx)?;
+                        return Err(e);
+                    }
+                };
             if record.is_some() {
                 backups.extend(record);
             }
@@ -437,7 +477,7 @@ impl GroupFileStore for FsGroupFileStore {
             ));
         }
         for rel in &tx.delete_paths {
-            let record = match self.backup_original(&tx_dir, rel, "deleted") {
+            let record = match self.backup_original(&tx_dir, rel, "deleted", false) {
                 Ok(record) => record,
                 Err(e) => {
                     abort(&tx_dir, &backups, &created_by_tx)?;
@@ -1288,6 +1328,56 @@ mod tests {
         assert_eq!(recovered, 1);
         assert!(!created_path.exists(), "created output rolled back");
         assert!(!tx_dir.exists());
+    }
+
+    #[test]
+    fn edit_session_shares_one_history_snapshot() {
+        use archaeodash_storage::TransactionAction;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let store = FsGroupFileStore::new(root).expect("store");
+        let rel = "groups/g1.parquet";
+        let u = Uuid::now_v7();
+        let key = FsGroupFileStore::path_key(rel);
+        let mut rev = 0u32;
+        let mut write = |action: TransactionAction| {
+            let current = read_group_file(&root.join(rel));
+            let inputs = match &current {
+                Ok(data) => vec![input_of(rel, data)],
+                Err(_) => vec![],
+            };
+            let rows = vec![row(u, f64::from(rev), None)];
+            let out = planned(rel, "g1", &format!("rev-{rev}"), rows, &profile("g1").roles);
+            rev += 1;
+            store
+                .execute(&Transaction {
+                    action,
+                    inputs,
+                    outputs: vec![out],
+                    delete_paths: vec![],
+                    selected_uuids: vec![],
+                })
+                .expect("execute");
+        };
+        let snapshots = || {
+            std::fs::read_dir(root.join(HISTORY_DIR).join(&key))
+                .map(|d| d.filter_map(|e| e.ok()).count())
+                .unwrap_or(0)
+        };
+
+        write(TransactionAction::MoveUnits); // creates the file, nothing to archive
+        assert_eq!(snapshots(), 0);
+        // A run of quick cell edits keeps one snapshot: the pre-edit version.
+        write(TransactionAction::PatchDescriptive);
+        write(TransactionAction::PatchDescriptive);
+        write(TransactionAction::PatchDescriptive);
+        assert_eq!(snapshots(), 1);
+        // Any other change snapshots, and the next edit starts a new session.
+        write(TransactionAction::MoveUnits);
+        assert_eq!(snapshots(), 2);
+        write(TransactionAction::PatchDescriptive);
+        write(TransactionAction::PatchDescriptive);
+        assert_eq!(snapshots(), 3);
     }
 
     #[test]

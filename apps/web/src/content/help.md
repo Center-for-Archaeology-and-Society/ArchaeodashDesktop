@@ -164,3 +164,4 @@ Compute Euclidean distance matches between analytical units and reference groups
 - Desktop mode keeps everything on your machine: keep your own backups of project folders. Hosted mode keeps operational backups for disaster recovery only — this is not a substitute for your own copies (see the Privacy Policy and Terms).
 - If an analysis returns no results, verify that required inputs are selected and that selections were confirmed after recent data or option changes.
 - If a save fails because the source file changed since it was loaded, reload the file and re-apply the change; the revision check prevents silent overwrites.
+- Dataset table edits save automatically when you leave a cell or press Enter; Escape cancels an edit in progress. Undo / Redo (Ctrl+Z / Ctrl+Shift+Z) reverse saved edits for as long as Explore stays open with the same groups. A cell that could not be saved is highlighted in red with a Retry option.

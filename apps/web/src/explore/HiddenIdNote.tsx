@@ -6,7 +6,7 @@ export function HiddenIdNote(): React.JSX.Element {
   return (
     <p className="muted hidden-id-note">
       Row identities are managed internally; measured elemental columns are read-only.
-      Descriptive cells can be edited and saved as a new revision.
+      Descriptive cells save automatically when you leave the cell (or press Enter); Escape cancels, and Ctrl+Z undoes a saved edit.
     </p>
   );
 }

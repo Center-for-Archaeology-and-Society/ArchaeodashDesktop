@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { renderToString } from 'react-dom/server';
 import type { ExploreService, ExportsService, GroupsService } from '@archaeodash/client';
 import { CrosstabCountTable, ExplorePage, DataTable, profileTraces, type ExploreDeps } from './ExplorePage.tsx';
+import { CellAutosave } from './autosave.ts';
 function makeDeps(): ExploreDeps {
   const groups = {
     scan: async () => [
@@ -118,7 +119,7 @@ test('explore renders the legacy view tabs; table hides hidden identity', async 
   // loaded data to assert the hidden-identity and read-only guarantees.
   const rows = await deps.groups.rows('groups/Baca.parquet');
   const tableHtml = renderToString(
-    <DataTable files={[{ path: rows.path, groupName: 'Baca', data: rows }]} deps={deps} onSaved={() => {}} />,
+    <DataTable files={[{ path: rows.path, groupName: 'Baca', data: rows }]} deps={deps} autosave={new CellAutosave(async () => { throw new Error('unused'); }, new Map())} onReload={() => {}} />,
   );
   assert.ok(tableHtml.includes('anid'), 'visible id column header');
   assert.ok(tableHtml.includes('A1'), 'visible id cell');
@@ -126,13 +127,17 @@ test('explore renders the legacy view tabs; table hides hidden identity', async 
   assert.ok(tableHtml.includes('locked-col'), 'elemental columns marked read-only');
   const missingId = { ...rows, rows: rows.rows.map(row => ({ ...row, visible_id: null })) };
   const accessible = renderToString(
-    <DataTable files={[{ path: rows.path, groupName: 'Baca', data: missingId }]} deps={deps} onSaved={() => {}} />,
+    <DataTable files={[{ path: rows.path, groupName: 'Baca', data: missingId }]} deps={deps} autosave={new CellAutosave(async () => { throw new Error('unused'); }, new Map())} onReload={() => {}} />,
   );
   assert.ok(!accessible.includes('0197aaaa'), 'missing visible IDs never expose internal UUIDs in accessible labels');
   assert.ok(accessible.includes('for row 1'));
   // The synthetic group column shows each row's group and is read-only.
   assert.ok(tableHtml.includes('<th>Group</th>'));
   assert.ok(tableHtml.includes('<td class="locked-col">Baca</td>'));
+  // Autosave replaces the save button: undo/redo and a status line instead.
+  assert.ok(tableHtml.includes('All changes saved'));
+  assert.ok(tableHtml.includes('>Undo</button>') && tableHtml.includes('>Redo</button>'));
+  assert.ok(!tableHtml.includes('Save descriptive edits'));
 });
 
 test('explore missing view renders band table rows', async () => {

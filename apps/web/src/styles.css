@@ -476,3 +476,32 @@ body {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+/* Explore dataset table autosave. */
+.autosave-bar {
+  flex-wrap: wrap;
+  margin: 0.5rem 0;
+}
+
+.autosave-status {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.autosave-status.error {
+  color: #b42318;
+  font-weight: 600;
+}
+
+.data-table td.cell-saving input {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+.data-table td.cell-error {
+  background: color-mix(in srgb, #d92d20 14%, transparent);
+}
+
+.data-table td.cell-error input {
+  border: 1px solid #d92d20;
+}
