@@ -392,8 +392,9 @@ function CrosstabView({
 }
 
 /**
- * Count crosstab pivoted into a contingency table: one row per group level,
- * one column per value level, with row/column totals. NA levels sort last.
+ * Count crosstab as a long table (legacy `count(group, value)`): one row per
+ * group/value combination, columns named after the chosen fields, then the
+ * count. NA levels show as `(Missing)` and keep the backend's sort order.
  */
 export function CrosstabCountTable({
   rows,
@@ -405,47 +406,25 @@ export function CrosstabCountTable({
   valueLabel: string;
 }): ReactElement {
   const label = (v: string | null) => v ?? '(Missing)';
-  const groups = [...new Set(rows.map((r) => label(r.group)))];
-  const values = [...new Set(rows.map((r) => label(r.value)))];
-  const counts = new Map(rows.map((r) => [`${label(r.group)}\u0000${label(r.value)}`, r.count]));
-  const cell = (g: string, v: string) => counts.get(`${g}\u0000${v}`) ?? 0;
-  const total = rows.reduce((sum, r) => sum + r.count, 0);
   return (
     <div className="table-scroll">
       <table className="data-table crosstab-table">
         <thead>
           <tr>
-            <th scope="col">
-              {groupLabel} \ {valueLabel}
-            </th>
-            {values.map((v) => (
-              <th key={v} scope="col">
-                {v}
-              </th>
-            ))}
-            <th scope="col">Total</th>
+            <th scope="col">{groupLabel}</th>
+            <th scope="col">{valueLabel}</th>
+            <th scope="col">count</th>
           </tr>
         </thead>
         <tbody>
-          {groups.map((g) => (
-            <tr key={g}>
-              <th scope="row">{g}</th>
-              {values.map((v) => (
-                <td key={v}>{cell(g, v)}</td>
-              ))}
-              <td>{values.reduce((sum, v) => sum + cell(g, v), 0)}</td>
+          {rows.map((r, i) => (
+            <tr key={i}>
+              <td>{label(r.group)}</td>
+              <td>{label(r.value)}</td>
+              <td>{r.count}</td>
             </tr>
           ))}
         </tbody>
-        <tfoot>
-          <tr>
-            <th scope="row">Total</th>
-            {values.map((v) => (
-              <td key={v}>{groups.reduce((sum, g) => sum + cell(g, v), 0)}</td>
-            ))}
-            <td>{total}</td>
-          </tr>
-        </tfoot>
       </table>
     </div>
   );

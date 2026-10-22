@@ -138,24 +138,25 @@ test('explore missing view renders band table rows', async () => {
   assert.ok(html.includes('Missing values'));
 });
 
-test('count crosstab pivots into a contingency table with totals', () => {
+test('count crosstab is a long table: group field, second field, count', () => {
   const html = renderToString(
     <CrosstabCountTable
-      groupLabel="Site"
-      valueLabel="Ware"
+      groupLabel="site_name"
+      valueLabel="CORE"
       rows={[
-        { group: 'Baca', value: 'Glaze', count: 2 },
-        { group: 'Baca', value: 'WMRW', count: 1 },
-        { group: 'Hooper', value: 'WMRW', count: 4 },
-        { group: null, value: 'Glaze', count: 1 },
+        { group: 'Baca', value: 'D1', count: 18 },
+        { group: 'Hooper', value: 'D1', count: 11 },
+        { group: null, value: 'D2', count: 1 },
       ]}
     />,
   );
-  for (const text of ['Glaze', 'WMRW', 'Hooper', '(Missing)', 'Total']) {
-    assert.ok(html.includes(text), `missing ${text}`);
-  }
-  // Grand total = 2 + 1 + 4 + 1.
-  assert.ok(html.includes('<td>8</td>'));
+  // Field names are the column headers; values are cells, not columns.
+  assert.ok(html.includes('<th scope="col">site_name</th>'));
+  assert.ok(html.includes('<th scope="col">CORE</th>'));
+  assert.ok(html.includes('<th scope="col">count</th>'));
+  assert.ok(!html.includes('<th scope="col">D1</th>'));
+  assert.ok(html.includes('<td>Baca</td><td>D1</td><td>18</td>'));
+  assert.ok(html.includes('<td>(Missing)</td><td>D2</td><td>1</td>'));
 });
 
 test('profile traces draw one gapped line per sample, grouped, log-safe', () => {

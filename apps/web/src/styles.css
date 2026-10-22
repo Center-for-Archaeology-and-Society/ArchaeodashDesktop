@@ -385,15 +385,15 @@ body {
   overflow-x: auto;
 }
 
-.crosstab-table td {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
+.crosstab-table {
+  width: auto;
+  min-width: 24rem;
 }
 
-.crosstab-table tfoot th,
-.crosstab-table tfoot td,
+.crosstab-table th:last-child,
 .crosstab-table td:last-child {
-  font-weight: 600;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Group multiselect dropdown (Visualize & Assign dataset picker). */
