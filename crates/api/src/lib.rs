@@ -815,6 +815,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&ImportCommitRequest {
+                            sheet: None,
                             source: "mini.csv".into(),
                             group_column: "Site".into(),
                             visible_id_column: None,
@@ -977,6 +978,7 @@ mod tests {
                 axum::http::Request::post("/api/v1/imports/commit")
                     .header("content-type", "application/json")
                     .body(json_body(&ImportCommitRequest {
+                        sheet: None,
                         source: "cluster.csv".into(),
                         group_column: "Site".into(),
                         visible_id_column: None,
@@ -1448,6 +1450,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&ImportPreviewRequest {
+                            sheet: None,
                             source: "mini.csv".into(),
                             group_column: Some("Site".into()),
                             group_name: None,
@@ -1477,6 +1480,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&ImportCommitRequest {
+                            sheet: None,
                             source: "mini.csv".into(),
                             group_column: "Site".into(),
                             visible_id_column: None,
@@ -2094,6 +2098,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&ImportPreviewRequest {
+                            sheet: None,
                             source: "../outside.csv".into(),
                             group_column: None,
                             group_name: None,
@@ -2198,6 +2203,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&ImportCommitRequest {
+                            sheet: None,
                             source: "three.csv".into(),
                             group_column: "Site".into(),
                             visible_id_column: None,
@@ -2361,6 +2367,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&ImportCommitRequest {
+                            sheet: None,
                             source: "many.csv".into(),
                             group_column: "Site".into(),
                             visible_id_column: None,

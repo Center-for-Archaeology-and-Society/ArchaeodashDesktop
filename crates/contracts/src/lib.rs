@@ -39,7 +39,7 @@ pub struct ErrorEnvelope {
 /// `imports/preview`). Paths are project-relative; the adapter owns the root.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportPreviewRequest {
-    /// Project-relative path of the source CSV/TSV.
+    /// Project-relative path of the source CSV/TSV/XLSX.
     pub source: String,
     /// Optional group column; when present the response includes the group
     /// partition summary that a commit with the same column would produce.
@@ -47,6 +47,10 @@ pub struct ImportPreviewRequest {
     /// Assign every row to one group instead of partitioning by a column.
     #[serde(default)]
     pub group_name: Option<String>,
+    /// Worksheet to read from an XLSX source; default the first non-empty
+    /// sheet. Ignored for CSV/TSV.
+    #[serde(default)]
+    pub sheet: Option<String>,
 }
 
 /// One group partition from the preview summary.
@@ -75,6 +79,12 @@ pub struct ImportPreviewResponse {
     pub elemental_columns: Vec<String>,
     /// Partition summary; empty when the request omitted `group_column`.
     pub partitions: Vec<PartitionPreview>,
+    /// Worksheet that was read (XLSX sources only).
+    #[serde(default)]
+    pub sheet: Option<String>,
+    /// Every worksheet in an XLSX source, in workbook order; empty for CSV/TSV.
+    #[serde(default)]
+    pub sheets: Vec<String>,
 }
 
 /// Import value-class policies echoed from `archaeodash_data_io::ImportRecipe`.
@@ -95,7 +105,7 @@ pub struct ImportRecipeDto {
 /// project-relative and the caller already chose the file location).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportCommitRequest {
-    /// Project-relative path of the source CSV/TSV.
+    /// Project-relative path of the source CSV/TSV/XLSX.
     pub source: String,
     /// Group column; blank values are rejected. Empty only when `group_name` is set.
     #[serde(default)]
@@ -111,6 +121,10 @@ pub struct ImportCommitRequest {
     pub recipe: Option<ImportRecipeDto>,
     /// Project-relative destination directory for group files; default `groups`.
     pub destination_dir: Option<String>,
+    /// Worksheet to read from an XLSX source; default the first non-empty
+    /// sheet. Ignored for CSV/TSV.
+    #[serde(default)]
+    pub sheet: Option<String>,
 }
 
 /// One published group file.
@@ -1439,6 +1453,8 @@ mod tests {
                 row_count: 12,
                 suggested_path: "groups/Baca.parquet".into(),
             }],
+            sheet: Some("INAA".into()),
+            sheets: vec!["Notes".into(), "INAA".into()],
         };
         let json = serde_json::to_string(&preview).unwrap();
         assert_eq!(
@@ -1447,6 +1463,7 @@ mod tests {
         );
 
         let commit = ImportCommitRequest {
+            sheet: None,
             source: "sources/INAA_test.csv".into(),
             group_column: "Site".into(),
             visible_id_column: None,
@@ -1467,6 +1484,7 @@ mod tests {
         );
 
         let single_group = ImportCommitRequest {
+            sheet: None,
             source: "sources/one.csv".into(),
             group_column: String::new(),
             group_name: Some("Reference Set".into()),

@@ -1,8 +1,9 @@
-//! Text import and the legacy `dataLoader` port (golden #1 semantics).
+//! Source import and the legacy `dataLoader` port (golden #1 semantics).
 //!
-//! Reads CSV/TSV as text (Section 7.1: the dedicated text reader path, not
-//! Calamine), applies `clean_names(case = "none")`, drops any incoming
-//! `rowid`, and prepends a 1-based `rowid` column exactly like the R oracle.
+//! Reads CSV/TSV with the dedicated text reader and XLSX through Calamine
+//! (Section 7.1), always into an all-text frame; then applies
+//! `clean_names(case = "none")`, drops any incoming `rowid`, and prepends a
+//! 1-based `rowid` column exactly like the R oracle.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -38,12 +39,74 @@ impl TextFrame {
     }
 }
 
+/// Supported source formats (Section 7.1 allowlist).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceFormat {
+    Csv,
+    Tsv,
+    Xlsx,
+}
+
+impl SourceFormat {
+    /// Format from a file extension (case-insensitive): `csv`, `tsv`, `xlsx`.
+    pub fn from_extension(extension: &str) -> Option<Self> {
+        match extension.to_ascii_lowercase().as_str() {
+            "csv" => Some(Self::Csv),
+            "tsv" => Some(Self::Tsv),
+            "xlsx" => Some(Self::Xlsx),
+            _ => None,
+        }
+    }
+
+    /// Format from a path's extension.
+    pub fn from_path(path: &Path) -> Option<Self> {
+        Self::from_extension(path.extension()?.to_str()?)
+    }
+}
+
+/// A loaded source: the `dataLoader` frame plus, for workbooks, the sheet
+/// that was read and every sheet name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadedSource {
+    pub frame: TextFrame,
+    pub sheet: Option<String>,
+    pub sheets: Vec<String>,
+}
+
+/// `dataLoader` for any supported format. `sheet` selects a worksheet in an
+/// XLSX workbook (default: the first non-empty sheet) and is ignored for
+/// text formats.
+pub fn load_source(
+    path: &Path,
+    format: SourceFormat,
+    sheet: Option<&str>,
+) -> Result<LoadedSource, ImportError> {
+    let (frame, sheet, sheets) = match format {
+        SourceFormat::Csv => (read_delimited_table(path, b',')?, None, Vec::new()),
+        SourceFormat::Tsv => (read_delimited_table(path, b'\t')?, None, Vec::new()),
+        SourceFormat::Xlsx => {
+            let (frame, used) = crate::excel::read_xlsx_table(path, sheet)?;
+            (frame, Some(used), crate::excel::xlsx_sheet_names(path)?)
+        }
+    };
+    Ok(LoadedSource {
+        frame: finish_data_loader(frame),
+        sheet,
+        sheets,
+    })
+}
+
 /// Reads a delimited text file with the fixture/oracle conventions:
 /// header row present, flexible raggedness tolerated, empty fields -> `None`.
 pub fn read_text_table(path: &Path) -> Result<TextFrame, ImportError> {
+    read_delimited_table(path, b',')
+}
+
+fn read_delimited_table(path: &Path, delimiter: u8) -> Result<TextFrame, ImportError> {
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(true)
         .flexible(true)
+        .delimiter(delimiter)
         .from_path(path)
         .map_err(|e| ImportError::Parse(format!("cannot read {}: {e}", path.display())))?;
     let columns: Vec<String> = reader
@@ -76,8 +139,13 @@ pub const COMMON_INAA_ELEMENTS: [&str; 33] = [
 ];
 
 /// `dataLoader`: clean names, drop incoming `rowid`, prepend 1-based `rowid`.
+/// The format comes from the extension (CSV when there is none).
 pub fn data_loader(path: &Path) -> Result<TextFrame, ImportError> {
-    let mut frame = read_text_table(path)?;
+    let format = SourceFormat::from_path(path).unwrap_or(SourceFormat::Csv);
+    Ok(load_source(path, format, None)?.frame)
+}
+
+fn finish_data_loader(mut frame: TextFrame) -> TextFrame {
     frame.columns = clean_names_case_none(&frame.columns);
     if let Some(pos) = frame.column_index("rowid") {
         frame.columns.remove(pos);
@@ -91,7 +159,7 @@ pub fn data_loader(path: &Path) -> Result<TextFrame, ImportError> {
     for (i, row) in frame.rows.iter_mut().enumerate() {
         row.insert(0, Some((i + 1).to_string()));
     }
-    Ok(frame)
+    frame
 }
 
 /// `default_chem_columns`: lowercase INAA-list matches in frame order;
@@ -238,5 +306,29 @@ mod tests {
         assert_eq!(frame.rows[0][0].as_deref(), Some("1"));
         assert_eq!(frame.rows[1][0].as_deref(), Some("2"));
         assert_eq!(frame.rows[1][3], None);
+    }
+
+    #[test]
+    fn tsv_sources_split_on_tabs() {
+        let dir = tempfile::tempdir().unwrap();
+        // Commas inside TSV fields are data, not separators.
+        let body = "anid\tSite\tfe\nA1\tBaca, NM\t2.5\nA2\tZuni\t\n";
+        let path = dir.path().join("mini.tsv");
+        std::fs::write(&path, body).unwrap();
+        let frame = data_loader(&path).unwrap();
+        assert_eq!(frame.columns, vec!["rowid", "anid", "Site", "fe"]);
+        assert_eq!(frame.rows[0][2].as_deref(), Some("Baca, NM"));
+        assert_eq!(frame.rows[0][3].as_deref(), Some("2.5"));
+        assert_eq!(frame.rows[1][3], None);
+
+        // An explicit format wins over the (meaningless) extension.
+        let staged = dir.path().join("upload.bin");
+        std::fs::write(&staged, body).unwrap();
+        let loaded = load_source(&staged, SourceFormat::Tsv, None).unwrap();
+        assert_eq!(loaded.frame.columns.len(), 4);
+        assert_eq!(loaded.sheet, None);
+        assert!(loaded.sheets.is_empty());
+        assert_eq!(SourceFormat::from_extension("TSV"), Some(SourceFormat::Tsv));
+        assert_eq!(SourceFormat::from_extension("xls"), None);
     }
 }

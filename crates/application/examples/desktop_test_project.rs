@@ -17,11 +17,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let service = ImportService::new(&destination)?;
     let preview = service.preview(&ImportPreviewRequest {
+        sheet: None,
         source: "INAA_test.csv".into(),
         group_column: Some("CORE".into()),
         group_name: None,
     })?;
     let committed = service.commit(&ImportCommitRequest {
+        sheet: None,
         source: "INAA_test.csv".into(),
         group_column: "CORE".into(),
         visible_id_column: preview.id_column,

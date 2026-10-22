@@ -280,6 +280,7 @@ mod tests {
         let import = crate::import::ImportService::new(&dir).expect("import service");
         let commit = import
             .commit(&ImportCommitRequest {
+                sheet: None,
                 source: "mini.csv".into(),
                 group_column: "Site".into(),
                 visible_id_column: None,
@@ -400,6 +401,7 @@ mod tests {
         let import = crate::import::ImportService::new(&dir).expect("import service");
         let commit = import
             .commit(&ImportCommitRequest {
+                sheet: None,
                 source: "two.csv".into(),
                 group_column: "Site".into(),
                 visible_id_column: None,
@@ -510,6 +512,7 @@ mod tests {
         let import = crate::import::ImportService::new(&dir).expect("import service");
         let commit = import
             .commit(&ImportCommitRequest {
+                sheet: None,
                 source: "mini.csv".into(),
                 group_column: "Site".into(),
                 visible_id_column: None,
@@ -630,6 +633,7 @@ mod tests {
         let import = crate::import::ImportService::new(&dir).expect("import service");
         let other = import
             .commit(&ImportCommitRequest {
+                sheet: None,
                 source: "other.csv".into(),
                 group_column: "Site".into(),
                 visible_id_column: None,

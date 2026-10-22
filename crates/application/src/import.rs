@@ -9,8 +9,9 @@ use archaeodash_contracts::{
     ImportPreviewResponse, PartitionPreview,
 };
 use archaeodash_data_io::{
-    data_loader, default_chem_columns, default_id_column, partition_by_group, sanitize_group_name,
-    write_group_file, ImportError, ImportRecipe, Partition, ScanCandidate,
+    default_chem_columns, default_id_column, load_source, partition_by_group, sanitize_group_name,
+    write_group_file, ImportError, ImportRecipe, LoadedSource, Partition, ScanCandidate,
+    SourceFormat,
 };
 use archaeodash_file_store_fs::FsGroupFileStore;
 use sha2::{Digest, Sha256};
@@ -95,7 +96,8 @@ impl ImportService {
         &self,
         req: &ImportPreviewRequest,
     ) -> Result<ImportPreviewResponse, ImportError> {
-        let frame = data_loader(&self.resolve(&req.source)?)?;
+        let loaded = self.load(&req.source, req.sheet.as_deref())?;
+        let frame = loaded.frame;
         let id_column = default_id_column(&frame.columns);
         let elemental_columns = default_chem_columns(&frame.columns);
         let partitions: Vec<PartitionPreview> = import_partitions(
@@ -121,7 +123,20 @@ impl ImportService {
             id_column,
             elemental_columns,
             partitions,
+            sheet: loaded.sheet,
+            sheets: loaded.sheets,
         })
+    }
+
+    /// Loads a source by its extension (CSV, TSV, or XLSX worksheet).
+    fn load(&self, source: &str, sheet: Option<&str>) -> Result<LoadedSource, ImportError> {
+        let path = self.resolve(source)?;
+        let format = SourceFormat::from_path(&path).ok_or_else(|| {
+            ImportError::Parse(format!(
+                "{source}: unsupported source format; use CSV, TSV, or XLSX"
+            ))
+        })?;
+        load_source(&path, format, sheet)
     }
 
     /// Partitions the source by the group column and publishes one
@@ -130,7 +145,7 @@ impl ImportService {
     /// partition order. Every published file passes full validation.
     pub fn commit(&self, req: &ImportCommitRequest) -> Result<ImportCommitResponse, ImportError> {
         let source_path = self.resolve(&req.source)?;
-        let frame = data_loader(&source_path)?;
+        let frame = self.load(&req.source, req.sheet.as_deref())?.frame;
 
         let visible_id_column = req
             .visible_id_column
@@ -290,6 +305,7 @@ mod tests {
     fn preview_returns_defaults_and_partitions_without_touching_source() {
         let (service, _dir, source) = service_with_source();
         let req = ImportPreviewRequest {
+            sheet: None,
             source: source.clone(),
             group_column: Some("Site".into()),
             group_name: None,
@@ -318,6 +334,7 @@ mod tests {
     fn preview_rejects_path_escape() {
         let (service, _dir, _source) = service_with_source();
         let req = ImportPreviewRequest {
+            sheet: None,
             source: "../outside.csv".into(),
             group_column: None,
             group_name: None,
@@ -330,6 +347,7 @@ mod tests {
     fn commit_publishes_one_valid_file_per_group() {
         let (service, dir, source) = service_with_source();
         let req = ImportCommitRequest {
+            sheet: None,
             source,
             group_column: "Site".into(),
             group_name: None,
@@ -379,11 +397,97 @@ mod tests {
     }
 
     #[test]
+    fn xlsx_and_tsv_sources_preview_and_commit() {
+        let dir = tempdir::tempdir().expect("tempdir");
+        let mut book = rust_xlsxwriter::Workbook::new();
+        let notes = book.add_worksheet();
+        notes.set_name("Notes").expect("name");
+        notes.write_string(0, 0, "read me").expect("w");
+        let data = book.add_worksheet();
+        data.set_name("INAA").expect("name");
+        for (col, name) in ["anid", "Site", "fe", "na"].iter().enumerate() {
+            data.write_string(0, col as u16, *name).expect("w");
+        }
+        for (row, (anid, site, fe, na)) in [("A1", "Baca", 2.5, 1.0), ("A2", "Zuni", 3.0, 2.0)]
+            .iter()
+            .enumerate()
+        {
+            let r = row as u32 + 1;
+            data.write_string(r, 0, *anid).expect("w");
+            data.write_string(r, 1, *site).expect("w");
+            data.write_number(r, 2, *fe).expect("w");
+            data.write_number(r, 3, *na).expect("w");
+        }
+        book.save(dir.path().join("book.xlsx")).expect("save");
+        let service = ImportService::new(dir.path()).expect("service");
+
+        // Default sheet is the first non-empty one ("Notes").
+        let preview = service
+            .preview(&ImportPreviewRequest {
+                sheet: None,
+                source: "book.xlsx".into(),
+                group_column: None,
+                group_name: None,
+            })
+            .expect("preview default sheet");
+        assert_eq!(preview.sheet.as_deref(), Some("Notes"));
+        assert_eq!(preview.sheets, vec!["Notes", "INAA"]);
+
+        let preview = service
+            .preview(&ImportPreviewRequest {
+                sheet: Some("INAA".into()),
+                source: "book.xlsx".into(),
+                group_column: Some("Site".into()),
+                group_name: None,
+            })
+            .expect("preview INAA");
+        assert_eq!(preview.row_count, 2);
+        assert_eq!(preview.id_column.as_deref(), Some("anid"));
+        assert_eq!(preview.elemental_columns, vec!["fe", "na"]);
+        assert_eq!(preview.partitions.len(), 2);
+
+        let committed = service
+            .commit(&ImportCommitRequest {
+                sheet: Some("INAA".into()),
+                source: "book.xlsx".into(),
+                group_column: "Site".into(),
+                group_name: None,
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+            })
+            .expect("commit xlsx");
+        assert_eq!(committed.groups.len(), 2);
+        let baca = read_group_file(&dir.path().join(&committed.groups[0].path)).expect("baca");
+        assert_eq!(baca.rows.len(), 1);
+
+        // TSV columns split on tabs, so the same partitioning works.
+        std::fs::write(
+            dir.path().join("tab.tsv"),
+            "anid\tSite\tfe\nT1\tBaca\t1.5\nT2\tHooper\t2.5\n",
+        )
+        .expect("write tsv");
+        let preview = service
+            .preview(&ImportPreviewRequest {
+                sheet: None,
+                source: "tab.tsv".into(),
+                group_column: Some("Site".into()),
+                group_name: None,
+            })
+            .expect("preview tsv");
+        assert_eq!(preview.columns, vec!["rowid", "anid", "Site", "fe"]);
+        assert_eq!(preview.partitions.len(), 2);
+        assert!(preview.sheets.is_empty());
+    }
+
+    #[test]
     fn commit_waits_for_exclusive_store_project_lock() {
         let (service, dir, source) = service_with_source();
         let locker = FsGroupFileStore::new(dir.path()).expect("store lock handle");
         let lock = locker.lock_exclusive().expect("exclusive project lock");
         let request = ImportCommitRequest {
+            sheet: None,
             source,
             group_column: "Site".into(),
             group_name: None,
@@ -420,6 +524,7 @@ mod tests {
         let (service, dir, source) = service_with_source();
         let preview = service
             .preview(&ImportPreviewRequest {
+                sheet: None,
                 source: source.clone(),
                 group_column: None,
                 group_name: Some("Reference Set".into()),
@@ -435,6 +540,7 @@ mod tests {
 
         let committed = service
             .commit(&ImportCommitRequest {
+                sheet: None,
                 source,
                 group_column: String::new(),
                 group_name: Some("Reference Set".into()),
@@ -464,6 +570,7 @@ mod tests {
         ] {
             let error = service
                 .commit(&ImportCommitRequest {
+                    sheet: None,
                     source: source.clone(),
                     group_column,
                     group_name,
@@ -488,6 +595,7 @@ mod tests {
         let service = ImportService::new(dir.path()).expect("service");
         let err = service
             .commit(&ImportCommitRequest {
+                sheet: None,
                 source: "blank.csv".into(),
                 group_column: "Site".into(),
                 visible_id_column: None,
@@ -513,6 +621,7 @@ mod tests {
         let service = ImportService::new(dir.path()).expect("service");
         let resp = service
             .commit(&ImportCommitRequest {
+                sheet: None,
                 source: "collide.csv".into(),
                 group_column: "Site".into(),
                 visible_id_column: None,

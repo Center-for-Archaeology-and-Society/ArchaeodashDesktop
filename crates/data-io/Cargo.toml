@@ -5,10 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "CSV/TSV readers, clean-names compatibility, group Parquet profile read/write, export writers (IMPLEMENTATION.md Section 7)."
+description = "CSV/TSV/XLSX readers, clean-names compatibility, group Parquet profile read/write, export writers (IMPLEMENTATION.md Section 7)."
 
 [dependencies]
 csv = { workspace = true }
+calamine = { workspace = true, features = ["dates"] }
 arrow = { workspace = true }
 parquet = { workspace = true }
 serde = { workspace = true }
@@ -20,6 +21,7 @@ archaeodash-domain = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+rust_xlsxwriter = { workspace = true }
 
 [lints]
 workspace = true

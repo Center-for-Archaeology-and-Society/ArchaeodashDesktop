@@ -779,6 +779,7 @@ mod tests {
         let import = ImportService::new(&dir).expect("import service");
         let imported = import
             .commit(&ImportCommitRequest {
+                sheet: None,
                 source: "cluster.csv".into(),
                 group_column: "Site".into(),
                 visible_id_column: None,
@@ -1075,6 +1076,7 @@ mod tests {
         let desktop = DesktopImport::new();
         let err = desktop
             .open_import_preview(ImportPreviewRequest {
+                sheet: None,
                 source: "x.csv".into(),
                 group_column: None,
                 group_name: None,
@@ -1100,6 +1102,7 @@ mod tests {
 
         let preview = desktop
             .open_import_preview(ImportPreviewRequest {
+                sheet: None,
                 source: "mini.csv".into(),
                 group_column: Some("Site".into()),
                 group_name: None,
@@ -1110,6 +1113,7 @@ mod tests {
 
         let commit = desktop
             .commit_group_import(ImportCommitRequest {
+                sheet: None,
                 source: "mini.csv".into(),
                 group_column: "Site".into(),
                 visible_id_column: None,
@@ -1126,6 +1130,7 @@ mod tests {
         // Path escape attempts are rejected with a safe message.
         let err = desktop
             .open_import_preview(ImportPreviewRequest {
+                sheet: None,
                 source: "../outside.csv".into(),
                 group_column: None,
                 group_name: None,
@@ -1163,6 +1168,7 @@ mod tests {
         import.open_project(&dir).expect("open import");
         import
             .commit_group_import(ImportCommitRequest {
+                sheet: None,
                 source: "mini.csv".into(),
                 group_column: "Site".into(),
                 visible_id_column: None,
@@ -1253,6 +1259,7 @@ mod tests {
         import.open_project(&dir).expect("open project");
         let commit = import
             .commit_group_import(ImportCommitRequest {
+                sheet: None,
                 source: "mini.csv".into(),
                 group_column: "Site".into(),
                 visible_id_column: None,
@@ -1410,6 +1417,7 @@ mod tests {
         let import = ImportService::new(&dir).expect("import service");
         let commit = import
             .commit(&ImportCommitRequest {
+                sheet: None,
                 source: "mini.csv".into(),
                 group_column: "Site".into(),
                 visible_id_column: None,
@@ -1510,6 +1518,7 @@ mod tests {
         let import = ImportService::new(&dir).expect("import service");
         let commit = import
             .commit(&ImportCommitRequest {
+                sheet: None,
                 source: "mini.csv".into(),
                 group_column: "Site".into(),
                 visible_id_column: None,
@@ -1569,6 +1578,7 @@ mod tests {
         let import = ImportService::new(&dir).expect("import service");
         let commit = import
             .commit(&ImportCommitRequest {
+                sheet: None,
                 source: "mini.csv".into(),
                 group_column: "Site".into(),
                 visible_id_column: None,
@@ -1636,6 +1646,7 @@ mod tests {
         .expect("write source");
         let commit = import
             .commit(&ImportCommitRequest {
+                sheet: None,
                 source: "many.csv".into(),
                 group_column: "Site".into(),
                 visible_id_column: None,
@@ -1703,6 +1714,7 @@ mod tests {
         let import = ImportService::new(&dir).expect("import service");
         let commit = import
             .commit(&ImportCommitRequest {
+                sheet: None,
                 source: "mini.csv".into(),
                 group_column: "Site".into(),
                 visible_id_column: None,

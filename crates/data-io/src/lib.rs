@@ -1,13 +1,15 @@
-//! CSV/TSV text import, `clean_names(case = "none")` compatibility, and the
+//! CSV/TSV/XLSX source import, `clean_names(case = "none")` compatibility, and the
 //! ArchaeoDash Group Parquet profile (IMPLEMENTATION.md Sections 6.6 and 7).
 
 pub mod clean_names;
+pub mod excel;
 pub mod export;
 pub mod group_profile;
 pub mod loader;
 pub mod rnum;
 
 pub use clean_names::{clean_name_case_none, clean_names_case_none, dedupe_names};
+pub use excel::{read_xlsx_table, xlsx_sheet_names};
 pub use export::{csv_field, sync_dir, write_atomic, write_text_csv};
 pub use group_profile::{
     assert_no_derived_columns, check_group_read_limits, measured_elemental_checksum,
@@ -18,7 +20,8 @@ pub use group_profile::{
 };
 pub use loader::{
     data_loader, default_chem_columns, default_id_column, group_partitions,
-    guess_numeric_columns_fast, numeric_column, read_text_table, TextFrame,
+    guess_numeric_columns_fast, load_source, numeric_column, read_text_table, LoadedSource,
+    SourceFormat, TextFrame,
 };
 pub use rnum::{compensated_sum, parse_r_numeric, r_format_double, r_round};
 

@@ -23,6 +23,7 @@ fn fixture() -> (std::path::PathBuf, String) {
     let import = ImportService::new(&dir).expect("import service");
     let result = import
         .commit(&ImportCommitRequest {
+            sheet: None,
             source: "mini.csv".into(),
             group_column: "Site".into(),
             visible_id_column: None,

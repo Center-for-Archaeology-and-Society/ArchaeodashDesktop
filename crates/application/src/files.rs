@@ -15,7 +15,7 @@
 use std::path::PathBuf;
 
 use archaeodash_contracts::{FileDownload, StagedFile};
-use archaeodash_data_io::{data_loader, sync_dir, ImportError};
+use archaeodash_data_io::{load_source, sync_dir, ImportError, SourceFormat};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -200,15 +200,14 @@ impl SourceFileService {
             hasher.update(content);
             format!("{:x}", hasher.finalize())
         };
-        // CSV is the only format with a tested parser in the Rust port so
-        // far; TSV/XLSX stay deferred until their Section 7.1 adapters land.
-        let (parse_state, parse_error) = if format == "csv" {
-            match data_loader(&staged) {
+        // Parse-check with the format's reader (the quarantined file has no
+        // meaningful extension, so the format is passed explicitly).
+        let (parse_state, parse_error) = match SourceFormat::from_extension(&format) {
+            Some(source_format) => match load_source(&staged, source_format, None) {
                 Ok(_) => (PARSE_PARSED, None),
                 Err(e) => (PARSE_FAILED, Some(e.to_string())),
-            }
-        } else {
-            (PARSE_DEFERRED, None)
+            },
+            None => (PARSE_DEFERRED, None),
         };
         let record = QuarantineRecord {
             file_id: file_id.clone(),
@@ -409,12 +408,29 @@ mod tests {
         assert!(staged.parse_error.is_some());
         assert!(dir.path().join("sources/bad.csv").exists());
 
-        // XLSX defers parsing until the Section 7.1 adapter lands.
+        // XLSX is parse-checked too: a truncated workbook fails...
         let staged = service
             .upload("sources/book.xlsx", b"PK\x03\x04")
             .expect("xlsx upload");
         assert_eq!(staged.format, "xlsx");
-        assert_eq!(staged.parse_state, PARSE_DEFERRED);
+        assert_eq!(staged.parse_state, PARSE_FAILED);
+        // ...and a real one parses.
+        let mut book = rust_xlsxwriter::Workbook::new();
+        let sheet = book.add_worksheet();
+        sheet.write_string(0, 0, "anid").expect("w");
+        sheet.write_string(0, 1, "fe").expect("w");
+        sheet.write_string(1, 0, "A1").expect("w");
+        sheet.write_number(1, 1, 2.5).expect("w");
+        let bytes = book.save_to_buffer().expect("xlsx bytes");
+        let staged = service
+            .upload("sources/good.xlsx", &bytes)
+            .expect("xlsx upload");
+        assert_eq!(staged.parse_state, PARSE_PARSED);
+        // TSV uses tabs.
+        let staged = service
+            .upload("sources/tab.tsv", b"anid\tfe\nA1\t2.5\n".as_slice())
+            .expect("tsv upload");
+        assert_eq!(staged.parse_state, PARSE_PARSED);
     }
 
     #[test]

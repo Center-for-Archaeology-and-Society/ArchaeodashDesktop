@@ -44,6 +44,8 @@ export interface ImportPreviewRequest {
   group_column?: string | null;
   /** Assign every source row to one named group instead of partitioning. */
   group_name?: string | null;
+  /** Worksheet to read from an XLSX source; default the first non-empty sheet. */
+  sheet?: string | null;
 }
 
 export interface PartitionPreview {
@@ -59,6 +61,10 @@ export interface ImportPreviewResponse {
   id_column?: string | null;
   elemental_columns: string[];
   partitions: PartitionPreview[];
+  /** Worksheet that was read (XLSX sources only). */
+  sheet?: string | null;
+  /** Every worksheet in an XLSX source, in workbook order; empty for CSV/TSV. */
+  sheets?: string[];
 }
 
 export interface ImportRecipeDto {
@@ -78,6 +84,8 @@ export interface ImportCommitRequest {
   elemental_columns?: string[] | null;
   recipe?: ImportRecipeDto | null;
   destination_dir?: string | null;
+  /** Worksheet to read from an XLSX source; default the first non-empty sheet. */
+  sheet?: string | null;
 }
 
 export interface CommittedGroup {

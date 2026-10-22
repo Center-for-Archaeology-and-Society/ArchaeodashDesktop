@@ -154,14 +154,14 @@ impl HostedFileStore {
             hasher.update(content);
             format!("{:x}", hasher.finalize())
         };
-        let (parse_state, parse_error) = if extension == "csv" {
-            match archaeodash_data_io::data_loader(&staging) {
-                Ok(_) => (PARSE_PARSED, None),
-                Err(e) => (PARSE_FAILED, Some(e.to_string())),
-            }
-        } else {
-            (PARSE_DEFERRED, None)
-        };
+        let (parse_state, parse_error) =
+            match archaeodash_data_io::SourceFormat::from_extension(&extension) {
+                Some(format) => match archaeodash_data_io::load_source(&staging, format, None) {
+                    Ok(_) => (PARSE_PARSED, None),
+                    Err(e) => (PARSE_FAILED, Some(e.to_string())),
+                },
+                None => (PARSE_DEFERRED, None),
+            };
         std::fs::rename(&staging, &target).map_err(HostedFileError::Io)?;
         if let Some(parent) = target.parent() {
             archaeodash_data_io::sync_dir(parent);

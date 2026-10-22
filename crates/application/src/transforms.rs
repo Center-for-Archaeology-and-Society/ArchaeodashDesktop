@@ -481,6 +481,7 @@ mod tests {
         let import = crate::import::ImportService::new(&dir).expect("import service");
         let commit = import
             .commit(&archaeodash_contracts::ImportCommitRequest {
+                sheet: None,
                 source: "mini.csv".into(),
                 group_column: "Site".into(),
                 visible_id_column: None,

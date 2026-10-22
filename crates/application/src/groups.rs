@@ -861,6 +861,7 @@ mod tests {
         let import = ImportService::new(root).expect("import service");
         let resp = import
             .commit(&ImportCommitRequest {
+                sheet: None,
                 source: "mini.csv".into(),
                 group_column: "Site".into(),
                 visible_id_column: None,
