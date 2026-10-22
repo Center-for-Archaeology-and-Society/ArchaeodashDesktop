@@ -77,7 +77,8 @@ revision mechanism remains open.
 
 - Applying definitions against hosted group files (the hosted analysis
   surface) — `input_checksums` is reserved for it.
-- Counting definition bytes in `storage_quotas` (quota policy revision).
+- Counting definition bytes in `storage_quotas` (quota policy revision) —
+  done 2026-10-21, see [[Phase_8_Quota_Policy_Definition_Bytes_2026-10-21]].
 - A hosted `/projects` UI panel for definitions (the transport service and
   routes are ready for it).
 

@@ -117,8 +117,9 @@ pub fn hosted_router(state: HostedState) -> Router {
 }
 
 /// `GET /api/v1/quota` — the session user's storage accounting (Section 6.9):
-/// logical bytes, reserved bytes, live file count, and the effective limit.
-/// Zero rows (never uploaded) report zeros against the configured limit.
+/// logical bytes (live files plus transformation definitions), reserved
+/// bytes, live file count, and the effective limit. Zero rows (never
+/// stored anything) report zeros against the configured limit.
 async fn quota_get(
     State(state): State<HostedState>,
     headers: HeaderMap,
@@ -164,13 +165,7 @@ async fn files_upload(
         .await
         .map_err(crate::auth::db_error)?
     {
-        return Err((
-            StatusCode::PAYLOAD_TOO_LARGE,
-            Json(ErrorEnvelope {
-                code: "quota_exceeded".into(),
-                message: "Storage quota exceeded for this account.".into(),
-            }),
-        ));
+        return Err(quota_exceeded());
     }
     let staged = match state
         .files
@@ -423,9 +418,20 @@ struct UploadFileQuery {
 // JSON lives in the project's `transformations/` file-store namespace.
 
 /// A definition body is small configuration JSON; anything larger is a
-/// malformed client, not a definition (Section 6.9 keeps definition bytes
-/// out of the upload quota until the quota-policy revision slice).
+/// malformed client, not a definition. Stored definition bytes count toward
+/// the owner's quota (Section 6.9, quota policy revision 2).
 const MAX_TRANSFORMATION_BYTES: usize = 256 * 1024;
+
+/// The uniform 413 for a reservation that would exceed the owner's quota.
+fn quota_exceeded() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::PAYLOAD_TOO_LARGE,
+        Json(ErrorEnvelope {
+            code: "quota_exceeded".into(),
+            message: "Storage quota exceeded for this account.".into(),
+        }),
+    )
+}
 
 /// The catalog's summary serialization of one definition row.
 #[derive(serde::Serialize)]
@@ -491,7 +497,10 @@ fn method_tag<T: serde::Serialize>(value: &T) -> String {
 /// `POST /api/v1/projects/{id}/transformations` — saves (upserts by name)
 /// one definition into the owned project's transformations namespace.
 /// CSRF applies; the project ownership check happens before any object
-/// write; a replaced revision's object moves to trash for the sweep.
+/// write. Quota (Section 6.9): the new body's bytes are reserved before the
+/// object write and committed after the catalog write; a replaced revision's
+/// bytes are then refunded, so the net charge is the size difference. The
+/// full new size is reserved up front because both objects briefly coexist.
 async fn transformations_save(
     State(state): State<HostedState>,
     headers: HeaderMap,
@@ -557,16 +566,28 @@ async fn transformations_save(
     };
     let body = serde_json::to_vec(&stored)
         .map_err(|_| internal_error("definition serialization failed"))?;
-    let object = state
-        .files
-        .write_definition_object(
-            principal.user.id,
-            project_id,
-            transformation_id,
-            &Uuid::now_v7().simple().to_string(),
-            &body,
-        )
-        .map_err(file_error)?;
+    let charged = body.len() as i64;
+    if !state
+        .store
+        .reserve_quota(principal.user.id, charged, state.quota_bytes)
+        .await
+        .map_err(crate::auth::db_error)?
+    {
+        return Err(quota_exceeded());
+    }
+    let object = match state.files.write_definition_object(
+        principal.user.id,
+        project_id,
+        transformation_id,
+        &Uuid::now_v7().simple().to_string(),
+        &body,
+    ) {
+        Ok(object) => object,
+        Err(e) => {
+            release_quota(&state, principal.user.id, charged).await;
+            return Err(file_error(e));
+        }
+    };
     match state
         .store
         .upsert_transformation(
@@ -584,6 +605,16 @@ async fn transformations_save(
         .await
     {
         Ok(Some(outcome)) => {
+            let _ = state
+                .store
+                .reconcile_quota(principal.user.id, QuotaOutcome::Commit, charged, 0)
+                .await;
+            if let Some(previous_bytes) = outcome.previous_bytes {
+                let _ = state
+                    .store
+                    .reconcile_quota(principal.user.id, QuotaOutcome::Remove, previous_bytes, 0)
+                    .await;
+            }
             // Replaced revisions keep no history (desktop upsert parity: the
             // definition is one name-keyed JSON). The catalog row now points
             // at the new object only, so the previous bytes are unrecoverable
@@ -612,13 +643,24 @@ async fn transformations_save(
         // must not outlive a rejected catalog write either way.
         Ok(None) => {
             state.files.remove_object(&object.object_key);
+            release_quota(&state, principal.user.id, charged).await;
             Err((StatusCode::NOT_FOUND, json_error_envelope("not_found")))
         }
         Err(e) => {
             state.files.remove_object(&object.object_key);
+            release_quota(&state, principal.user.id, charged).await;
             Err(crate::auth::db_error(e))
         }
     }
+}
+
+/// Returns a reservation that never became stored bytes. Best effort, like
+/// the upload path: a failure here leaves capacity reserved, never charged.
+async fn release_quota(state: &HostedState, user_id: Uuid, bytes: i64) {
+    let _ = state
+        .store
+        .reconcile_quota(user_id, QuotaOutcome::Release, bytes, 0)
+        .await;
 }
 
 /// `GET /api/v1/projects/{id}/transformations` — the owned project's live
@@ -682,8 +724,9 @@ async fn transformations_get(
 }
 
 /// `DELETE /api/v1/projects/{id}/transformations/{transformation_id}` —
-/// tombstones the catalog row and trashes the object. Idempotent semantics:
-/// unknown/foreign/deleted IDs are uniformly 404.
+/// tombstones the catalog row, trashes the object, and refunds its bytes
+/// from the owner's quota. Idempotent semantics: unknown/foreign/deleted IDs
+/// are uniformly 404, so a repeated delete never refunds twice.
 async fn transformations_delete(
     State(state): State<HostedState>,
     headers: HeaderMap,
@@ -701,7 +744,7 @@ async fn transformations_delete(
     else {
         return Err((StatusCode::NOT_FOUND, json_error_envelope("not_found")));
     };
-    let Some(object_key) = state
+    let Some(tombstoned) = state
         .store
         .soft_delete_transformation(
             principal.user.id,
@@ -713,10 +756,14 @@ async fn transformations_delete(
     else {
         return Err((StatusCode::NOT_FOUND, json_error_envelope("not_found")));
     };
+    let _ = state
+        .store
+        .reconcile_quota(principal.user.id, QuotaOutcome::Remove, tombstoned.bytes, 0)
+        .await;
     state.files.trash_object(
         principal.user.id,
         row.project_id,
-        &object_key,
+        &tombstoned.object_key,
         &transformation_id.simple().to_string(),
     );
     Ok(StatusCode::NO_CONTENT)
@@ -1410,6 +1457,25 @@ mod transformation_tests {
         .expect("infallible")
     }
 
+    /// Resolves the session cookie back to its user ID for store assertions.
+    async fn session_user(store: &ControlStore, cookie: &str) -> Uuid {
+        let presentation = cookie
+            .split(';')
+            .map(str::trim)
+            .find_map(|c| c.strip_prefix(crate::auth::SESSION_COOKIE))
+            .and_then(|c| c.strip_prefix('='))
+            .expect("session cookie")
+            .to_string();
+        let digest = archaeodash_auth::token::digest_presentation(&presentation);
+        store
+            .find_live_session(&digest, std::time::SystemTime::now())
+            .await
+            .expect("session lookup")
+            .expect("live session")
+            .1
+            .id
+    }
+
     #[tokio::test]
     async fn transformations_round_trip_with_ownership_and_csrf() {
         let Some((auth, sink)) = auth_state().await else {
@@ -1688,23 +1754,7 @@ mod transformation_tests {
         let (app_state, file_base) = hosted_test_state(auth);
         let store = app_state.store.clone();
         let object_path = |key: &str| file_base.join(key);
-        let user = {
-            let presentation = cookie
-                .split(';')
-                .map(str::trim)
-                .find_map(|c| c.strip_prefix(crate::auth::SESSION_COOKIE))
-                .and_then(|c| c.strip_prefix('='))
-                .expect("session cookie")
-                .to_string();
-            let digest = archaeodash_auth::token::digest_presentation(&presentation);
-            store
-                .find_live_session(&digest, std::time::SystemTime::now())
-                .await
-                .expect("session lookup")
-                .expect("live session")
-                .1
-                .id
-        };
+        let user = session_user(&store, &cookie).await;
         let project = store
             .create_project(
                 Uuid::now_v7(),
@@ -1791,5 +1841,135 @@ mod transformation_tests {
             .join(".trash")
             .join(format!("{}.deleted", transformation_id.simple()));
         assert!(trash.exists(), "object moved to trash for the sweep");
+    }
+
+    /// Quota policy revision 2 (Section 6.9): definition bytes are charged
+    /// on save, a replace charges only the size difference, a delete
+    /// refunds, files are not counted, and a save that would exceed the
+    /// limit is a 413 that leaves no row, object, or reservation behind.
+    #[tokio::test]
+    async fn transformation_bytes_count_toward_the_quota() {
+        let Some((auth, sink)) = auth_state().await else {
+            return;
+        };
+        let (cookie, csrf) = login_session(auth.clone(), sink).await;
+        let (app_state, file_base) = hosted_test_state(auth);
+        let store = app_state.store.clone();
+        let user = session_user(&store, &cookie).await;
+        let project = store
+            .create_project(Uuid::now_v7(), user, "quota", std::time::SystemTime::now())
+            .await
+            .expect("project");
+        let base = format!("/api/v1/projects/{}/transformations", project.project_id);
+        let app = hosted_router(app_state.clone());
+        let usage = || async {
+            store
+                .get_quota(user)
+                .await
+                .expect("quota")
+                .unwrap_or((0, 0, 0))
+        };
+        let stored_bytes = |name: &'static str| {
+            let store = store.clone();
+            async move {
+                store
+                    .get_transformation_by_name(user, project.project_id, name)
+                    .await
+                    .expect("get")
+                    .expect("row")
+                    .bytes
+            }
+        };
+
+        // Create: the stored size is charged; no file is counted.
+        let res = request(
+            app.clone(),
+            "POST",
+            &base,
+            Some(DEFINITION_BODY),
+            &cookie,
+            &csrf,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let first = stored_bytes("Cu over Zn").await;
+        assert!(first > 0);
+        assert_eq!(usage().await, (first, 0, 0));
+
+        // Replace with a larger body: the charge moves to the new size.
+        let larger = DEFINITION_BODY.replace(
+            r#""descriptive_columns":[]"#,
+            r#""descriptive_columns":["Site","Context","Excavation unit"]"#,
+        );
+        let res = request(app.clone(), "POST", &base, Some(&larger), &cookie, &csrf).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let replaced = stored_bytes("Cu over Zn").await;
+        assert!(replaced > first);
+        assert_eq!(usage().await, (replaced, 0, 0));
+
+        // A second definition adds its own size.
+        let other = DEFINITION_BODY.replace("Cu over Zn", "Zn over Cu");
+        let res = request(app.clone(), "POST", &base, Some(&other), &cookie, &csrf).await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let second = stored_bytes("Zn over Cu").await;
+        assert_eq!(usage().await, (replaced + second, 0, 0));
+
+        // Delete refunds; a repeated delete is 404 and refunds nothing.
+        let first_id = store
+            .get_transformation_by_name(user, project.project_id, "Cu over Zn")
+            .await
+            .expect("get")
+            .expect("row")
+            .transformation_id;
+        let uri = format!("{base}/{first_id}");
+        let res = request(app.clone(), "DELETE", &uri, None, &cookie, &csrf).await;
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        assert_eq!(usage().await, (second, 0, 0));
+        let res = request(app.clone(), "DELETE", &uri, None, &cookie, &csrf).await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(usage().await, (second, 0, 0));
+
+        // Over the limit: 413 quota_exceeded, nothing stored or reserved.
+        let mut tight = app_state;
+        tight.quota_bytes = second + 10;
+        let third = DEFINITION_BODY.replace("Cu over Zn", "Over quota");
+        let res = request(
+            hosted_router(tight),
+            "POST",
+            &base,
+            Some(&third),
+            &cookie,
+            &csrf,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let envelope: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(envelope["code"], "quota_exceeded");
+        assert_eq!(usage().await, (second, 0, 0));
+        assert!(store
+            .get_transformation_by_name(user, project.project_id, "Over quota")
+            .await
+            .expect("get")
+            .is_none());
+        // Each definition has its own directory; count object files.
+        let live_objects: usize = std::fs::read_dir(
+            file_base
+                .join("users")
+                .join(user.to_string())
+                .join("projects")
+                .join(project.project_id.to_string())
+                .join("transformations"),
+        )
+        .expect("transformations dir")
+        .map(|entry| {
+            std::fs::read_dir(entry.expect("entry").path())
+                .map(|objects| objects.count())
+                .unwrap_or(0)
+        })
+        .sum();
+        assert_eq!(live_objects, 1, "only the surviving definition remains");
     }
 }

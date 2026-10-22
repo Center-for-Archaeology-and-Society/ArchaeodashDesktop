@@ -136,12 +136,25 @@ pub struct TransformationRow {
 
 /// The outcome of saving one transformation definition: the current row
 /// (revision already bumped), whether an active definition was replaced, and
-/// the replaced revision's object key so the caller can trash the old bytes.
+/// the replaced revision's object key and size so the caller can remove the
+/// old bytes and refund them from the owner's quota (Section 6.9). The
+/// previous size is read under the same `FOR UPDATE` lock as the replace,
+/// so concurrent saves of one name each refund exactly the bytes they
+/// displaced.
 #[derive(Debug, Clone)]
 pub struct UpsertedTransformation {
     pub row: TransformationRow,
     pub replaced: bool,
     pub previous_object_key: Option<String>,
+    pub previous_bytes: Option<i64>,
+}
+
+/// A definition tombstoned by [`ControlStore::soft_delete_transformation`]:
+/// the object key to trash and the byte size to refund from the quota.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct TombstonedTransformation {
+    pub object_key: String,
+    pub bytes: i64,
 }
 
 /// A `sessions` row.
@@ -775,8 +788,8 @@ impl ControlStore {
         let Some(project_id) = owned else {
             return Ok(None);
         };
-        let previous: Option<(Uuid, i32, String)> = sqlx::query_as(
-            "SELECT transformation_id, revision, object_key FROM transformations \
+        let previous: Option<(Uuid, i32, String, i64)> = sqlx::query_as(
+            "SELECT transformation_id, revision, object_key, bytes FROM transformations \
              WHERE project_id = $1 AND name = $2 AND deleted_at IS NULL \
              FOR UPDATE",
         )
@@ -785,7 +798,7 @@ impl ControlStore {
         .fetch_optional(&mut *tx)
         .await?;
         let row = match previous {
-            Some((transformation_id, revision, previous_object_key)) => {
+            Some((transformation_id, revision, previous_object_key, previous_bytes)) => {
                 let row = sqlx::query_as::<_, TransformationRow>(
                     "UPDATE transformations SET revision = $3, object_key = $4, sha256 = $5, \
                             bytes = $6, transform_method = $7, imputation_method = $8, \
@@ -811,6 +824,7 @@ impl ControlStore {
                     row,
                     replaced: true,
                     previous_object_key: Some(previous_object_key),
+                    previous_bytes: Some(previous_bytes),
                 })
             }
             None => {
@@ -839,6 +853,7 @@ impl ControlStore {
                     row,
                     replaced: false,
                     previous_object_key: None,
+                    previous_bytes: None,
                 })
             }
         };
@@ -917,27 +932,29 @@ impl ControlStore {
     }
 
     /// Soft-deletes a live definition the user owns: tombstones the row and
-    /// returns the object key so the caller can move the bytes to trash.
-    /// Returns `Ok(None)` for foreign/unknown/deleted IDs.
+    /// returns the object key (so the caller can move the bytes to trash)
+    /// and the byte size (so the caller can refund the quota). Returns
+    /// `Ok(None)` for foreign/unknown/deleted IDs, so a repeated delete never
+    /// refunds twice.
     pub async fn soft_delete_transformation(
         &self,
         user_id: Uuid,
         transformation_id: Uuid,
         now: SystemTime,
-    ) -> Result<Option<String>, ControlError> {
-        let row: Option<(String,)> = sqlx::query_as(
+    ) -> Result<Option<TombstonedTransformation>, ControlError> {
+        let row: Option<TombstonedTransformation> = sqlx::query_as(
             "UPDATE transformations t SET deleted_at = $3, updated_at = $3 \
              FROM projects p \
              WHERE t.project_id = p.project_id AND t.transformation_id = $1 \
                AND p.user_id = $2 AND t.deleted_at IS NULL \
-             RETURNING t.object_key",
+             RETURNING t.object_key, t.bytes",
         )
         .bind(transformation_id)
         .bind(user_id)
         .bind(to_offset(now))
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|(object_key,)| object_key))
+        Ok(row)
     }
 
     /// Reserves capacity for an incoming upload (Section 6.9): the quota row
@@ -1908,6 +1925,7 @@ mod tests {
         assert!(!first.replaced);
         assert_eq!(first.row.revision, 1);
         assert!(first.previous_object_key.is_none());
+        assert!(first.previous_bytes.is_none());
 
         // Second save of the same name replaces in place: the
         // transformation_id is stable, the revision bumps, and the caller
@@ -1927,6 +1945,8 @@ mod tests {
             second.previous_object_key.as_deref(),
             Some(object_key("t/1.json").as_str())
         );
+        // The displaced size comes back with it for the quota refund.
+        assert_eq!(second.previous_bytes, Some(first.row.bytes));
         // Creation time is preserved across replaces (desktop upsert parity).
         assert_eq!(second.row.created_at, first.row.created_at);
 
@@ -1968,12 +1988,13 @@ mod tests {
 
         // Soft delete tombstones and returns the object key; the name is
         // freed for a fresh definition (new transformation_id, revision 1).
-        let key = store
+        let tombstoned = store
             .soft_delete_transformation(owner.id, second.row.transformation_id, SystemTime::now())
             .await
             .expect("delete")
             .expect("live row");
-        assert_eq!(key, object_key("t/2.json"));
+        assert_eq!(tombstoned.object_key, object_key("t/2.json"));
+        assert_eq!(tombstoned.bytes, second.row.bytes);
         assert!(store
             .get_transformation(owner.id, second.row.transformation_id)
             .await
@@ -1997,6 +2018,79 @@ mod tests {
             .await
             .expect("stranger delete")
             .is_none());
+    }
+
+    /// Migration 0008 (quota policy revision 2) charges each owner's live
+    /// definition bytes exactly once: an uncharged revision-1 row gains the
+    /// sum of live definitions (tombstoned ones excluded), and replaying the
+    /// backfill leaves it unchanged.
+    #[tokio::test]
+    async fn quota_policy_backfill_charges_live_definitions_once() {
+        let Some((store, _pool)) = migrated_store().await else {
+            return;
+        };
+        let (owner, _) = make_user(&store).await;
+        let project_id = Uuid::now_v7();
+        store
+            .create_project(project_id, owner.id, "backfill", SystemTime::now())
+            .await
+            .expect("create project");
+        let key = |suffix: &str| {
+            format!(
+                "users/{}/projects/{project_id}/transformations/{suffix}",
+                owner.id
+            )
+        };
+        // Two live definitions (42 bytes each via the helper) and one
+        // tombstoned, saved directly through the store as the pre-revision
+        // routes did — nothing charged.
+        save_definition(&store, owner.id, project_id, "a", &key("a/1.json")).await;
+        save_definition(&store, owner.id, project_id, "b", &key("b/1.json")).await;
+        let gone = save_definition(&store, owner.id, project_id, "c", &key("c/1.json")).await;
+        store
+            .soft_delete_transformation(owner.id, gone.row.transformation_id, SystemTime::now())
+            .await
+            .expect("delete")
+            .expect("live row");
+        // A pre-existing revision-1 row with 100 bytes of uploaded files.
+        sqlx::query(
+            "INSERT INTO storage_quotas (user_id, logical_bytes, file_count, policy_revision) \
+             VALUES ($1, 100, 1, 1)",
+        )
+        .bind(owner.id)
+        .execute(&store.pool)
+        .await
+        .expect("seed quota row");
+
+        let backfill = include_str!("../migrations/0008_quota_policy_definitions.sql");
+        sqlx::raw_sql(backfill)
+            .execute(&store.pool)
+            .await
+            .expect("backfill");
+        let revision = || async {
+            sqlx::query_scalar::<_, i32>(
+                "SELECT policy_revision FROM storage_quotas WHERE user_id = $1",
+            )
+            .bind(owner.id)
+            .fetch_one(&store.pool)
+            .await
+            .expect("revision")
+        };
+        assert_eq!(
+            store.get_quota(owner.id).await.expect("quota"),
+            Some((100 + 42 + 42, 0, 1))
+        );
+        assert_eq!(revision().await, 2);
+
+        sqlx::raw_sql(backfill)
+            .execute(&store.pool)
+            .await
+            .expect("replay");
+        assert_eq!(
+            store.get_quota(owner.id).await.expect("quota"),
+            Some((100 + 42 + 42, 0, 1)),
+            "replay must not double-charge"
+        );
     }
 
     /// Retention sweep for transformation tombstones: the same cutoff

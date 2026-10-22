@@ -1,0 +1,5 @@
+# Interaction Log 2026-10-21
+
+- Reviewed Vault notes and IMPLEMENTATION.md for remaining conversion work: Phases 0–7 implemented locally; open non-gated items are hosted quota accounting for definitions, applying definitions to hosted group files, hosted results namespace, and a hosted definitions UI; Phase 8 cutover and Phase 9 legacy removal remain owner-gated.
+- Implemented quota policy revision 2: transformation-definition bytes now count toward `storage_quotas` (reserve → commit/release on save, replace charges only the size difference, delete refunds), plus migration 0008 to backfill existing definitions once. See [[Phase_8_Quota_Policy_Definition_Bytes_2026-10-21]].
+- Verified the quota change on the host toolchain (69/69 tests in control-postgres + api against live Postgres; fmt and gate clippy clean). The full verify-local Docker gate didn't complete: the image rebuild stalled on apt, and on this host the repo mount is noexec and host→container networking is broken (host-network Postgres works around it).

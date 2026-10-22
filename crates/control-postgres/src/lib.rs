@@ -11,7 +11,8 @@ mod store;
 
 pub use store::{
     AccountTokenKind, ControlError, ControlStore, FileRow, ProjectRow, QuotaOutcome, SessionRow,
-    SweptFile, SweptTransformation, TransformationRow, UpsertedTransformation, UserRow,
+    SweptFile, SweptTransformation, TombstonedTransformation, TransformationRow,
+    UpsertedTransformation, UserRow,
 };
 
 /// Crate version reported by the smoke use case.

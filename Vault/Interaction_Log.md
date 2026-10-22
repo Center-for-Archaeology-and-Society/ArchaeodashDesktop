@@ -3,6 +3,9 @@
 Daily interaction summaries (brief request + outcome):
 
 - [[Interaction_Log_2026-10-22]]
+- [[Interaction_Log_2026-10-21]]
+- [[Interaction_Log_2026-10-14]]
+
 - [[Interaction_Log_2026-10-08]]
 
 - [[Interaction_Log_2026-10-04]]
