@@ -76,7 +76,17 @@ export function AppShell({
         >
           {sidebarOpen ? '◀' : '▶'}
         </button>
-        <span className="brand">ArchaeoDash</span>
+        <span className="brand">
+          <img
+            className="brand-mark"
+            src="/brand-mark.png"
+            srcSet="/brand-mark.png 1x, /brand-mark@2x.png 2x, /brand-mark@3x.png 3x"
+            width={44}
+            height={28}
+            alt=""
+          />
+          ArchaeoDash
+        </span>
         {projects && (
           <button type="button" onClick={() => void openProject()} disabled={openingProject}>
             {openingProject ? 'Opening…' : projectPath ? 'Switch Project' : 'Open Project'}

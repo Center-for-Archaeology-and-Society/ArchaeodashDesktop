@@ -67,6 +67,8 @@ test('navbar preserves the legacy tab order and labels', () => {
     ['Help', 'Terms & Conditions', 'Privacy Policy'],
   );
   assert.ok(html.includes('aria-haspopup="true"'), 'Info menu is keyboard-reachable');
+  assert.ok(html.includes('src="/brand-mark.png"'), 'brand logo in the navbar');
+  assert.ok(html.includes('/brand-mark@2x.png 2x, /brand-mark@3x.png 3x'), 'HiDPI brand logo variants');
 });
 
 test('theme select offers the three legacy themes and tokens match the legacy palette', () => {
@@ -140,6 +142,8 @@ test('home route renders the project entry guidance', () => {
   assert.ok(html.includes('Data Manager'));
   assert.ok(html.includes('sidebar'));
   assert.ok(!html.includes('href="/data"'));
+  assert.ok(html.includes('alt="ArchaeoDash logo"'), 'home shows the logo');
+  assert.ok(html.includes('/logo-512.png 512w'), 'home logo has a HiDPI source');
 });
 
 test('account page renders the signed-out sign-in form in hosted mode', () => {

@@ -20,6 +20,15 @@ export function MarkdownPage({ markdown, title }: { markdown: string; title: str
 export function HomePage(): ReactElement {
   return (
     <section aria-labelledby="home-heading">
+      <img
+        className="home-logo"
+        src="/logo-256.png"
+        srcSet="/logo-256.png 256w, /logo-512.png 512w"
+        sizes="160px"
+        width={160}
+        height={160}
+        alt="ArchaeoDash logo"
+      />
       <h1 id="home-heading">Home</h1>
       <p>
         ArchaeoDash — a dashboard for archaeological compositional analysis. Use the Data Manager
