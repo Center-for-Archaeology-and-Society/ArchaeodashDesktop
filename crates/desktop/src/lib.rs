@@ -3,6 +3,8 @@
 //! `apps/desktop/src-tauri` shell; this crate keeps the command payloads and
 //! invocation logic testable without a webview runtime.
 
+pub mod recent;
+
 use archaeodash_application::{
     AnalysisJobs, ClusterService, ExploreService, ExportService, GroupService, ImportService,
     OrdinationService, PreferenceService, SourceFileService, TransformService,

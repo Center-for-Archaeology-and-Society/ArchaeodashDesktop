@@ -9,6 +9,7 @@ import type { ImputationMethod, OrdinationKind, TransformationDefinition, Transf
 import { ORDINATION_LABELS, planPrecompute, precomputeStatusText, type PrecomputeState } from '../analysis-setup/precompute.ts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
 import { DEFAULT_IMPUTATION_SEED, IMPUTATION_CHOICES, TRANSFORM_CHOICES, newSetup, setupSummary } from '../analysis-setup/setup.ts';
+import { useGroupInclusion } from '../datasets/GroupInclusion.tsx';
 import { ImportDialog } from './ImportDialog.tsx';
 
 export interface AnalysisSetupPanelProps {
@@ -25,7 +26,9 @@ export function AnalysisSetupPanel({ elements, groups, ordination, dataKey = '' 
   const { setup, loaded, save, reset } = useAnalysisSetup();
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState('');
-  const precompute = usePrecompute(setup, groups, ordination, dataKey);
+  // Precompute the groups the pages analyze, so their requests hit the cache.
+  const excluded = useGroupInclusion()?.excluded;
+  const precompute = usePrecompute(setup, groups, ordination, dataKey, excluded);
   const headingId = useId();
   if (!save) return null;
   return (
@@ -72,6 +75,7 @@ function usePrecompute(
   groups: Pick<GroupsService, 'scan'> | undefined,
   ordination: OrdinationService | undefined,
   dataKey: string,
+  excluded: ReadonlySet<string> | undefined,
 ): [OrdinationKind, PrecomputeState][] {
   const [states, setStates] = useState<[OrdinationKind, PrecomputeState][]>([]);
   useEffect(() => {
@@ -84,7 +88,8 @@ function usePrecompute(
       if (!cancelled) setStates((current) => current.map(([k, s]) => [k, k === kind ? state : s]));
     };
     void (async () => {
-      const plan = planPrecompute(setup, await groups.scan());
+      const candidates = (await groups.scan()).filter((c) => !excluded?.has(c.path));
+      const plan = planPrecompute(setup, candidates);
       if (cancelled) return;
       setStates([
         ...plan.jobs.map((job): [OrdinationKind, PrecomputeState] => [job.kind, 'waiting']),
@@ -102,7 +107,7 @@ function usePrecompute(
       }
     })().catch(() => { if (!cancelled) setStates([]); });
     return () => { cancelled = true; };
-  }, [setup, groups, ordination, dataKey]);
+  }, [setup, groups, ordination, dataKey, excluded]);
   return states;
 }
 

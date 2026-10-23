@@ -219,7 +219,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     <p>Analyze measured or transformed columns and recomputed ordination scores. Results are temporary.</p>
     <label>Dataset <GroupMultiSelect disabled={busy} options={dataset.options} selected={dataset.selectedPaths} onChange={next => { reset(); dataset.setSelectedPaths(next); }} /></label>
     {dataset.load.kind === 'loading' && <p role="status">Loading dataset…</p>}
-    {dataset.orderedPaths.length === 0 && dataset.load.kind !== 'loading' && <p>Choose one or more groups in Dataset.</p>}
+    {dataset.orderedPaths.length === 0 && dataset.load.kind !== 'loading' && <p>No groups are included. Tick groups in the Data Manager, or choose them in Dataset.</p>}
     {data && <fieldset disabled={busy} onChange={reset}><legend>Analysis settings</legend>
       <label>Transformation <select value={definitionName} onChange={e => {
         const name = e.target.value;

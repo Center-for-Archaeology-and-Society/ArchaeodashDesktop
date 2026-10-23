@@ -53,6 +53,7 @@ import type {
   PreferenceEntry,
   PreferenceKey,
   ProjectInfo,
+  RecentProject,
   PatchDescriptiveValuesRequest,
   RatioSpecDto,
   SaveTransformationRequest,
@@ -132,6 +133,13 @@ export interface ProjectsService {
   /** Opens the platform-native picker; null means the user cancelled. */
   open(): Promise<ProjectInfo | null>;
   current(): Promise<ProjectInfo | null>;
+  /** Recent projects, most recent first (desktop). */
+  recent?(): Promise<RecentProject[]>;
+  /** Reopens a project from the recent list; other paths are refused. */
+  openRecent?(path: string): Promise<ProjectInfo | null>;
+  /** Removes one entry from the recent list and returns the new list. */
+  removeRecent?(path: string): Promise<RecentProject[]>;
+  clearRecent?(): Promise<void>;
 }
 
 export interface ClusteringService {

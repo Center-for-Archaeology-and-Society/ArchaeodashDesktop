@@ -10,6 +10,7 @@ import { createBrowserRouter, Navigate, Outlet, RouterProvider, type RouteObject
 import type { AppInfo, Transport } from '@archaeodash/client';
 import { AppShell } from './shell/AppShell.tsx';
 import { AnalysisSetupProvider } from './analysis-setup/AnalysisSetupContext.tsx';
+import { GroupInclusionProvider } from './datasets/GroupInclusion.tsx';
 import {
   HelpPage,
   HomePage,
@@ -35,6 +36,7 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
   const [projectPath, setProjectPath] = useState('');
   const [projectName, setProjectName] = useState('');
   const [projectGeneration, setProjectGeneration] = useState(0);
+  const [projectStatus, setProjectStatus] = useState('');
   const projectGenerationRef = useRef(0);
   useEffect(() => {
     let cancelled = false;
@@ -56,19 +58,35 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
 
   useEffect(() => {
     let cancelled = false;
-    void transport.projects?.current().then((project) => {
+    const projects = transport.projects;
+    const adopt = (project: { path: string; name: string; generation: number } | null) => {
       if (!cancelled && (project?.generation ?? 0) >= projectGenerationRef.current) {
         projectGenerationRef.current = project?.generation ?? 0;
         setProjectPath(project?.path ?? '');
         setProjectName(project?.name ?? '');
         setProjectGeneration(project?.generation ?? 0);
       }
-    }).catch(() => {});
+    };
+    void (async () => {
+      const current = await projects?.current();
+      if (current || !projects?.recent || !projects.openRecent) return adopt(current ?? null);
+      // Nothing open yet (a fresh launch): reopen the last project if its
+      // folder still exists, like most desktop apps.
+      const last = (await projects.recent()).find((p) => p.available);
+      if (!last || cancelled || projectGenerationRef.current > 0) return;
+      setProjectStatus(`Reopening ${last.name}…`);
+      try {
+        adopt(await projects.openRecent(last.path));
+      } finally {
+        if (!cancelled) setProjectStatus('');
+      }
+    })().catch(() => { if (!cancelled) setProjectStatus(''); });
     return () => { cancelled = true; };
   }, [transport]);
 
   return (
     <AnalysisSetupProvider service={transport.transformations} generation={projectGeneration}>
+    <GroupInclusionProvider key={projectPath} projectKey={projectPath || 'default'}>
     <AppShell
       theme={theme}
       onThemeChange={(next) => {
@@ -86,6 +104,7 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
       projectPath={projectPath}
       projectName={projectName}
       projectGeneration={projectGeneration}
+      projectStatus={projectStatus}
       onProjectOpened={(project) => {
         projectGenerationRef.current = project.generation;
         setProjectPath(project.path);
@@ -93,6 +112,7 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
         setProjectGeneration(project.generation);
       }}
     />
+    </GroupInclusionProvider>
     </AnalysisSetupProvider>
   );
 }

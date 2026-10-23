@@ -8,6 +8,7 @@ import { ImportProgress, elapsedLabel, importStepLabel } from './ImportProgress.
 import { ImportDialog } from './ImportDialog.tsx';
 import { AnalysisSetupForm, AnalysisSetupPanel } from './AnalysisSetupPanel.tsx';
 import { newSetup } from '../analysis-setup/setup.ts';
+import { exclusionFor, includedAmong } from '../datasets/GroupInclusion.tsx';
 import { applySelection, pruneSelection } from './selection.ts';
 import { GROUPS_CHANGED_EVENT, notifyGroupsChanged, onGroupsChanged } from './events.ts';
 
@@ -208,4 +209,28 @@ test('analysis setup form offers background precompute of PCA, UMAP, and LDA', (
 test('analysis setup panel stays hidden without a setup provider', () => {
   const html = renderToStaticMarkup(<AnalysisSetupPanel elements={['na']} />);
   assert.equal(html, '');
+});
+
+test('inclusion helpers keep project order and default new groups to included', () => {
+  const ready = ['g/A', 'g/B', 'g/C'];
+  assert.deepEqual(includedAmong(ready, new Set()), ready);
+  assert.deepEqual(includedAmong(ready, new Set(['g/B'])), ['g/A', 'g/C']);
+  assert.deepEqual(exclusionFor(ready, ['g/C', 'g/A']), ['g/B']);
+  // A group imported later is not in the excluded set, so it is included.
+  assert.deepEqual(includedAmong([...ready, 'g/D'], new Set(exclusionFor(ready, ['g/A']))), ['g/A', 'g/D']);
+});
+
+test('group file tree shows inclusion boxes separately from the selection highlight', () => {
+  const html = renderToStaticMarkup(
+    <GroupFileTree entries={entries} selected={['groups/D1.csv']} included={new Set<string>()} focusId="groups/D1.csv" />,
+  );
+  // D1 is highlighted (selected) but not included; D2 needs attention and cannot be included.
+  assert.match(html, /aria-selected="true" aria-checked="false"/);
+  assert.match(html, /is-selected is-excluded/);
+  assert.match(html, /class="fm-check fm-include is-disabled"/);
+  assert.match(html, /title="Include in analyses \(double-click: only this group\)"/);
+  const on = renderToStaticMarkup(<GroupFileTree entries={entries} selected={[]} included={new Set(['groups/D1.csv'])} />);
+  assert.match(on, /aria-checked="true"/);
+  assert.match(on, /class="fm-check fm-include is-on"[^>]*>✓/);
+  assert.doesNotMatch(on, /is-excluded/);
 });

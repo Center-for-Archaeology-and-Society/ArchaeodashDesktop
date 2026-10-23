@@ -755,7 +755,7 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
       {load.kind === 'loading' && <p role="status">Loading dataset…</p>}
       {load.kind === 'error' && <p role="alert">Load failed: {load.message}</p>}
       {dataset.orderedPaths.length === 0 && load.kind !== 'loading' && (
-        <p className="muted">Choose one or more groups in Dataset.</p>
+        <p className="muted">No groups are included. Tick groups in the Data Manager, or choose them in Dataset.</p>
       )}
       {load.kind === 'loaded' && files.length > 0 && (
         <div key={viewKey}>

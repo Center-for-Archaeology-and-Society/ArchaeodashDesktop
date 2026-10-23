@@ -55,6 +55,7 @@ import type {
   PatchDescriptiveValuesRequest,
   PreferenceKey,
   ProjectInfo,
+  RecentProject,
   RatioSpecDto,
   SaveTransformationRequest,
   SaveTransformationResponse,
@@ -119,6 +120,10 @@ export class TauriTransport implements Transport {
     this.projects = {
       open: () => this.call<ProjectInfo | null>('open_project'),
       current: () => this.call<ProjectInfo | null>('current_project'),
+      recent: () => this.call<RecentProject[]>('recent_projects'),
+      openRecent: (path: string) => this.call<ProjectInfo | null>('open_recent_project', { path }),
+      removeRecent: (path: string) => this.call<RecentProject[]>('remove_recent_project', { path }),
+      clearRecent: () => this.call<void>('clear_recent_projects'),
     };
     this.explore = this.makeExplore();
     this.exports = this.makeExports();

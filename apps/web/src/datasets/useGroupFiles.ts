@@ -3,10 +3,15 @@
  * select all ready groups by default, load the selected files' rows, and
  * expose them combined (see `combineGroupFiles`). Selected files are always
  * kept in project order so combined rows line up with backend results.
+ *
+ * Inside a `GroupInclusionProvider` the selection is the project-wide set of
+ * groups included in analyses (also edited from the Data Manager), so it is
+ * the same on every page; otherwise each page keeps its own selection.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { GroupCandidate, GroupsService } from '@archaeodash/client';
 import { combineGroupFiles, type CombinedRows, type LoadedGroupFile } from '../visualize/combine.ts';
+import { exclusionFor, includedAmong, useGroupInclusion } from './GroupInclusion.tsx';
 
 export type GroupFilesLoad =
   | { kind: 'idle' }
@@ -39,7 +44,10 @@ export interface GroupFiles {
 
 export function useGroupFiles(groups: GroupsService): GroupFiles {
   const [candidates, setCandidates] = useState<GroupCandidate[]>([]);
-  const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
+  const [localSelected, setLocalSelected] = useState<string[]>([]);
+  const inclusion = useGroupInclusion();
+  const inclusionRef = useRef(inclusion);
+  inclusionRef.current = inclusion;
   const [files, setFiles] = useState<LoadedGroupFile[]>([]);
   const [load, setLoad] = useState<GroupFilesLoad>({ kind: 'idle' });
   const [token, setToken] = useState(0);
@@ -53,12 +61,32 @@ export function useGroupFiles(groups: GroupsService): GroupFiles {
     [ready],
   );
 
+  const readyPaths = useMemo(() => ready.map((c) => c.path), [ready]);
+  const selectedPaths = useMemo(
+    () => (inclusion ? includedAmong(readyPaths, inclusion.excluded) : localSelected),
+    [inclusion, readyPaths, localSelected],
+  );
+  const setSelectedPaths = useCallback(
+    (paths: string[]) => {
+      if (inclusion) inclusion.setExcluded(exclusionFor(readyPaths, paths));
+      else setLocalSelected(paths);
+    },
+    [inclusion, readyPaths],
+  );
+
   const rescan = useCallback(
     async (keep?: (allReady: string[]) => string[]) => {
       const list = await groups.scan();
       setCandidates(list);
       const all = list.filter((c) => c.ready && c.group).map((c) => c.path);
-      setSelectedPaths((current) => {
+      const shared = inclusionRef.current;
+      if (shared) {
+        // Shared inclusion: new groups are included automatically; `keep`
+        // (e.g. after moving rows into a new group) sets it explicitly.
+        if (keep) shared.setExcluded(exclusionFor(all, keep(all)));
+        return;
+      }
+      setLocalSelected((current) => {
         if (keep) return keep(all);
         const surviving = current.filter((p) => all.includes(p));
         return surviving.length > 0 ? surviving : all;

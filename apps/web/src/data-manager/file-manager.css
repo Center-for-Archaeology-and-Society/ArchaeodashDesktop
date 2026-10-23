@@ -229,9 +229,43 @@
   color: var(--btn-text);
 }
 
-.fm-item-file.is-selected .fm-check {
+.fm-item-file.is-selected .fm-check:not(.fm-include) {
   background: var(--accent);
   border-color: var(--accent);
+}
+
+/* Inclusion boxes: filled when the group is in analyses. */
+.fm-include {
+  cursor: pointer;
+}
+
+.fm-include.is-on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.fm-include.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.fm-item-file.is-excluded .fm-name,
+.fm-item-file.is-excluded .fm-meta {
+  opacity: 0.55;
+}
+
+.fm-include-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.4rem 0 0.2rem;
+  font-size: 0.85rem;
+}
+
+.fm-include-count {
+  margin-right: auto;
+  color: var(--muted);
 }
 
 .fm-warn {

@@ -530,7 +530,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       )}
       {loadState.kind === 'loading' && <p role="status">Loading groups…</p>}
       {loadState.kind === 'error' && <p role="alert">Error: {loadState.message}</p>}
-      {orderedPaths.length === 0 && <p className="muted">Choose one or more groups in Dataset.</p>}
+      {orderedPaths.length === 0 && <p className="muted">No groups are included. Tick groups in the Data Manager, or choose them in Dataset.</p>}
       {analysisSetup.setup && combined.rows.length > 0 && (
         <p className="setup-in-use">
           Analysis setup: {setupSummary(analysisSetup.setup, combined.elementalColumns)}

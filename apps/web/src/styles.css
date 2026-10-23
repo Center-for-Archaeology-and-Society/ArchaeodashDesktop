@@ -529,3 +529,170 @@ body {
   font-size: 0.9rem;
   color: var(--muted);
 }
+
+/* Project button + recent-projects menu (desktop). */
+.project-controls {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.project-controls .project-open {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.project-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.project-menu-button {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 1px solid color-mix(in srgb, var(--btn-text) 35%, transparent);
+  padding-inline: 0.45rem;
+}
+
+.project-menu-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  min-width: 18rem;
+  max-width: min(30rem, 90vw);
+  padding: 0.35rem;
+  border-radius: 10px;
+  background: var(--bg);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+}
+
+.project-menu-heading,
+.project-menu-empty {
+  margin: 0.2rem 0.4rem 0.35rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.project-menu-list hr {
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  margin: 0.3rem 0;
+}
+
+.project-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-menu-item:hover:not(:disabled),
+.project-menu-item:focus-visible {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  outline: none;
+}
+
+.project-menu-item:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.recent-name {
+  font-weight: 600;
+}
+
+.recent-path {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+/* Start screen shown when no project is open. */
+.start-screen {
+  max-width: 44rem;
+}
+
+.start-screen h2 {
+  margin-top: 1.5rem;
+  font-size: 1.05rem;
+}
+
+.recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.recent-item {
+  display: flex;
+  align-items: stretch;
+  gap: 0.3rem;
+}
+
+.recent-open {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: 'name when' 'path path';
+  gap: 0.1rem 0.75rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.recent-open:hover:not(:disabled),
+.recent-open:focus-visible {
+  border-color: var(--accent);
+}
+
+.recent-open .recent-name { grid-area: name; }
+.recent-open .recent-path { grid-area: path; }
+
+.recent-when {
+  grid-area: when;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.recent-item.is-missing .recent-open {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.recent-remove {
+  flex: 0 0 auto;
+  width: 2rem;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
+.recent-remove:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}

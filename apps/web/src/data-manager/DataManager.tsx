@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactElement } from 'react';
 import type { GroupSummary } from '@archaeodash/contracts';
 import { unionElements } from '../analysis-setup/setup.ts';
+import { exclusionFor, includedAmong, useGroupInclusion } from '../datasets/GroupInclusion.tsx';
 import { AnalysisSetupPanel } from './AnalysisSetupPanel.tsx';
 import { ImportDialog } from './ImportDialog.tsx';
 import { ImportWizard } from './ImportWizard.tsx';
@@ -106,6 +107,20 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
 
   const order = entries.map((entry) => entry.path);
   const selectedEntries = entries.filter((entry) => selection.selected.includes(entry.path));
+
+  // Groups included in analyses (checkboxes), shared with every page's
+  // Dataset picker. Files that need attention cannot be included.
+  const inclusion = useGroupInclusion();
+  const readyPaths = entries.filter((entry) => entry.summary && !entry.error).map((entry) => entry.path);
+  const includedPaths = inclusion ? includedAmong(readyPaths, inclusion.excluded) : null;
+  const includedSet = includedPaths ? new Set(includedPaths) : null;
+  const setIncluded = (paths: readonly string[]) => inclusion?.setExcluded(exclusionFor(readyPaths, paths));
+  const toggleIncluded = (path: string) => {
+    if (!includedPaths || !readyPaths.includes(path)) return;
+    setIncluded(includedPaths.includes(path) ? includedPaths.filter((p) => p !== path) : [...includedPaths, path]);
+  };
+  const includeOnly = (path: string) => { if (readyPaths.includes(path)) setIncluded([path]); };
+  const selectedReady = selectedEntries.map((entry) => entry.path).filter((path) => readyPaths.includes(path));
   const single = selectedEntries.length === 1 ? selectedEntries[0]! : null;
   const visibleIds = folderOpen ? [FOLDER_ID, ...order] : [FOLDER_ID];
 
@@ -209,6 +224,9 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
       case ' ':
         event.preventDefault();
         if (isFolder) setFolderOpen((open) => !open);
+        // Space ticks the focused group's box (WAI-ARIA checkbox tree);
+        // Ctrl/Cmd+Space and Enter change the highlight selection.
+        else if (event.key === ' ' && includedSet && !event.ctrlKey && !event.metaKey && !event.shiftKey) toggleIncluded(focusId);
         else select(focusId, { toggle: event.key === ' ' || event.ctrlKey || event.metaKey, range: event.shiftKey });
         break;
       case 'a':
@@ -284,9 +302,29 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
         </div>
       )}
 
+      {includedSet && readyPaths.length > 0 && (
+        <div className="fm-include-bar" role="group" aria-label="Groups in analyses">
+          <span className="fm-include-count" aria-live="polite">In analyses: {includedSet.size} of {readyPaths.length}</span>
+          <button type="button" className="fm-tool" disabled={includedSet.size === readyPaths.length} onClick={() => setIncluded(readyPaths)}>All</button>
+          <button type="button" className="fm-tool" disabled={includedSet.size === 0} onClick={() => setIncluded([])}>None</button>
+          <button
+            type="button"
+            className="fm-tool"
+            disabled={!selectedReady.length}
+            title="Include only the highlighted groups (Ctrl/Cmd-click or Shift-click to highlight several)"
+            onClick={() => setIncluded(selectedReady)}
+          >
+            Only selected
+          </button>
+        </div>
+      )}
+
       <GroupFileTree
         entries={entries}
         selected={selection.selected}
+        included={includedSet}
+        onToggleInclude={toggleIncluded}
+        onIncludeOnly={includeOnly}
         folderOpen={folderOpen}
         focusId={focusId}
         loading={loading}
@@ -337,6 +375,13 @@ export interface GroupFileTreeProps {
   readonly onToggleFolder?: () => void;
   readonly onRowClick?: (event: MouseEvent, path: string) => void;
   readonly onCheck?: (path: string) => void;
+  /**
+   * Groups included in analyses. When given, each row's box shows inclusion
+   * (click toggles, double-click keeps only that group) instead of selection.
+   */
+  readonly included?: ReadonlySet<string> | null;
+  readonly onToggleInclude?: (path: string) => void;
+  readonly onIncludeOnly?: (path: string) => void;
   readonly onKeyDown?: (event: KeyboardEvent<HTMLUListElement>) => void;
   readonly onFocusItem?: (id: string) => void;
   readonly setRef?: (id: string) => (element: HTMLLIElement | null) => void;
@@ -352,6 +397,9 @@ export function GroupFileTree({
   onToggleFolder,
   onRowClick,
   onCheck,
+  included = null,
+  onToggleInclude,
+  onIncludeOnly,
   onKeyDown,
   onFocusItem,
   setRef,
@@ -381,29 +429,44 @@ export function GroupFileTree({
             {entries.map((entry) => {
               const isSelected = selected.includes(entry.path);
               const rows = entry.summary?.row_count;
+              const includable = Boolean(entry.summary && !entry.error);
+              const isIncluded = included ? included.has(entry.path) : undefined;
               return (
                 <li
                   key={entry.path}
                   role="treeitem"
                   aria-level={2}
                   aria-selected={isSelected}
+                  aria-checked={included && includable ? isIncluded : undefined}
                   aria-invalid={entry.error ? true : undefined}
                   aria-label={`${entry.name}${rows === undefined ? '' : `, ${plural(rows, 'row')}`}${entry.error ? `, needs attention: ${entry.error}` : ''}`}
                   tabIndex={rovingFocus === entry.path ? 0 : -1}
                   ref={setRef?.(entry.path)}
                   title={entry.error ? `Needs attention: ${entry.error}` : entry.path}
-                  className={`fm-item fm-item-file${isSelected ? ' is-selected' : ''}${entry.error ? ' is-invalid' : ''}`}
+                  className={`fm-item fm-item-file${isSelected ? ' is-selected' : ''}${entry.error ? ' is-invalid' : ''}${included && includable && !isIncluded ? ' is-excluded' : ''}`}
                   onFocus={(event) => { if (event.target === event.currentTarget) onFocusItem?.(entry.path); }}
                   data-path={entry.path}
                 >
                   <div className="fm-row" onClick={(event) => onRowClick?.(event, entry.path)}>
-                    <span
-                      className="fm-check"
-                      aria-hidden="true"
-                      onClick={(event) => { event.stopPropagation(); onCheck?.(entry.path); }}
-                    >
-                      {isSelected ? '✓' : ''}
-                    </span>
+                    {included ? (
+                      <span
+                        className={`fm-check fm-include${isIncluded ? ' is-on' : ''}${includable ? '' : ' is-disabled'}`}
+                        aria-hidden="true"
+                        title={includable ? 'Include in analyses (double-click: only this group)' : 'Fix this file to include it in analyses'}
+                        onClick={(event) => { event.stopPropagation(); if (includable) onToggleInclude?.(entry.path); }}
+                        onDoubleClick={(event) => { event.stopPropagation(); if (includable) onIncludeOnly?.(entry.path); }}
+                      >
+                        {isIncluded ? '✓' : ''}
+                      </span>
+                    ) : (
+                      <span
+                        className="fm-check"
+                        aria-hidden="true"
+                        onClick={(event) => { event.stopPropagation(); onCheck?.(entry.path); }}
+                      >
+                        {isSelected ? '✓' : ''}
+                      </span>
+                    )}
                     <FileIcon />
                     <span className="fm-name">{entry.name}</span>
                     <span className="fm-meta">{rows === undefined ? '' : plural(rows, 'row')}</span>
@@ -424,7 +487,7 @@ export function GroupFileTree({
 /** Compact details for the current selection. */
 export function GroupDetails({ entries }: { entries: readonly GroupFileEntry[] }): ReactElement {
   if (!entries.length) {
-    return <section className="fm-details" aria-label="File details"><p className="fm-details-hint">Select a file to see its details. Ctrl/Cmd-click or Shift-click to select several.</p></section>;
+    return <section className="fm-details" aria-label="File details"><p className="fm-details-hint">Select a file to see its details. Ctrl/Cmd-click or Shift-click to select several. Tick a group&apos;s box to include it in analyses.</p></section>;
   }
   if (entries.length > 1) {
     const rows = entries.reduce((sum, entry) => sum + (entry.summary?.row_count ?? 0), 0);

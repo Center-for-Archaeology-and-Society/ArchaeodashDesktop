@@ -27,6 +27,15 @@ export interface ProjectInfo {
   generation: number;
 }
 
+/** Desktop recent-projects entry, most recent first. */
+export interface RecentProject {
+  path: string;
+  name: string;
+  last_opened_unix_secs: number;
+  /** Whether the folder still exists. */
+  available: boolean;
+}
+
 export type JobState =
   | 'idle'
   | 'validating'

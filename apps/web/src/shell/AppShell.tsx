@@ -7,8 +7,9 @@ import { useCallback, useRef, useState, type ReactElement } from 'react';
 import { NavLink, Outlet } from 'react-router';
 import { navRoutes } from './nav.ts';
 import { DataManager, type DataManagerTransport } from '../data-manager/DataManager.tsx';
-import type { ProjectInfo } from '@archaeodash/contracts';
+import type { ProjectInfo, RecentProject } from '@archaeodash/contracts';
 import type { ProjectsService } from '@archaeodash/client';
+import { ProjectMenu, RecentProjectList, useRecentProjects } from './RecentProjects.tsx';
 
 export interface AppShellProps {
   readonly theme: string;
@@ -20,6 +21,8 @@ export interface AppShellProps {
   readonly projectName?: string;
   readonly projectGeneration?: number;
   readonly onProjectOpened?: (project: ProjectInfo) => void;
+  /** Startup message while the last project reopens, e.g. "Reopening Site A…". */
+  readonly projectStatus?: string;
   /** Transport slice for the sidebar file manager; omitted in static tests. */
   readonly dataManager?: DataManagerTransport;
 }
@@ -33,6 +36,7 @@ export function AppShell({
   projectName = '',
   projectGeneration = 0,
   onProjectOpened,
+  projectStatus = '',
   dataManager,
 }: AppShellProps): ReactElement {
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -46,21 +50,36 @@ export function AppShell({
   const [dataVersion, setDataVersion] = useState(0);
   const bumpDataVersion = useCallback(() => setDataVersion((version) => version + 1), []);
   const projectOpen = !projects || Boolean(projectPath);
+  const { recent, refresh: refreshRecent, setRecent } = useRecentProjects(projects);
+  const hasRecent = Boolean(projects?.recent && projects.openRecent);
 
-  const openProject = async () => {
+  /** Runs one project-opening action; the recent list refreshes after it. */
+  const runOpen = async (open: () => Promise<ProjectInfo | null>) => {
     if (!projects || openingProjectRef.current) return;
     openingProjectRef.current = true;
     setOpeningProject(true);
     setProjectError('');
     try {
-      const project = await projects.open();
+      const project = await open();
       if (project) onProjectOpened?.(project);
     } catch (error) {
       setProjectError(error instanceof Error ? error.message : String(error));
     } finally {
       openingProjectRef.current = false;
       setOpeningProject(false);
+      refreshRecent();
     }
+  };
+  const openProject = () => runOpen(() => projects!.open());
+  const openRecent = (project: RecentProject) => {
+    const reopen = projects?.openRecent;
+    if (reopen) void runOpen(() => reopen(project.path));
+  };
+  const removeRecent = (project: RecentProject) => {
+    void projects?.removeRecent?.(project.path).then(setRecent).catch(() => refreshRecent());
+  };
+  const clearRecent = () => {
+    void projects?.clearRecent?.().then(() => setRecent([])).catch(() => refreshRecent());
   };
 
   return (
@@ -88,9 +107,21 @@ export function AppShell({
           ArchaeoDash
         </span>
         {projects && (
-          <button type="button" onClick={() => void openProject()} disabled={openingProject}>
-            {openingProject ? 'Opening…' : projectPath ? 'Switch Project' : 'Open Project'}
-          </button>
+          <span className="project-controls">
+            <button type="button" className="project-open" onClick={() => void openProject()} disabled={openingProject}>
+              {openingProject ? 'Opening…' : projectPath ? 'Switch Project' : 'Open Project'}
+            </button>
+            {hasRecent && (
+              <ProjectMenu
+                recent={recent}
+                currentPath={projectPath}
+                busy={openingProject}
+                onOpenRecent={openRecent}
+                onBrowse={() => void openProject()}
+                onClear={projects.clearRecent ? clearRecent : undefined}
+              />
+            )}
+          </span>
         )}
         <ul className="nav-list">
           {navRoutes.map((route) =>
@@ -183,7 +214,23 @@ export function AppShell({
         <main className="main-panel" id="main-panel">
           {projectError && <p role="alert">Could not open project: {projectError}</p>}
           {projects && !projectPath ? (
-            <p>Open a project folder to browse groups and run analyses.</p>
+            <section className="start-screen" aria-labelledby="start-heading">
+              <h1 id="start-heading">Open a project</h1>
+              {projectStatus ? (
+                <p role="status">{projectStatus}</p>
+              ) : (
+                <p>Open a project folder to browse groups and run analyses.</p>
+              )}
+              <button type="button" className="start-open" onClick={() => void openProject()} disabled={openingProject}>
+                {openingProject ? 'Opening…' : 'Open a folder…'}
+              </button>
+              {recent.length > 0 && (
+                <>
+                  <h2>Recent projects</h2>
+                  <RecentProjectList recent={recent} busy={openingProject || Boolean(projectStatus)} onOpen={openRecent} onRemove={projects.removeRecent ? removeRecent : undefined} />
+                </>
+              )}
+            </section>
           ) : (
             <div key={`${projectGeneration}:${projectPath}:${dataVersion}`}>
               <Outlet />
