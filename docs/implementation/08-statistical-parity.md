@@ -54,6 +54,8 @@ Rust does not have a drop-in MICE implementation that should be trusted without 
 - `midastouch`: weighted donor selection using the documented MIDAS touch distance/weighting; validate distributional and missing-cell outputs against fixed R seeds.
 - `rf`: per-target chained imputation using a pinned, audited Rust random-forest regressor; categorical handling is irrelevant for the selected numeric predictor matrix but missing predictors and constant columns must be specified.
 
+Status 2026-10-23: `pmm`, `midastouch`, and `rf` are ported in `crates/analysis/src/impute.rs` (from mice 3.16.0 sources; ranger-style forest for `rf`) and enabled after passing the golden procedure 5 distribution tests (`tests/parity/tests/golden_05_imputation.rs`) against 100 seeded R runs per method captured by `scripts/capture_imputation_distribution.R` (R 4.3.3, mice 3.16.0, ranger 0.16.0) into `fixtures/golden/05_imputation_distribution.json`. Rust-vs-R accuracy, per-cell centre, spread, and pooled KS distance all sit inside the R-vs-R seed band.
+
 Before implementation, the oracle tool must export the exact current MICE package version, default arguments, RNG kind, and seeded golden outputs for small/large missingness fixtures. The new UI adds a visible/replayable seed. A method stays behind an “experimental parity” flag until all golden, property, and statistical-distribution tests pass. Do not silently map one method to another. The final production runtime contains no R oracle/service; R remains CI/migration tooling only.
 
 ### 8.4 Transformations

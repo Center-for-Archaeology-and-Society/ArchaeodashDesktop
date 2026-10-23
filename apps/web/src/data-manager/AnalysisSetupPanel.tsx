@@ -4,9 +4,9 @@
  * uses and the transform applied first.
  */
 import { useEffect, useId, useState, type FormEvent, type ReactElement } from 'react';
-import type { TransformationDefinition, TransformMethod } from '@archaeodash/contracts';
+import type { ImputationMethod, TransformationDefinition, TransformMethod } from '@archaeodash/contracts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
-import { TRANSFORM_CHOICES, newSetup, setupSummary } from '../analysis-setup/setup.ts';
+import { DEFAULT_IMPUTATION_SEED, IMPUTATION_CHOICES, TRANSFORM_CHOICES, newSetup, setupSummary } from '../analysis-setup/setup.ts';
 import { ImportDialog } from './ImportDialog.tsx';
 
 export interface AnalysisSetupPanelProps {
@@ -58,6 +58,10 @@ export function AnalysisSetupForm({ elements, setup, onSave, onReset, onCancel }
   const initialElements = setup ? elements.filter((e) => setup.elemental_columns.includes(e)) : [...elements];
   const [selected, setSelected] = useState<string[]>(initialElements);
   const [method, setMethod] = useState<TransformMethod>(setup?.transform_method ?? 'none');
+  const [imputation, setImputation] = useState<ImputationMethod>(setup?.imputation_method ?? 'none');
+  const [seed, setSeed] = useState(String(setup?.imputation_seed ?? DEFAULT_IMPUTATION_SEED));
+  const seedValue = Number(seed);
+  const seedValid = imputation === 'none' || (seed.trim() !== '' && Number.isInteger(seedValue) && seedValue >= 0 && seedValue <= Number.MAX_SAFE_INTEGER);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -76,9 +80,15 @@ export function AnalysisSetupForm({ elements, setup, onSave, onReset, onCancel }
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (!selected.length) return;
+    if (!selected.length || !seedValid) return;
     const base = setup ?? newSetup(selected);
-    void run(() => onSave({ ...base, elemental_columns: selected, transform_method: method }));
+    void run(() => onSave({
+      ...base,
+      elemental_columns: selected,
+      transform_method: method,
+      imputation_method: imputation,
+      imputation_seed: imputation === 'none' ? null : seedValue,
+    }));
   };
 
   return (
@@ -99,6 +109,27 @@ export function AnalysisSetupForm({ elements, setup, onSave, onReset, onCancel }
         {!selected.length && <p role="alert">Choose at least one element.</p>}
       </fieldset>
       <fieldset>
+        <legend>Fill missing values (imputation)</legend>
+        {IMPUTATION_CHOICES.map((choice) => (
+          <label key={choice.value} className="setup-choice">
+            <input type="radio" name="setup-imputation" value={choice.value} checked={imputation === choice.value} disabled={busy} onChange={() => setImputation(choice.value)} />
+            <span><strong>{choice.label}</strong> — {choice.hint}</span>
+          </label>
+        ))}
+        {imputation !== 'none' && (
+          <label className="setup-seed">
+            Seed
+            <input type="number" min={0} step={1} value={seed} disabled={busy} onChange={(event) => setSeed(event.target.value)} aria-describedby="setup-seed-note" />
+          </label>
+        )}
+        {imputation !== 'none' && (
+          <p className="setup-note" id="setup-seed-note">
+            Imputation runs before the transform, on the selected elements. The same seed gives the same imputed values; change it for a different draw.
+          </p>
+        )}
+        {!seedValid && <p role="alert">Enter a whole-number seed of 0 or more.</p>}
+      </fieldset>
+      <fieldset>
         <legend>Transform applied before analysis</legend>
         {TRANSFORM_CHOICES.map((choice) => (
           <label key={choice.value} className="setup-choice">
@@ -107,7 +138,7 @@ export function AnalysisSetupForm({ elements, setup, onSave, onReset, onCancel }
           </label>
         ))}
         {(method === 'log' || method === 'log10') && (
-          <p className="setup-note">Zeros, negative and missing values have no logarithm; they become 0, as in the original ArchaeoDash. Values are rounded to three decimals.</p>
+          <p className="setup-note">Zeros, negative and missing values have no logarithm; they become 0, as in the original ArchaeoDash (impute first to avoid zeros for missing values). Values are rounded to three decimals.</p>
         )}
       </fieldset>
       <p className="setup-note">Group files keep their measured values; the setup is applied each time an analysis runs.</p>
@@ -116,7 +147,7 @@ export function AnalysisSetupForm({ elements, setup, onSave, onReset, onCancel }
         {onReset && <button type="button" className="fm-tool" disabled={busy} onClick={() => void run(onReset)}>Reset to defaults</button>}
         <span className="setup-spacer" />
         <button type="button" className="fm-tool" disabled={busy} onClick={onCancel}>Cancel</button>
-        <button type="submit" className="fm-tool fm-tool-primary" disabled={busy || !selected.length}>{busy ? 'Saving…' : 'Save'}</button>
+        <button type="submit" className="fm-tool fm-tool-primary" disabled={busy || !selected.length || !seedValid}>{busy ? 'Saving…' : 'Save'}</button>
       </div>
     </form>
   );

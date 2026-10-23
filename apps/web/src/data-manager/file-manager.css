@@ -575,3 +575,13 @@
 .setup-spacer {
   flex: 1;
 }
+
+.setup-seed {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.setup-seed input {
+  width: 9rem;
+}

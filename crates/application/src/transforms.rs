@@ -9,7 +9,8 @@
 use std::path::PathBuf;
 
 use archaeodash_analysis::{
-    apply_ratios, log_transform, z_score, ColumnMatrix, LogBase, RatioSpec,
+    apply_ratios, impute, log_transform, z_score, ColumnMatrix, ImputeMethod, LogBase, RatioSpec,
+    MICE_MAXIT,
 };
 use archaeodash_contracts::{
     AppliedTransformation, ApplyTransformationRequest, BatchRatioMode, BatchRatioRequest,
@@ -119,16 +120,6 @@ impl TransformService {
             return Err(validation(
                 "seed_required",
                 "imputation requires a visible, replayable seed (Section 8.3)",
-            ));
-        }
-        if definition.imputation_method != ImputationMethod::None {
-            return Err(validation(
-                "imputation_not_gated",
-                format!(
-                    "imputation method {:?} stays behind the experimental-parity \
-                     flag until its Section 8.3 oracle fixtures pass",
-                    definition.imputation_method
-                ),
             ));
         }
         let mut taken: Vec<String> = definition.elemental_columns.clone();
@@ -361,6 +352,29 @@ impl TransformService {
             }
         }
         let matrix = Self::matrix_from_group(data, &required, context)?;
+        // Section 8.1 order: impute the base predictors, then transform,
+        // then build ratios. mice methods pass the golden-5 distribution
+        // tests (tests/parity/tests/golden_05_imputation.rs).
+        let matrix = match (definition.imputation_method, definition.imputation_seed) {
+            (ImputationMethod::None, _) => matrix,
+            (method, Some(seed)) => {
+                let method = match method {
+                    ImputationMethod::Pmm => ImputeMethod::Pmm,
+                    ImputationMethod::MidasTouch => ImputeMethod::MidasTouch,
+                    ImputationMethod::Rf => ImputeMethod::Rf,
+                    ImputationMethod::None => unreachable!("handled above"),
+                };
+                impute(&matrix, method, seed, MICE_MAXIT)
+                    .map_err(|e| validation("imputation_failed", format!("{context}: {e}")))?
+                    .matrix
+            }
+            (_, None) => {
+                return Err(validation(
+                    "seed_required",
+                    "imputation requires a visible, replayable seed (Section 8.3)",
+                ))
+            }
+        };
         let (mut matrix, non_finite_to_zero) = match definition.transform_method {
             TransformMethod::None => (matrix, 0u64),
             TransformMethod::Log => {
@@ -569,16 +583,13 @@ mod tests {
         let err = service.save(&def).expect_err("no columns");
         assert!(matches!(err, DomainError::Validation { code, .. } if code == "missing_columns"));
 
-        // Imputation requires a seed AND stays behind the parity gate.
+        // Imputation requires a visible seed.
         let mut def = definition("imp", TransformMethod::None);
         def.imputation_method = ImputationMethod::Pmm;
         let err = service.save(&def).expect_err("seed required");
         assert!(matches!(err, DomainError::Validation { code, .. } if code == "seed_required"));
         def.imputation_seed = Some(42);
-        let err = service.save(&def).expect_err("not gated yet");
-        assert!(
-            matches!(err, DomainError::Validation { code, .. } if code == "imputation_not_gated")
-        );
+        service.save(&def).expect("seeded imputation saves");
 
         // Self-ratio rejected; duplicate output names rejected.
         let mut def = definition("ratios", TransformMethod::None);
@@ -672,6 +683,46 @@ mod tests {
         assert!(
             matches!(err, DomainError::Validation { code, .. } if code == "ratio_length_mismatch")
         );
+    }
+
+    #[test]
+    fn apply_imputes_missing_cells_before_transforming() {
+        let dir = temp_root();
+        std::fs::write(
+            dir.join("holes.csv"),
+            "anid,Site,as,fe\nA1,Baca,1.5,3\nA2,Baca,2,\nA3,Baca,5,6\nA4,Baca,4,5\nA5,Baca,3,4.5\nA6,Baca,2.5,3.5\n",
+        )
+        .expect("write source");
+        let import = crate::import::ImportService::new(&dir).expect("import service");
+        let commit = import
+            .commit(&archaeodash_contracts::ImportCommitRequest {
+                sheet: None,
+                source: "holes.csv".into(),
+                group_column: "Site".into(),
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+                group_name: None,
+            })
+            .expect("commit");
+        let service = TransformService::new(&dir).expect("transform service");
+        let mut def = definition("imp", TransformMethod::None);
+        def.imputation_method = ImputationMethod::Pmm;
+        def.imputation_seed = Some(20260914);
+        let request = ApplyTransformationRequest {
+            path: commit.groups[0].path.clone(),
+            extra_paths: vec![],
+            definition: def,
+        };
+        let applied = service.apply(&request).expect("apply");
+        let fe = applied.rows[1][1].expect("imputed fe");
+        assert!(
+            [3.0, 6.0, 5.0, 4.5, 3.5].contains(&fe),
+            "pmm imputes a donor value, got {fe}"
+        );
+        // The seed makes the imputation replayable.
+        assert_eq!(service.apply(&request).expect("again").rows, applied.rows);
     }
 
     #[test]

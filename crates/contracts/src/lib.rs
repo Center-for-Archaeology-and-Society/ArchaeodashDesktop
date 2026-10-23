@@ -408,9 +408,9 @@ pub enum TransformMethod {
     ZScore,
 }
 
-/// Imputation method (Section 8.3). `pmm`, `midastouch`, and `rf` stay
-/// behind the experimental-parity gate until their oracle fixtures pass;
-/// the application layer rejects applying them for now.
+/// Imputation method (Section 8.3): the legacy mice methods, applied to the
+/// base predictors before the transform. Each requires a replayable seed.
+/// Parity class D, validated against R mice draws (golden procedure 5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ImputationMethod {
     #[serde(rename = "none")]

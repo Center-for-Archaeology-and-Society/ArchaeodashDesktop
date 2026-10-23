@@ -6,6 +6,7 @@
 pub mod cancellation;
 pub mod cluster;
 pub mod explore;
+pub mod impute;
 pub mod lda;
 pub mod mahalanobis_mean;
 pub mod membership;
@@ -28,6 +29,7 @@ pub use explore::{
     r_pretty, CrosstabCountRow, CrosstabMethod, CrosstabValueRow, MissingBand, MissingRow,
     ProfileRow,
 };
+pub use impute::{impute, Imputation, ImputeMethod, MICE_MAXIT};
 pub use lda::{lda, Lda, LEGACY_LDA_TOL};
 pub use mahalanobis_mean::calculate_mahalanobis_distance;
 pub use membership::{

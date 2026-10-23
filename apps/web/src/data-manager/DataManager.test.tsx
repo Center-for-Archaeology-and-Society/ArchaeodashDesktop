@@ -183,6 +183,17 @@ test('analysis setup form lists elements and transforms, preselecting the saved 
   assert.doesNotMatch(html, /type="checkbox" checked=""[^>]*\/> na/);
   assert.match(html, /checked="" value="log10"/);
   assert.match(html, /Zeros, negative and missing values have no logarithm/);
+  assert.match(html, /name="setup-imputation" checked="" value="none"/);
+  assert.match(html, /Weighted predictive mean matching/);
+  assert.doesNotMatch(html, /Seed/);
+});
+
+test('analysis setup form shows the replayable seed when imputing', () => {
+  const setup = { ...newSetup(['fe']), imputation_method: 'pmm' as const, imputation_seed: 42 };
+  const html = renderToStaticMarkup(<AnalysisSetupForm elements={['fe']} setup={setup} onSave={async () => {}} onCancel={() => {}} />);
+  assert.match(html, /name="setup-imputation" checked="" value="pmm"/);
+  assert.match(html, /type="number"[^>]*value="42"/);
+  assert.match(html, /same seed gives the same imputed values/);
 });
 
 test('analysis setup panel stays hidden without a setup provider', () => {
