@@ -2,6 +2,7 @@ import { useMemo, useState, type ReactElement } from 'react';
 import type { BatchTransferUnitsRequest, GroupCandidate } from '@archaeodash/client';
 import type { AnalysisResult } from './AnalysisPage.tsx';
 import { KEEP_IN_SOURCE, buildAutomaticAssignmentRequest, recommendedAssignments } from './automatic-assignment.ts';
+import { BusyLabel } from '../ui/Busy.tsx';
 
 type Mapping = { groupLabel: string; destinationPath: string; newGroupName?: string };
 export function BatchConfirmation({ request, selectedCount, busy, onConfirm, onCancel, multiSource = false }: {
@@ -18,7 +19,7 @@ export function BatchConfirmation({ request, selectedCount, busy, onConfirm, onC
       <tbody>{request.targets.map(target => <tr key={target.destination_path}><td>{target.destination_path}</td><td>{target.destination_group_name ?? 'Existing group'}</td><td>{target.selected_uuids.length}</td></tr>)}</tbody>
     </table>
     <p>Original measured values remain unchanged. An empty source group file is removed.</p>
-    <button type="button" disabled={busy} onClick={() => onConfirm(request)}>Confirm assignments</button>{' '}
+    <button type="button" disabled={busy} onClick={() => onConfirm(request)}><BusyLabel busy={busy} busyText="Assigning…">Confirm assignments</BusyLabel></button>{' '}
     <button type="button" disabled={busy} onClick={onCancel}>Cancel</button>
   </section>;
 }

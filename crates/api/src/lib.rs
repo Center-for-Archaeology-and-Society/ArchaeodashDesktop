@@ -2755,6 +2755,7 @@ mod tests {
                             path: path.clone(),
                             extra_paths: vec![],
                             raw_text: false,
+                            format: Default::default(),
                         })
                         .unwrap(),
                     ))

@@ -1,7 +1,6 @@
 use archaeodash_application::files::MAX_UPLOAD_BYTES;
 use archaeodash_contracts::{FileUploadRequest, StagedFile};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri_plugin_dialog::DialogExt;
 
@@ -38,7 +37,7 @@ fn safe_source_name(path: &Path) -> Result<String, String> {
 #[tauri::command]
 pub(crate) async fn pick_and_upload_source(
     app: tauri::AppHandle,
-    state: tauri::State<'_, Mutex<super::DesktopState>>,
+    state: tauri::State<'_, super::SharedState>,
 ) -> Result<Option<StagedFile>, String> {
     let (project_root, project_generation) = {
         let current = state.lock().map_err(|error| error.to_string())?;
@@ -85,7 +84,7 @@ pub(crate) async fn pick_and_upload_source(
         return Ok(None);
     };
 
-    let current = state.lock().map_err(|error| error.to_string())?;
+    let current = super::snapshot(&state)?;
     if current.project_generation != project_generation {
         return Err(
             "the active project changed while selecting a source; choose the file again".into(),
@@ -96,10 +95,14 @@ pub(crate) async fn pick_and_upload_source(
         .map_err(|error| format!("system clock error: {error}"))?
         .as_nanos();
     let path = format!("sources/{nonce}-{source_name}");
-    current
-        .files
-        .upload_source_file(FileUploadRequest { path, content })
-        .map(Some)
+    tauri::async_runtime::spawn_blocking(move || {
+        current
+            .files
+            .upload_source_file(FileUploadRequest { path, content })
+            .map(Some)
+    })
+    .await
+    .map_err(|error| format!("source file upload failed: {error}"))?
 }
 
 #[cfg(test)]

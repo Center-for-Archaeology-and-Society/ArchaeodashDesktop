@@ -643,3 +643,32 @@
 .setup-seed input {
   width: 9rem;
 }
+
+/* Export form */
+.fm-export-what {
+  margin: 0 0 0.4rem;
+  overflow-wrap: anywhere;
+}
+
+.fm-export-format {
+  border: none;
+  margin: 0 0 0.4rem;
+  padding: 0;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.fm-export-format legend {
+  padding: 0;
+  margin-bottom: 0.2rem;
+  font-weight: 600;
+}
+
+.fm-messages .busy-note {
+  margin: 0.25rem 0;
+}
+
+.fm-inline button:disabled:has(.spinner) {
+  opacity: 0.85;
+  cursor: progress;
+}

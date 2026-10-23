@@ -30,7 +30,7 @@ use archaeodash_data_io::ImportError;
 use archaeodash_domain::DomainError;
 use archaeodash_storage::StoreError;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
 /// Payload for the desktop `app_info` command.
 pub type DesktopAppInfo = AppInfo;
@@ -38,14 +38,14 @@ pub type DesktopAppInfo = AppInfo;
 /// Desktop group state: one project-scoped group service sharing the project
 /// root with the import service. Construction runs startup recovery.
 pub struct DesktopGroups {
-    service: Mutex<Option<GroupService>>,
+    service: RwLock<Option<GroupService>>,
 }
 
 impl DesktopGroups {
     /// No project open yet; `open_project` sets the root.
     pub fn new() -> Self {
         Self {
-            service: Mutex::new(None),
+            service: RwLock::new(None),
         }
     }
 
@@ -53,7 +53,7 @@ impl DesktopGroups {
     /// any interrupted Section 6.8 transactions first.
     pub fn open_project(&self, root: impl Into<PathBuf>) -> Result<(), String> {
         let service = GroupService::new(root).map_err(|e: StoreError| e.to_string())?;
-        *self.service.lock().map_err(|e| e.to_string())? = Some(service);
+        *self.service.write().map_err(|e| e.to_string())? = Some(service);
         Ok(())
     }
 
@@ -61,7 +61,7 @@ impl DesktopGroups {
         &self,
         op: impl FnOnce(&GroupService) -> Result<T, StoreError>,
     ) -> Result<T, String> {
-        let guard = self.service.lock().map_err(|e| e.to_string())?;
+        let guard = self.service.read().map_err(|e| e.to_string())?;
         let service = guard.as_ref().ok_or_else(|| {
             "no project open: call open_project with a directory first".to_string()
         })?;
@@ -137,14 +137,14 @@ impl Default for DesktopGroups {
 /// once when the user opens a project directory (Section 10.4: path-taking
 /// commands operate on explicit selections below the opened project root).
 pub struct DesktopImport {
-    service: Mutex<Option<ImportService>>,
+    service: RwLock<Option<ImportService>>,
 }
 
 impl DesktopImport {
     /// No project open yet; `open_project` sets the root.
     pub fn new() -> Self {
         Self {
-            service: Mutex::new(None),
+            service: RwLock::new(None),
         }
     }
 
@@ -152,7 +152,7 @@ impl DesktopImport {
     /// error message payload suitable for direct IPC responses.
     pub fn open_project(&self, root: impl Into<PathBuf>) -> Result<(), String> {
         let service = ImportService::new(root).map_err(|e| e.to_string())?;
-        *self.service.lock().map_err(|e| e.to_string())? = Some(service);
+        *self.service.write().map_err(|e| e.to_string())? = Some(service);
         Ok(())
     }
 
@@ -160,7 +160,7 @@ impl DesktopImport {
         &self,
         op: impl FnOnce(&ImportService) -> Result<T, ImportError>,
     ) -> Result<T, String> {
-        let guard = self.service.lock().map_err(|e| e.to_string())?;
+        let guard = self.service.read().map_err(|e| e.to_string())?;
         let service = guard.as_ref().ok_or_else(|| {
             "no project open: call open_project with a directory first".to_string()
         })?;
@@ -193,21 +193,21 @@ impl Default for DesktopImport {
 /// Desktop source-file state: one project-scoped upload/catalog service
 /// sharing the project root (quarantine lives under `.archaeodash`).
 pub struct DesktopFiles {
-    service: Mutex<Option<SourceFileService>>,
+    service: RwLock<Option<SourceFileService>>,
 }
 
 impl DesktopFiles {
     /// No project open yet; `open_project` sets the root.
     pub fn new() -> Self {
         Self {
-            service: Mutex::new(None),
+            service: RwLock::new(None),
         }
     }
 
     /// Opens (or re-opens) the project root for source-file use cases.
     pub fn open_project(&self, root: impl Into<PathBuf>) -> Result<(), String> {
         let service = SourceFileService::new(root).map_err(|e| e.to_string())?;
-        *self.service.lock().map_err(|e| e.to_string())? = Some(service);
+        *self.service.write().map_err(|e| e.to_string())? = Some(service);
         Ok(())
     }
 
@@ -215,7 +215,7 @@ impl DesktopFiles {
         &self,
         op: impl FnOnce(&SourceFileService) -> Result<T, ImportError>,
     ) -> Result<T, String> {
-        let guard = self.service.lock().map_err(|e| e.to_string())?;
+        let guard = self.service.read().map_err(|e| e.to_string())?;
         let service = guard.as_ref().ok_or_else(|| {
             "no project open: call open_project with a directory first".to_string()
         })?;
@@ -254,21 +254,21 @@ impl Default for DesktopFiles {
 /// service sharing the project root (definitions persist under
 /// `.archaeodash/transformations` as structured JSON, Section 8.2).
 pub struct DesktopTransforms {
-    service: Mutex<Option<TransformService>>,
+    service: RwLock<Option<TransformService>>,
 }
 
 impl DesktopTransforms {
     /// No project open yet; `open_project` sets the root.
     pub fn new() -> Self {
         Self {
-            service: Mutex::new(None),
+            service: RwLock::new(None),
         }
     }
 
     /// Opens (or re-opens) the project root for transformation use cases.
     pub fn open_project(&self, root: impl Into<PathBuf>) -> Result<(), String> {
         let service = TransformService::new(root).map_err(|e| e.to_string())?;
-        *self.service.lock().map_err(|e| e.to_string())? = Some(service);
+        *self.service.write().map_err(|e| e.to_string())? = Some(service);
         Ok(())
     }
 
@@ -276,7 +276,7 @@ impl DesktopTransforms {
         &self,
         op: impl FnOnce(&TransformService) -> Result<T, DomainError>,
     ) -> Result<T, String> {
-        let guard = self.service.lock().map_err(|e| e.to_string())?;
+        let guard = self.service.read().map_err(|e| e.to_string())?;
         let service = guard.as_ref().ok_or_else(|| {
             "no project open: call open_project with a directory first".to_string()
         })?;
@@ -330,21 +330,21 @@ impl Default for DesktopTransforms {
 /// Desktop explore state: one project-scoped explore service sharing the
 /// project root (Section 8 procedure 12 views are ephemeral, Section 5).
 pub struct DesktopExplore {
-    service: Mutex<Option<ExploreService>>,
+    service: RwLock<Option<ExploreService>>,
 }
 
 impl DesktopExplore {
     /// No project open yet; `open_project` sets the root.
     pub fn new() -> Self {
         Self {
-            service: Mutex::new(None),
+            service: RwLock::new(None),
         }
     }
 
     /// Opens (or re-opens) the project root for explore use cases.
     pub fn open_project(&self, root: impl Into<PathBuf>) -> Result<(), String> {
         let service = ExploreService::new(root).map_err(|e| e.to_string())?;
-        *self.service.lock().map_err(|e| e.to_string())? = Some(service);
+        *self.service.write().map_err(|e| e.to_string())? = Some(service);
         Ok(())
     }
 
@@ -352,7 +352,7 @@ impl DesktopExplore {
         &self,
         op: impl FnOnce(&ExploreService) -> Result<T, DomainError>,
     ) -> Result<T, String> {
-        let guard = self.service.lock().map_err(|e| e.to_string())?;
+        let guard = self.service.read().map_err(|e| e.to_string())?;
         let service = guard.as_ref().ok_or_else(|| {
             "no project open: call open_project with a directory first".to_string()
         })?;
@@ -401,21 +401,21 @@ impl Default for DesktopExplore {
 /// Desktop ordination state: one project-scoped ordination service sharing
 /// the project root (Section 8.5 views are ephemeral, Section 5).
 pub struct DesktopOrdination {
-    service: Mutex<Option<OrdinationService>>,
+    service: RwLock<Option<OrdinationService>>,
 }
 
 impl DesktopOrdination {
     /// No project open yet; `open_project` sets the root.
     pub fn new() -> Self {
         Self {
-            service: Mutex::new(None),
+            service: RwLock::new(None),
         }
     }
 
     /// Opens (or re-opens) the project root for ordination use cases.
     pub fn open_project(&self, root: impl Into<PathBuf>) -> Result<(), String> {
         let service = OrdinationService::new(root).map_err(|e| e.to_string())?;
-        *self.service.lock().map_err(|e| e.to_string())? = Some(service);
+        *self.service.write().map_err(|e| e.to_string())? = Some(service);
         Ok(())
     }
 
@@ -423,7 +423,7 @@ impl DesktopOrdination {
         &self,
         op: impl FnOnce(&OrdinationService) -> Result<T, DomainError>,
     ) -> Result<T, String> {
-        let guard = self.service.lock().map_err(|e| e.to_string())?;
+        let guard = self.service.read().map_err(|e| e.to_string())?;
         let service = guard.as_ref().ok_or_else(|| {
             "no project open: call open_project with a directory first".to_string()
         })?;
@@ -461,7 +461,7 @@ impl Default for DesktopOrdination {
 /// service sharing the project root (Section 8 results are ephemeral,
 /// Section 5 storage invariant).
 pub struct DesktopClustering {
-    service: Mutex<Option<ClusterService>>,
+    service: RwLock<Option<ClusterService>>,
     jobs: Mutex<Option<AnalysisJobs>>,
 }
 
@@ -469,7 +469,7 @@ impl DesktopClustering {
     /// No project open yet; `open_project` sets the root.
     pub fn new() -> Self {
         Self {
-            service: Mutex::new(None),
+            service: RwLock::new(None),
             jobs: Mutex::new(None),
         }
     }
@@ -478,7 +478,7 @@ impl DesktopClustering {
     pub fn open_project(&self, root: impl Into<PathBuf>) -> Result<(), String> {
         let root = root.into();
         let service = ClusterService::new(root.clone()).map_err(|e| e.to_string())?;
-        *self.service.lock().map_err(|e| e.to_string())? = Some(service);
+        *self.service.write().map_err(|e| e.to_string())? = Some(service);
         let mut jobs = self.jobs.lock().map_err(|e| e.to_string())?;
         if let Some(previous) = jobs.as_ref() {
             previous.cancel_all();
@@ -522,7 +522,7 @@ impl DesktopClustering {
         &self,
         op: impl FnOnce(&ClusterService) -> Result<T, DomainError>,
     ) -> Result<T, String> {
-        let guard = self.service.lock().map_err(|e| e.to_string())?;
+        let guard = self.service.read().map_err(|e| e.to_string())?;
         let service = guard.as_ref().ok_or_else(|| {
             "no project open: call open_project with a directory first".to_string()
         })?;
@@ -571,21 +571,21 @@ impl Default for DesktopClustering {
 /// project root (Section 7.3 result exports are ephemeral CSV strings; the
 /// client saves through a native dialog, Section 5 storage invariant).
 pub struct DesktopExports {
-    service: Mutex<Option<ExportService>>,
+    service: RwLock<Option<ExportService>>,
 }
 
 impl DesktopExports {
     /// No project open yet; `open_project` sets the root.
     pub fn new() -> Self {
         Self {
-            service: Mutex::new(None),
+            service: RwLock::new(None),
         }
     }
 
     /// Opens (or re-opens) the project root for export use cases.
     pub fn open_project(&self, root: impl Into<PathBuf>) -> Result<(), String> {
         let service = ExportService::new(root).map_err(|e| e.to_string())?;
-        *self.service.lock().map_err(|e| e.to_string())? = Some(service);
+        *self.service.write().map_err(|e| e.to_string())? = Some(service);
         Ok(())
     }
 
@@ -593,7 +593,7 @@ impl DesktopExports {
         &self,
         op: impl FnOnce(&ExportService) -> Result<T, DomainError>,
     ) -> Result<T, String> {
-        let guard = self.service.lock().map_err(|e| e.to_string())?;
+        let guard = self.service.read().map_err(|e| e.to_string())?;
         let service = guard.as_ref().ok_or_else(|| {
             "no project open: call open_project with a directory first".to_string()
         })?;
@@ -637,21 +637,21 @@ impl Default for DesktopExports {
 /// preferences.json` store, replaced by the hosted control-plane table in
 /// Phase 7).
 pub struct DesktopPreferences {
-    service: Mutex<Option<PreferenceService>>,
+    service: RwLock<Option<PreferenceService>>,
 }
 
 impl DesktopPreferences {
     /// No project open yet; `open_project` sets the root.
     pub fn new() -> Self {
         Self {
-            service: Mutex::new(None),
+            service: RwLock::new(None),
         }
     }
 
     /// Opens (or re-opens) the project root for preference use cases.
     pub fn open_project(&self, root: impl Into<PathBuf>) -> Result<(), String> {
         let service = PreferenceService::new(root).map_err(|e| e.to_string())?;
-        *self.service.lock().map_err(|e| e.to_string())? = Some(service);
+        *self.service.write().map_err(|e| e.to_string())? = Some(service);
         Ok(())
     }
 
@@ -659,7 +659,7 @@ impl DesktopPreferences {
         &self,
         op: impl FnOnce(&PreferenceService) -> Result<T, DomainError>,
     ) -> Result<T, String> {
-        let guard = self.service.lock().map_err(|e| e.to_string())?;
+        let guard = self.service.read().map_err(|e| e.to_string())?;
         let service = guard.as_ref().ok_or_else(|| {
             "no project open: call open_project with a directory first".to_string()
         })?;
@@ -1705,6 +1705,7 @@ mod tests {
                 path: "groups/whatever.parquet".into(),
                 extra_paths: vec![],
                 raw_text: false,
+                format: Default::default(),
             })
             .expect_err("no project open");
         assert!(err.contains("no project open"));
@@ -1737,6 +1738,7 @@ mod tests {
                 path: path.clone(),
                 extra_paths: vec![],
                 raw_text: false,
+                format: Default::default(),
             })
             .expect("measured export");
         assert_eq!(export.file_name, "Baca.csv");

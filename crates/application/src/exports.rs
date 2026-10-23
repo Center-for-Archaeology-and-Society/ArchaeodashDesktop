@@ -26,11 +26,13 @@
 use std::path::{Path, PathBuf};
 
 use archaeodash_contracts::{
-    ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult, ExportTransformedRequest,
-    PcaRequest,
+    ExportFormat, ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult,
+    ExportTransformedRequest, PcaRequest,
 };
-use archaeodash_data_io::{csv_field, parse_r_numeric, r_format_double};
+use archaeodash_data_io::{csv_field, parse_r_numeric, r_format_double, GroupRow};
 use archaeodash_domain::DomainError;
+use base64::Engine as _;
+use rust_xlsxwriter::{Format, Workbook, Worksheet, XlsxError};
 
 use super::combined::CombinedInput;
 use super::ordination::OrdinationService;
@@ -42,6 +44,106 @@ fn validation(code: &str, message: impl Into<String>) -> DomainError {
 
 fn io_err(e: std::io::Error) -> DomainError {
     DomainError::Internal(Box::new(e))
+}
+
+fn xlsx_err(e: XlsxError) -> DomainError {
+    DomainError::Internal(Box::new(e))
+}
+
+/// Media type of XLSX workbook exports.
+pub const XLSX_MEDIA_TYPE: &str =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+/// Excel's per-sheet row limit (header included).
+const XLSX_MAX_ROWS: usize = 1_048_576;
+/// Excel's per-cell text limit.
+const XLSX_MAX_TEXT: usize = 32_767;
+
+/// A valid, unique Excel sheet name: at most 31 characters, none of
+/// `[ ] : * ? / \`, no leading/trailing apostrophe, and not "History"
+/// (reserved). Clashes (case-insensitive) get a ` (2)`, ` (3)`… suffix.
+fn sheet_name(raw: &str, used: &mut Vec<String>) -> String {
+    let cleaned: String = raw
+        .chars()
+        .map(|c| {
+            if "[]:*?/\\".contains(c) || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('\'').trim();
+    let base = if cleaned.is_empty() { "Group" } else { cleaned };
+    let taken = |name: &str, used: &[String]| {
+        let lower = name.to_lowercase();
+        lower == "history" || used.iter().any(|u| u.to_lowercase() == lower)
+    };
+    let mut n = 1;
+    loop {
+        let suffix = if n == 1 {
+            String::new()
+        } else {
+            format!(" ({n})")
+        };
+        let keep = 31 - suffix.chars().count();
+        let candidate = format!("{}{suffix}", base.chars().take(keep).collect::<String>());
+        if !taken(&candidate, used) {
+            used.push(candidate.clone());
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Writes text into a cell (never as a formula), within Excel's length limit.
+fn xlsx_text(sheet: &mut Worksheet, row: u32, col: u16, text: &str) -> Result<(), XlsxError> {
+    if text.chars().count() > XLSX_MAX_TEXT {
+        let cut: String = text.chars().take(XLSX_MAX_TEXT).collect();
+        sheet.write_string(row, col, cut)?;
+    } else {
+        sheet.write_string(row, col, text)?;
+    }
+    Ok(())
+}
+
+/// One worksheet: bold frozen header, then text cells for the ID and
+/// descriptive columns and numbers for measured values (missing = blank).
+fn write_measured_sheet(
+    book: &mut Workbook,
+    name: &str,
+    columns: &[String],
+    rows: &[GroupRow],
+    n_desc: usize,
+) -> Result<(), XlsxError> {
+    let header = Format::new().set_bold();
+    let sheet = book.add_worksheet();
+    sheet.set_name(name)?;
+    for (c, column) in columns.iter().enumerate() {
+        sheet.write_string_with_format(0, c as u16, column, &header)?;
+    }
+    sheet.set_freeze_panes(1, 0)?;
+    for (r, row) in rows.iter().enumerate() {
+        let excel_row = (r + 1) as u32;
+        let mut col: u16 = 0;
+        if let Some(text) = row.visible.as_deref() {
+            xlsx_text(sheet, excel_row, col, text)?;
+        }
+        col += 1;
+        for value in &row.descriptive[..n_desc] {
+            if let Some(text) = value.as_deref() {
+                xlsx_text(sheet, excel_row, col, text)?;
+            }
+            col += 1;
+        }
+        for value in &row.elemental {
+            if let Some(number) = value.filter(|v| v.is_finite()) {
+                sheet.write_number(excel_row, col, number)?;
+            }
+            col += 1;
+        }
+    }
+    Ok(())
 }
 
 /// Legacy `saveexportTab.R` filename rule: a user-supplied name containing
@@ -142,6 +244,60 @@ impl ExportService {
         }
     }
 
+    /// The CSV file name with `.xlsx` in place of `.csv`.
+    fn xlsx_file_name(&self, path: &str, extra_paths: &[String]) -> Result<String, DomainError> {
+        let csv = self.file_name(path, extra_paths)?;
+        Ok(match csv.strip_suffix(".csv") {
+            Some(stem) => format!("{stem}.xlsx"),
+            None => format!("{csv}.xlsx"),
+        })
+    }
+
+    /// Measured-data workbook: with several groups, an "All groups" sheet
+    /// (with the group column) followed by one sheet per group; with one
+    /// group, a single sheet named after it. Cells are typed (text vs
+    /// numbers) and text is never evaluated, so no formula guard is needed.
+    fn measured_workbook(
+        &self,
+        req: &ExportMeasuredDataRequest,
+        input: &CombinedInput,
+        columns: &[String],
+        n_desc: usize,
+    ) -> Result<ExportResult, DomainError> {
+        let rows = &input.data.rows;
+        if rows.len() + 1 > XLSX_MAX_ROWS {
+            return Err(validation(
+                "export_too_many_rows",
+                format!(
+                    "{} rows do not fit in one Excel sheet (limit {}); export CSV instead",
+                    rows.len(),
+                    XLSX_MAX_ROWS - 1
+                ),
+            ));
+        }
+        let mut book = Workbook::new();
+        let mut used = Vec::new();
+        if input.is_multi() {
+            let name = sheet_name("All groups", &mut used);
+            write_measured_sheet(&mut book, &name, columns, rows, n_desc).map_err(xlsx_err)?;
+        }
+        let mut start = 0;
+        for source in &input.sources {
+            let end = (start + source.row_count).min(rows.len());
+            let name = sheet_name(&source.group_name, &mut used);
+            write_measured_sheet(&mut book, &name, columns, &rows[start..end], n_desc)
+                .map_err(xlsx_err)?;
+            start = end;
+        }
+        let bytes = book.save_to_buffer().map_err(xlsx_err)?;
+        Ok(ExportResult {
+            file_name: self.xlsx_file_name(&req.path, &req.extra_paths)?,
+            media_type: XLSX_MEDIA_TYPE.to_string(),
+            content: base64::engine::general_purpose::STANDARD.encode(bytes),
+            content_encoding: Some("base64".to_string()),
+        })
+    }
+
     /// Reads the export input. Single-file exports keep their historical
     /// columns (no synthetic file-group column); multi-file exports include
     /// it as the last descriptive column. Returns the input and the number
@@ -174,6 +330,9 @@ impl ExportService {
         columns.push(roles.visible_id.clone());
         columns.extend(roles.descriptive[..n_desc].iter().cloned());
         columns.extend(roles.elemental.iter().cloned());
+        if req.format == ExportFormat::Xlsx {
+            return self.measured_workbook(req, &input, &columns, n_desc);
+        }
         let mut rows = Vec::with_capacity(data.rows.len());
         for row in &data.rows {
             let mut cells = Vec::with_capacity(columns.len());
@@ -190,6 +349,7 @@ impl ExportService {
             file_name: self.file_name(&req.path, &req.extra_paths)?,
             media_type: "text/csv".to_string(),
             content: csv_text(&columns, &rows),
+            content_encoding: None,
         })
     }
 
@@ -227,6 +387,7 @@ impl ExportService {
             file_name: self.file_name(&req.path, &req.extra_paths)?,
             media_type: "text/csv".to_string(),
             content: csv_text(&columns, &rows),
+            content_encoding: None,
         })
     }
 
@@ -270,6 +431,7 @@ impl ExportService {
             file_name: self.file_name(&req.path, &req.extra_paths)?,
             media_type: "text/csv".to_string(),
             content: csv_text(&columns, &rows),
+            content_encoding: None,
         })
     }
 }
@@ -339,6 +501,115 @@ mod tests {
     }
 
     #[test]
+    fn sheet_names_are_valid_and_unique() {
+        let mut used = Vec::new();
+        assert_eq!(sheet_name("All groups", &mut used), "All groups");
+        assert_eq!(sheet_name("a/b:c*d?", &mut used), "a_b_c_d_");
+        assert_eq!(sheet_name("all GROUPS", &mut used), "all GROUPS (2)");
+        assert_eq!(sheet_name("History", &mut used), "History (2)");
+        assert_eq!(sheet_name("'  '", &mut used), "Group");
+        let long = sheet_name(&"x".repeat(40), &mut used);
+        assert_eq!(long.chars().count(), 31);
+        let long2 = sheet_name(&"x".repeat(40), &mut used);
+        assert_eq!(long2, format!("{} (2)", "x".repeat(27)));
+    }
+
+    #[test]
+    fn measured_export_xlsx_has_all_and_per_group_sheets() {
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "archaeodash-exports-xlsx-{}-{n}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(
+            dir.join("two.csv"),
+            "anid,Site,Note,as,fe\nA1,Baca,=x,1.5,3\nA2,Chaco,,2,\nA3,Baca,ok,5,6\n",
+        )
+        .expect("write source");
+        let commit = ImportService::new(&dir)
+            .expect("import service")
+            .commit(&ImportCommitRequest {
+                sheet: None,
+                source: "two.csv".into(),
+                group_column: "Site".into(),
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+                group_name: None,
+            })
+            .expect("commit");
+        let paths: Vec<String> = commit.groups.iter().map(|g| g.path.clone()).collect();
+        assert_eq!(paths.len(), 2);
+        let service = ExportService::new(&dir).expect("export service");
+        let result = service
+            .export_measured_data(&ExportMeasuredDataRequest {
+                path: paths[0].clone(),
+                extra_paths: paths[1..].to_vec(),
+                raw_text: false,
+                format: ExportFormat::Xlsx,
+            })
+            .expect("export xlsx");
+        assert_eq!(result.media_type, XLSX_MEDIA_TYPE);
+        assert_eq!(result.content_encoding.as_deref(), Some("base64"));
+        assert!(
+            result.file_name.ends_with("-and-1-more.xlsx"),
+            "{}",
+            result.file_name
+        );
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&result.content)
+            .expect("base64");
+        let file = dir.join("out.xlsx");
+        std::fs::write(&file, bytes).expect("write xlsx");
+
+        let sheets = archaeodash_data_io::xlsx_sheet_names(&file).expect("sheets");
+        assert_eq!(sheets.len(), 3);
+        assert_eq!(sheets[0], "All groups");
+        let (all, _) =
+            archaeodash_data_io::read_xlsx_table(&file, Some("All groups")).expect("all");
+        let col = |name: &str| {
+            all.columns
+                .iter()
+                .position(|c| c == name)
+                .unwrap_or_else(|| panic!("no {name} column in {:?}", all.columns))
+        };
+        let (note_col, group_col) = (col("Note"), col("Group"));
+        assert_eq!(all.columns[0], "anid");
+        assert_eq!(all.columns[all.columns.len() - 2..], ["as", "fe"]);
+        assert_eq!(all.n_rows(), 3);
+        // Text is stored as text (no formula guard needed), numbers as numbers.
+        let note = all
+            .rows
+            .iter()
+            .find_map(|r| r[note_col].clone().filter(|v| v.starts_with('=')));
+        assert_eq!(note.as_deref(), Some("=x"));
+        // Each group sheet holds only its own rows.
+        let mut per_group = 0;
+        for name in &sheets[1..] {
+            let (frame, _) =
+                archaeodash_data_io::read_xlsx_table(&file, Some(name)).expect("group");
+            assert!(frame
+                .rows
+                .iter()
+                .all(|r| r[group_col].as_deref() == Some(name.as_str())));
+            per_group += frame.n_rows();
+        }
+        assert_eq!(per_group, 3);
+
+        // CSV stays the default when `format` is omitted on the wire.
+        let req: ExportMeasuredDataRequest =
+            serde_json::from_str(&format!(r#"{{"path":"{}"}}"#, paths[0])).expect("json");
+        assert_eq!(req.format, ExportFormat::Csv);
+        let csv = service.export_measured_data(&req).expect("csv");
+        assert_eq!(csv.content_encoding, None);
+        assert!(csv.file_name.ends_with(".csv"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn escaping_guard_rules() {
         // Spreadsheet-dangerous text is guarded by default.
         assert_eq!(text_cell(Some("=cmd"), false), "'=cmd");
@@ -365,6 +636,7 @@ mod tests {
                 path: path.clone(),
                 extra_paths: vec![],
                 raw_text: false,
+                format: Default::default(),
             })
             .expect("export");
         assert_eq!(result.file_name, "Baca.csv");
@@ -405,6 +677,7 @@ mod tests {
                 path: tricky_path.clone(),
                 extra_paths: vec![],
                 raw_text: false,
+                format: Default::default(),
             })
             .expect("guarded export");
         let lines: Vec<&str> = guarded.content.trim_end_matches('\n').split('\n').collect();
@@ -417,6 +690,7 @@ mod tests {
                 path: tricky_path,
                 extra_paths: vec![],
                 raw_text: true,
+                format: Default::default(),
             })
             .expect("raw export");
         let lines: Vec<&str> = raw.content.trim_end_matches('\n').split('\n').collect();
@@ -575,6 +849,7 @@ mod tests {
                 path: path.clone(),
                 extra_paths: vec![other_path.clone()],
                 raw_text: false,
+                format: Default::default(),
             })
             .expect("multi-file export");
         assert_eq!(result.file_name, "Baca-and-1-more.csv");
@@ -592,6 +867,7 @@ mod tests {
                 path: other_path.clone(),
                 extra_paths: vec![],
                 raw_text: false,
+                format: Default::default(),
             })
             .expect("single export");
         assert!(single.content.starts_with("anid,Site,Ware,fe,as,zn\n"));

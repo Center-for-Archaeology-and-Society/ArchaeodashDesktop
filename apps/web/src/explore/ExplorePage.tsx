@@ -17,8 +17,8 @@ import {
 import type {
   ExploreCrosstabResponse,
   ExploreHistogramResponse,
-  ExploreMissingProfileResponse,
   ExploreCompositionalProfileResponse,
+  ExportFormat,
   ExploreService,
   ExportsService,
   GroupRowsResponse,
@@ -33,6 +33,7 @@ import {
   combineGroupFiles,
   defaultGroupColumn,
   inputPaths,
+  type CombinedRows,
   type LoadedGroupFile,
 } from '../visualize/combine.ts';
 import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
@@ -42,6 +43,8 @@ import { CellAutosave, cellKey } from './autosave.ts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
 import { useCachedResult, useDataCache } from '../datasets/DataCache.tsx';
 import { analysisInput } from '../analysis-setup/setup.ts';
+import { missingProfile } from './missing.ts';
+import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
 export interface ExploreDeps {
   readonly groups: GroupsService;
   readonly explore: ExploreService;
@@ -118,6 +121,17 @@ export function DataTable({
   const [drafts, setDrafts] = useState<Map<string, string>>(new Map());
   const [, setTick] = useState(0);
   const [exportError, setExportError] = useState('');
+  const [exporting, setExporting] = useState<ExportFormat | null>(null);
+  const runExport = (format: ExportFormat) => {
+    setExportError('');
+    setExporting(format);
+    void autosave
+      .idle()
+      .then(() => deps.exports.measuredData({ ...inputPaths(files), raw_text: false, format }))
+      .then(downloadExportResult)
+      .catch((err: unknown) => setExportError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setExporting(null));
+  };
   const fileOf = useMemo(() => new Map(files.map((f) => [f.path, f])), [files]);
 
   useEffect(() => autosave.onChange(() => setTick((t) => t + 1)), [autosave]);
@@ -224,15 +238,14 @@ export function DataTable({
         )}
         <button
           type="button"
-          onClick={() =>
-            void autosave
-              .idle()
-              .then(() => deps.exports.measuredData({ ...inputPaths(files), raw_text: false }))
-              .then(downloadExportResult)
-              .catch((err: unknown) => setExportError(err instanceof Error ? err.message : String(err)))
-          }
+          disabled={exporting !== null}
+          onClick={() => runExport('xlsx')}
+          title={files.length > 1 ? 'One sheet with every row, plus one sheet per group' : undefined}
         >
-          Export measured data (CSV)
+          <BusyLabel busy={exporting === 'xlsx'} busyText="Exporting…">Export to Excel</BusyLabel>
+        </button>
+        <button type="button" disabled={exporting !== null} onClick={() => runExport('csv')}>
+          <BusyLabel busy={exporting === 'csv'} busyText="Exporting…">Export CSV</BusyLabel>
         </button>
       </div>
       {autosave.error && autosave.failedCount > 0 && (
@@ -362,27 +375,13 @@ export function exploreKey(kind: string, revKey: string, request: unknown): stri
   return `explore:${kind}:${revKey}:${JSON.stringify(request)}`;
 }
 
-function MissingView({
-  deps,
-  input,
-  columns,
-  revKey,
-}: {
-  deps: ExploreDeps;
-  input: InputPaths;
-  columns: string[];
-  /** Revisions of the loaded files; part of the cache key. */
-  revKey: string;
-}): ReactElement {
-  const request = useMemo(() => ({ ...input, columns, transformation: null }), [input, columns]);
-  const state: AsyncState<ExploreMissingProfileResponse> = useCachedResult(
-    exploreKey('missing', revKey, request),
-    () => deps.explore.missingProfile(request),
-  );
-
-  if (state.kind === 'loading') return <p role="status">Computing missing profile…</p>;
-  if (state.kind === 'error') return <p role="alert">Error: {state.message}</p>;
-  if (state.kind !== 'loaded') return <p>Choose a dataset first.</p>;
+/**
+ * Missing-value profile, computed from the rows already loaded (no backend
+ * round trip), so the tab opens instantly however large the dataset is.
+ */
+export function MissingView({ combined, columns }: { combined: CombinedRows; columns: string[] }): ReactElement {
+  const rows = useMemo(() => missingProfile(combined, columns), [combined, columns]);
+  if (rows.length === 0) return <p>Choose a dataset first.</p>;
   return (
     <table className="data-table">
       <thead>
@@ -394,17 +393,65 @@ function MissingView({
         </tr>
       </thead>
       <tbody>
-        {state.data.rows.map((row) => (
+        {rows.map((row) => (
           <tr key={row.feature} data-band={row.band}>
             <td>{row.feature}</td>
             <td>{row.num_missing}</td>
-            <td>{row.pct_missing.toFixed(1)}</td>
+            <td>{Number.isNaN(row.pct_missing) ? 'NA' : (row.pct_missing * 100).toFixed(1)}</td>
             <td>{row.band}</td>
           </tr>
         ))}
       </tbody>
     </table>
   );
+}
+
+const DEFAULT_BINS = 30;
+/** Largest profile (rows × elements) warmed in the background. */
+const PROFILE_WARMUP_CELLS = 250_000;
+
+function histogramRequest(input: InputPaths, column: string, bins: number) {
+  return { ...input, column, bins, transformation: null };
+}
+
+function profileRequest(input: InputPaths, columns: string[], groupColumn: string) {
+  return { ...input, columns, group_column: groupColumn || null, transformation: null };
+}
+
+/**
+ * Background warm-up of the Explore results: one request at a time, through
+ * the shared result cache (same keys as the views), cancelled when the data
+ * or columns change.
+ */
+function useExploreWarmup(
+  deps: ExploreDeps,
+  ready: boolean,
+  input: InputPaths,
+  columns: string[],
+  profileGroupColumn: string,
+  revKey: string,
+  rowCount: number,
+): void {
+  const cache = useDataCache();
+  useEffect(() => {
+    if (!cache || !ready || columns.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      for (const column of columns) {
+        if (cancelled) return;
+        const request = histogramRequest(input, column, DEFAULT_BINS);
+        await cache.result(exploreKey('histogram', revKey, request), () => deps.explore.histogram(request)).catch(() => undefined);
+      }
+      // The profile response has one entry per row and element; only warm it
+      // when that stays modest.
+      if (cancelled || rowCount * columns.length > PROFILE_WARMUP_CELLS) return;
+      const request = profileRequest(input, columns, profileGroupColumn);
+      await cache.result(exploreKey('profile', revKey, request), () => deps.explore.compositionalProfile(request)).catch(() => undefined);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [cache, ready, input, columns, profileGroupColumn, revKey, rowCount, deps]);
 }
 
 /** Histogram with the legacy bins 2–100, default 30. */
@@ -420,8 +467,8 @@ function HistogramView({
   revKey: string;
 }): ReactElement {
   const [column, setColumn] = useState(columns[0] ?? '');
-  const [bins, setBins] = useState(30);
-  const request = useMemo(() => ({ ...input, column, bins, transformation: null }), [input, column, bins]);
+  const [bins, setBins] = useState(DEFAULT_BINS);
+  const request = useMemo(() => histogramRequest(input, column, bins), [input, column, bins]);
   const state: AsyncState<ExploreHistogramResponse> = useCachedResult(
     column ? exploreKey('histogram', revKey, request) : null,
     () => deps.explore.histogram(request),
@@ -447,10 +494,10 @@ function HistogramView({
           min={2}
           max={100}
           value={bins}
-          onChange={(e) => setBins(Math.min(100, Math.max(2, Number(e.target.value) || 30)))}
+          onChange={(e) => setBins(Math.min(100, Math.max(2, Number(e.target.value) || DEFAULT_BINS)))}
         />
       </label>
-      {state.kind === 'loading' && <p role="status">Computing histogram…</p>}
+      {state.kind === 'loading' && <BusyNote>Computing histogram…</BusyNote>}
       {state.kind === 'error' && <p role="alert">Error: {state.message}</p>}
       {state.kind === 'loaded' && (
         <div className="histogram" role="img" aria-label={`Histogram of ${column}`}>
@@ -539,7 +586,7 @@ function CrosstabView({
           <option value="sd">sd</option>
         </select>
       </label>
-      {state.kind === 'loading' && <p role="status">Computing crosstab…</p>}
+      {state.kind === 'loading' && <BusyNote>Computing crosstab…</BusyNote>}
       {state.kind === 'error' && <p role="alert">Error: {state.message}</p>}
       {state.kind === 'loaded' && state.data.kind === 'count' && (
         <CrosstabCountTable rows={state.data.rows} groupLabel={groupColumn} valueLabel={valueColumn} />
@@ -669,10 +716,7 @@ function ProfileView({
 }): ReactElement {
   const [groupColumn, setGroupColumn] = useState(defaultGroupColumn);
   const [logScale, setLogScale] = useState(true);
-  const request = useMemo(
-    () => ({ ...input, columns, group_column: groupColumn || null, transformation: null }),
-    [input, columns, groupColumn],
-  );
+  const request = useMemo(() => profileRequest(input, columns, groupColumn), [input, columns, groupColumn]);
   const state: AsyncState<ExploreCompositionalProfileResponse> = useCachedResult(
     exploreKey('profile', revKey, request),
     () => deps.explore.compositionalProfile(request),
@@ -710,7 +754,7 @@ function ProfileView({
           <input type="checkbox" checked={logScale} onChange={(e) => setLogScale(e.target.checked)} /> Log scale
         </label>
       </div>
-      {state.kind === 'loading' && <p role="status">Computing profile…</p>}
+      {state.kind === 'loading' && <BusyNote>Computing profile…</BusyNote>}
       {state.kind === 'error' && <p role="alert">Error: {state.message}</p>}
       {state.kind === 'loaded' && traces.length > 0 && (
         <PlotlyChart data={traces} layout={layout} ariaLabel="Compositional profile" height={480} />
@@ -749,16 +793,13 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
   // Remount views when the selection or a file revision changes.
   const viewKey = files.map((f) => `${f.path}@${f.data.revision_id}`).join('|');
 
-  // Compute the missing-value profile as soon as the data is in, so its tab
-  // opens instantly (the result is cached with the file revisions).
-  const cache = useDataCache();
   // Saved table edits change revisions, so results recompute after them.
   const revKey = autosave.revisionsKey;
-  useEffect(() => {
-    if (!cache || load.kind !== 'loaded' || files.length === 0 || !savesSettled) return;
-    const request = { ...input, columns: plotColumns, transformation: null };
-    void cache.result(exploreKey('missing', revKey, request), () => deps.explore.missingProfile(request)).catch(() => undefined);
-  }, [cache, load.kind, files.length, savesSettled, input, plotColumns, revKey, deps]);
+  const profileGroupColumn = files.length > 1 ? combined.groupColumn : '';
+  // Warm the other tabs in the background once the data is in: every
+  // element's default histogram, then the default profile plot. Results are
+  // cached with the file revisions, so tabs and field changes open at once.
+  useExploreWarmup(deps, load.kind === 'loaded' && files.length > 0 && savesSettled, input, plotColumns, profileGroupColumn, revKey, combined.rows.length);
 
   return (
     <section aria-labelledby="explore-heading">
@@ -790,7 +831,7 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
           </button>
         ))}
       </div>
-      {load.kind === 'loading' && <p role="status">Loading dataset…</p>}
+      {load.kind === 'loading' && <BusyNote>Loading dataset…</BusyNote>}
       {load.kind === 'error' && <p role="alert">Load failed: {load.message}</p>}
       {dataset.orderedPaths.length === 0 && load.kind !== 'loading' && (
         <p className="muted">No groups are included. Tick groups in the Data Manager, or choose them in Dataset.</p>
@@ -800,8 +841,8 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
           {view === 'table' && (
             <DataTable files={files} deps={deps} autosave={autosave} onReload={dataset.reload} />
           )}
-          {view !== 'table' && !savesSettled && <p role="status">Saving table edits…</p>}
-          {savesSettled && view === 'missing' && <MissingView deps={deps} input={input} columns={plotColumns} revKey={revKey} />}
+          {view !== 'table' && view !== 'missing' && !savesSettled && <BusyNote>Saving table edits…</BusyNote>}
+          {view === 'missing' && <MissingView combined={combined} columns={plotColumns} />}
           {savesSettled && view === 'histogram' && (
             <HistogramView deps={deps} input={input} columns={plotColumns} revKey={revKey} />
           )}
@@ -815,7 +856,7 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
               columns={plotColumns}
               revKey={revKey}
               groupColumns={combined.descriptiveColumns}
-              defaultGroupColumn={files.length > 1 ? combined.groupColumn : ''}
+              defaultGroupColumn={profileGroupColumn}
             />
           )}
         </div>

@@ -21,8 +21,11 @@ test('confirmation names the effect and destination while keeping request identi
   assert.match(html, /Move 1 selected analytical units/);
   assert.match(html, /target.parquet/);
   assert.match(html, /empty source group file is removed/);
-  assert.match(html, /Confirm move/);
+  // Busy: the confirm button shows a spinner and what it is doing.
+  assert.match(html, /<span class="spinner" aria-hidden="true"><\/span>Moving…/);
   assert.equal((html.match(/disabled=""/g) ?? []).length, 2);
+  const idle = renderToStaticMarkup(<MoveConfirmation request={{ action: 'move', source_path: 'source.parquet', destination_path: 'target.parquet', selected_uuids: [uuid], expected_source_revision: 'hidden-revision' }} busy={false} onConfirm={() => {}} onCancel={() => {}} />);
+  assert.match(idle, />Confirm move<\/button>/);
   assert.doesNotMatch(html, new RegExp(uuid + '|hidden-revision'));
 });
 

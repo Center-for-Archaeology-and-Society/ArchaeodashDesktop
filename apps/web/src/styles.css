@@ -728,3 +728,101 @@ body {
   color: var(--text);
   border-color: var(--accent);
 }
+
+/* Loading indicators (ui/Busy.tsx, shell/ActivityIndicator.tsx) */
+.spinner {
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  margin-right: 0.45em;
+  vertical-align: -0.12em;
+  border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex: none;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2.4s;
+  }
+  .activity-bar::after {
+    animation: none;
+  }
+}
+
+.busy-note {
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+}
+
+.busy-note .spinner {
+  color: var(--accent);
+}
+
+/* Global activity: a thin bar under the top navigation plus a labelled chip. */
+.activity-indicator {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  white-space: nowrap;
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.activity-indicator .spinner {
+  color: var(--accent);
+}
+
+.activity-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.activity-bar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 30%;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: activity-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes activity-slide {
+  from {
+    left: -30%;
+  }
+  to {
+    left: 100%;
+  }
+}
+
+.activity-bar + .theme-select {
+  margin-left: 0.5rem;
+}
+
+/* A busy (disabled) button stays readable while its spinner runs. */
+button:disabled:has(.spinner) {
+  opacity: 0.85;
+  cursor: progress;
+}

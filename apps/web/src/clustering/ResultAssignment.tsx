@@ -3,6 +3,7 @@ import { useMemo, useState, type ReactElement } from 'react';
 import type { TransferUnitsRequest, BatchTransferUnitsRequest, GroupCandidate } from '@archaeodash/client';
 import type { AnalysisResult } from './AnalysisPage.tsx';
 import { buildAssignmentRequest, selectableRows } from './assignment-model.ts';
+import { BusyLabel } from '../ui/Busy.tsx';
 
 export function MoveConfirmation({ request, busy, onConfirm, onCancel, multiSource = false, groupName = (path: string) => path }: {
   request: TransferUnitsRequest;
@@ -15,7 +16,7 @@ export function MoveConfirmation({ request, busy, onConfirm, onCancel, multiSour
   return <section aria-label="Confirm analytical unit move">
     <p>Move {request.selected_uuids.length} selected analytical units from <strong>{multiSource ? 'their current groups' : groupName(request.source_path)}</strong> to <strong>{groupName(request.destination_path)}</strong>?{multiSource ? ' Units already in that group stay put.' : ''}</p>
     <p>The units will leave the source group. Original measured values remain unchanged. An empty source group file is removed.</p>
-    <button type="button" disabled={busy} onClick={() => onConfirm(request)}>Confirm move</button>{' '}
+    <button type="button" disabled={busy} onClick={() => onConfirm(request)}><BusyLabel busy={busy} busyText="Moving…">Confirm move</BusyLabel></button>{' '}
     <button type="button" disabled={busy} onClick={onCancel}>Cancel</button>
   </section>;
 }

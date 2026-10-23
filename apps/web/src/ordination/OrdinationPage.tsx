@@ -25,6 +25,7 @@ import { asRowsResponse, defaultGroupColumn, inputPaths } from '../visualize/com
 import { groupColors } from '../visualize/visualize-model.ts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
 import { UMAP_SEED, analysisInput, setupSummary } from '../analysis-setup/setup.ts';
+import { BusyNote } from '../ui/Busy.tsx';
 
 export interface OrdinationDeps {
   readonly groups: GroupsService;
@@ -284,7 +285,7 @@ function PcaView({ deps, data, extraPaths, groups, columns, transformation }: { 
   const { state, reload } = useOrdination<PcaResponse>(() => deps.ordination.pca(request), [deps, request]);
   return (
     <>
-      {state.kind === 'loading' && <p role="status">Computing PCA…</p>}
+      {state.kind === 'loading' && <BusyNote>Computing PCA…</BusyNote>}
       {state.kind === 'error' && <p role="alert">Error: {state.message}</p>}
       {state.kind === 'loaded' && (
         <PcaResult
@@ -316,7 +317,7 @@ function UmapView({ deps, data, extraPaths, groups, columns, transformation }: {
       }),
     [deps, data, extraPaths, columns, transformation],
   );
-  if (state.kind === 'loading') return <p role="status">Computing UMAP…</p>;
+  if (state.kind === 'loading') return <BusyNote>Computing UMAP…</BusyNote>;
   if (state.kind === 'error') return <p role="alert">Error: {state.message}</p>;
   if (state.kind !== 'loaded') return <p>No UMAP yet.</p>;
   return <UmapResult result={state.data} groups={groups} />;
@@ -392,7 +393,7 @@ export function LdaView({
           ))}
         </select>
       </label>
-      {state.kind === 'loading' && <p role="status">Computing LDA…</p>}
+      {state.kind === 'loading' && <BusyNote>Computing LDA…</BusyNote>}
       {state.kind === 'error' && <p role="alert">Error: {state.message}</p>}
       {state.kind === 'idle' && <p>No LDA yet.</p>}
       {state.kind === 'loaded' && (
@@ -461,7 +462,7 @@ export function OrdinationPage({ deps }: { deps: OrdinationDeps }): ReactElement
           </button>
         ))}
       </div>
-      {load.kind === 'loading' && <p role="status">Loading dataset…</p>}
+      {load.kind === 'loading' && <BusyNote>Loading dataset…</BusyNote>}
       {load.kind === 'error' && <p role="alert">Load failed: {load.message}</p>}
       {(load.kind !== 'loaded' || files.length === 0) && load.kind !== 'loading' && (
         <p role="status">Load a dataset to run ordination.</p>
@@ -473,7 +474,7 @@ export function OrdinationPage({ deps }: { deps: OrdinationDeps }): ReactElement
         </p>
       )}
       {load.kind === 'loaded' && files.length > 0 && !analysisSetup.loaded && (
-        <p role="status">Loading the analysis setup…</p>
+        <BusyNote>Loading the analysis setup…</BusyNote>
       )}
       {load.kind === 'loaded' && files.length > 0 && analysisSetup.loaded && input.columns.length < 2 && (
         <p role="alert">Ordination needs at least two selected elements measured in these groups. Change the Analysis setup in the Data Manager.</p>

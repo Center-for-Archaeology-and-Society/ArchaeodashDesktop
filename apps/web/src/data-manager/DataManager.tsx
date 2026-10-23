@@ -1,11 +1,13 @@
 /**
  * Data Manager sidebar: a compact file manager for the project's group files.
- * Toolbar (Import…, Refresh, Duplicate, Merge, Delete), a keyboard-accessible
+ * Toolbar (Import…, Refresh, Duplicate, Merge, Delete, Export…), a keyboard-accessible
  * tree (role="tree") with multi-select, inline name/confirm forms, a details
  * panel for the selected file, and the import wizard in a modal dialog.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactElement } from 'react';
-import type { GroupSummary } from '@archaeodash/contracts';
+import type { ExportFormat, GroupSummary } from '@archaeodash/contracts';
+import { downloadExportResult } from '../exports.ts';
+import { BusyLabel, BusyNote, Spinner } from '../ui/Busy.tsx';
 import { unionElements } from '../analysis-setup/setup.ts';
 import { exclusionFor, includedAmong, useGroupInclusion } from '../datasets/GroupInclusion.tsx';
 import { useDataCache } from '../datasets/DataCache.tsx';
@@ -40,6 +42,7 @@ type Pending =
   | { readonly kind: 'duplicate'; readonly name: string }
   | { readonly kind: 'merge'; readonly name: string }
   | { readonly kind: 'delete' }
+  | { readonly kind: 'export'; readonly format: ExportFormat }
   | null;
 
 const FOLDER_ID = '__groups_folder__';
@@ -73,6 +76,8 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
   const [entries, setEntries] = useState<GroupFileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  /** What the current busy operation is doing, shown with a spinner. */
+  const [busyText, setBusyText] = useState('');
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
   const [selection, setSelection] = useState<SelectionState>({ selected: [], anchor: null });
@@ -154,7 +159,8 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
     select(path, { toggle: event.ctrlKey || event.metaKey, range: event.shiftKey });
   };
 
-  const runChange = async (work: () => Promise<string[] | void>, done: string) => {
+  const runChange = async (work: () => Promise<string[] | void>, done: string, doing = 'Working…') => {
+    setBusyText(doing);
     setBusy(true);
     setError('');
     setStatus('');
@@ -182,7 +188,7 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
     void runChange(async () => {
       const result = await transport.groups.duplicateGroup({ source_path: single.path, expected_revision: single.revision!, new_group_name: name });
       return result.outputs.map((output) => output.path);
-    }, `Duplicated ${single.name} as ${name}.`);
+    }, `Duplicated ${single.name} as ${name}.`, `Duplicating ${single.name}…`);
   };
 
   const submitMerge = (event: FormEvent) => {
@@ -194,7 +200,7 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
     void runChange(async () => {
       const result = await transport.groups.mergeGroups({ sources, new_group_name: name });
       return result.outputs.map((output) => output.path);
-    }, `Merged ${sources.length} files into ${name}.`);
+    }, `Merged ${sources.length} files into ${name}.`, `Merging ${sources.length} groups into ${name}…`);
   };
 
   const confirmDelete = () => {
@@ -205,7 +211,39 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
         await transport.groups.deleteGroup({ path: entry.path, expected_revision: entry.revision!, confirm_path: entry.path });
       }
       return [];
-    }, `Deleted ${targets.map((entry) => entry.name).join(', ')}.`);
+    }, `Deleted ${targets.map((entry) => entry.name).join(', ')}.`, `Deleting ${plural(targets.length, 'group')}…`);
+  };
+
+  // Export: the highlighted groups, or every group included in analyses
+  // when nothing is highlighted. Rows follow project order.
+  const exportPaths = selectedReady.length > 0 ? selectedReady : (includedPaths ?? readyPaths);
+  const exportNames = entries.filter((entry) => exportPaths.includes(entry.path)).map((entry) => entry.name);
+  const exportScope = selectedReady.length > 0 ? 'selected' : includedPaths ? 'included in analyses' : 'in the project';
+  const canExport = !busy && !!transport.exports && exportPaths.length > 0;
+
+  const submitExport = async (event: FormEvent) => {
+    event.preventDefault();
+    const exportsService = transport.exports;
+    if (pending?.kind !== 'export' || !exportsService) return;
+    const ordered = order.filter((path) => exportPaths.includes(path));
+    const [path, ...extra] = ordered;
+    if (!path) return;
+    const format = pending.format;
+    setBusyText(`Preparing ${format === 'xlsx' ? 'Excel workbook' : 'CSV'} for ${plural(ordered.length, 'group')}…`);
+    setBusy(true);
+    setError('');
+    setStatus('');
+    try {
+      const result = await exportsService.measuredData({ path, extra_paths: extra, format });
+      setBusyText('Saving export…');
+      const saved = await downloadExportResult(result);
+      setPending(null);
+      setStatus(saved ? `Exported ${plural(ordered.length, 'group')} to ${result.file_name}.` : 'Export cancelled.');
+    } catch (cause) {
+      setError(`Export failed: ${message(cause)}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const canDuplicate = !busy && single !== null && !!single.revision;
@@ -282,6 +320,18 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
           <button type="button" className="fm-tool" disabled={!canDuplicate} aria-pressed={pending?.kind === 'duplicate'} onClick={() => single && setPending({ kind: 'duplicate', name: `${single.name} copy` })}>Duplicate</button>
           <button type="button" className="fm-tool" disabled={!canMerge} aria-pressed={pending?.kind === 'merge'} onClick={() => setPending({ kind: 'merge', name: 'Merged' })}>Merge</button>
           <button type="button" className="fm-tool fm-tool-danger" disabled={!canDelete} aria-pressed={pending?.kind === 'delete'} onClick={() => setPending({ kind: 'delete' })}>Delete</button>
+          {transport.exports && (
+            <button
+              type="button"
+              className="fm-tool"
+              disabled={!canExport}
+              aria-pressed={pending?.kind === 'export'}
+              title="Export the highlighted groups (or all groups in analyses) to Excel or CSV"
+              onClick={() => setPending({ kind: 'export', format: 'xlsx' })}
+            >
+              Export…
+            </button>
+          )}
         </div>
       </header>
 
@@ -291,7 +341,7 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
             <input autoFocus value={pending.name} disabled={busy} onChange={(event) => setPending({ kind: 'duplicate', name: event.target.value })} onKeyDown={(event) => { if (event.key === 'Escape') setPending(null); }} />
           </label>
           <div className="fm-inline-actions">
-            <button type="submit" disabled={busy || !pending.name.trim()}>Duplicate</button>
+            <button type="submit" disabled={busy || !pending.name.trim()}><BusyLabel busy={busy}>Duplicate</BusyLabel></button>
             <button type="button" disabled={busy} onClick={() => setPending(null)}>Cancel</button>
           </div>
         </form>
@@ -302,7 +352,7 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
             <input autoFocus value={pending.name} disabled={busy} onChange={(event) => setPending({ kind: 'merge', name: event.target.value })} onKeyDown={(event) => { if (event.key === 'Escape') setPending(null); }} />
           </label>
           <div className="fm-inline-actions">
-            <button type="submit" disabled={busy || !pending.name.trim()}>Merge</button>
+            <button type="submit" disabled={busy || !pending.name.trim()}><BusyLabel busy={busy}>Merge</BusyLabel></button>
             <button type="button" disabled={busy} onClick={() => setPending(null)}>Cancel</button>
           </div>
         </form>
@@ -311,10 +361,32 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
         <div className="fm-inline fm-inline-danger" role="group" aria-label="Confirm delete">
           <p>Delete {selectedEntries.map((entry) => entry.name).join(', ')}? This removes {selectedEntries.length === 1 ? 'the group file' : `${selectedEntries.length} group files`} from the project.</p>
           <div className="fm-inline-actions">
-            <button type="button" className="fm-danger" disabled={busy} onClick={confirmDelete}>Confirm</button>
+            <button type="button" className="fm-danger" disabled={busy} onClick={confirmDelete}><BusyLabel busy={busy}>Confirm</BusyLabel></button>
             <button type="button" autoFocus disabled={busy} onClick={() => setPending(null)}>Cancel</button>
           </div>
         </div>
+      )}
+      {pending?.kind === 'export' && (
+        <form className="fm-inline" onSubmit={(event) => void submitExport(event)} aria-label="Export groups">
+          <p className="fm-export-what">
+            Export {plural(exportNames.length, 'group')} {exportScope}: {exportNames.join(', ')}
+          </p>
+          <fieldset className="fm-export-format" disabled={busy}>
+            <legend>Format</legend>
+            <label>
+              <input type="radio" name="fm-export-format" checked={pending.format === 'xlsx'} onChange={() => setPending({ kind: 'export', format: 'xlsx' })} />{' '}
+              Excel workbook (.xlsx){exportNames.length > 1 ? ': all rows plus one sheet per group' : ''}
+            </label>
+            <label>
+              <input type="radio" name="fm-export-format" checked={pending.format === 'csv'} onChange={() => setPending({ kind: 'export', format: 'csv' })} />{' '}
+              CSV (.csv){exportNames.length > 1 ? ': all rows with a Group column' : ''}
+            </label>
+          </fieldset>
+          <div className="fm-inline-actions">
+            <button type="submit" disabled={busy || exportPaths.length === 0}><BusyLabel busy={busy} busyText="Exporting…">Export</BusyLabel></button>
+            <button type="button" disabled={busy} onClick={() => setPending(null)}>Cancel</button>
+          </div>
+        </form>
       )}
 
       {includedSet && readyPaths.length > 0 && (
@@ -352,7 +424,8 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
       />
 
       <div className="fm-messages">
-        {status && <p role="status">{status}</p>}
+        {busy && busyText && <BusyNote>{busyText}</BusyNote>}
+        {!busy && status && <p role="status">{status}</p>}
         {error && <p role="alert">{error}</p>}
       </div>
 
@@ -436,7 +509,7 @@ export function GroupFileTree({
           <span className="fm-twisty" aria-hidden="true">{folderOpen ? '▾' : '▸'}</span>
           <FolderIcon open={folderOpen} />
           <span className="fm-name">groups</span>
-          <span className="fm-meta">{loading && !entries.length ? 'Loading…' : entries.length}</span>
+          <span className="fm-meta">{loading && !entries.length ? <><Spinner />Loading…</> : entries.length}</span>
         </div>
         {folderOpen && (
           <ul role="group" className="fm-group">

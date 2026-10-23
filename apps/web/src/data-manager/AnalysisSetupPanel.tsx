@@ -11,6 +11,7 @@ import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
 import { DEFAULT_IMPUTATION_SEED, IMPUTATION_CHOICES, TRANSFORM_CHOICES, newSetup, setupSummary } from '../analysis-setup/setup.ts';
 import { useGroupInclusion } from '../datasets/GroupInclusion.tsx';
 import { ImportDialog } from './ImportDialog.tsx';
+import { BusyLabel, Spinner } from '../ui/Busy.tsx';
 
 export interface AnalysisSetupPanelProps {
   /** Measured columns across the project's group files. */
@@ -39,11 +40,12 @@ export function AnalysisSetupPanel({ elements, groups, ordination, dataKey = '' 
           Configure…
         </button>
       </div>
-      <p className="fm-setup-summary">{loaded ? setupSummary(setup, elements) : 'Loading…'}</p>
+      <p className="fm-setup-summary">{loaded ? setupSummary(setup, elements) : <><Spinner />Loading…</>}</p>
       {precompute.length > 0 && (
         <ul className="fm-setup-precompute" aria-label="Precomputed ordinations">
           {precompute.map(([kind, state]) => (
             <li key={kind} className={typeof state === 'string' ? `is-${state}` : 'failed' in state ? 'is-failed' : 'is-skipped'}>
+              {state === 'computing' && <Spinner />}
               {precomputeStatusText(kind, state)}
             </li>
           ))}
@@ -233,7 +235,7 @@ export function AnalysisSetupForm({ elements, setup, onSave, onReset, onCancel }
         {onReset && <button type="button" className="fm-tool" disabled={busy} onClick={() => void run(onReset)}>Reset to defaults</button>}
         <span className="setup-spacer" />
         <button type="button" className="fm-tool" disabled={busy} onClick={onCancel}>Cancel</button>
-        <button type="submit" className="fm-tool fm-tool-primary" disabled={busy || !selected.length || !seedValid}>{busy ? 'Saving…' : 'Save'}</button>
+        <button type="submit" className="fm-tool fm-tool-primary" disabled={busy || !selected.length || !seedValid}><BusyLabel busy={busy} busyText="Saving…">Save</BusyLabel></button>
       </div>
     </form>
   );

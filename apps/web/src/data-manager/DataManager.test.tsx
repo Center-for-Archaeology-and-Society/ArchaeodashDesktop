@@ -67,6 +67,15 @@ test('file manager sidebar renders the header, toolbar and groups folder', () =>
   assert.match(html, /<button type="button" class="fm-tool" disabled="" aria-pressed="false">Duplicate<\/button>/);
   assert.match(html, /Select a file to see its details/);
   assert.doesNotMatch(html, /role="dialog"/, 'import dialog is closed initially');
+  // No export service in this transport: no Export button.
+  assert.doesNotMatch(html, /Export…/);
+});
+
+test('file manager offers Export… when the transport can export', () => {
+  const transport = { kind: 'http', groups: { scan: async () => [] }, exports: { measuredData: async () => { throw new Error('unused'); } } } as unknown as DataManagerTransport;
+  const html = renderToStaticMarkup(<DataManager transport={transport} projectName="Sample" />);
+  // Nothing loaded yet, so there is nothing to export.
+  assert.match(html, /<button type="button" class="fm-tool" disabled="" aria-pressed="false" title="[^"]*Excel or CSV">Export…<\/button>/);
 });
 
 test('group file tree renders one treeitem per file with rows, selection and validation warnings', () => {

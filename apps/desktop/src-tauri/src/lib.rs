@@ -17,7 +17,7 @@ use archaeodash_desktop::{
     DesktopAppInfo, DesktopClustering, DesktopExplore, DesktopExports, DesktopFiles, DesktopGroups,
     DesktopImport, DesktopOrdination, DesktopPreferences, DesktopTransforms,
 };
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 mod export_files;
 mod job_events;
@@ -39,6 +39,37 @@ pub(crate) struct DesktopState {
     preferences: DesktopPreferences,
     project: Option<archaeodash_contracts::ProjectInfo>,
     project_generation: u64,
+}
+
+/// Managed app state: the open project's services behind an `Arc`.
+///
+/// Commands lock the mutex only long enough to clone the `Arc`, then do their
+/// work on Tauri's blocking thread pool. Synchronous Tauri commands run on the
+/// main thread one at a time, so a slow request (a UMAP precompute, a large
+/// group read) used to freeze the window and hold up every other request.
+/// The services are stateless wrappers around the project root and are
+/// already shared concurrently by the HTTP server, so parallel calls are safe;
+/// file-level locks coordinate writers.
+pub(crate) type SharedState = Mutex<Arc<DesktopState>>;
+
+/// The current project's services (cheap `Arc` clone).
+pub(crate) fn snapshot(state: &SharedState) -> Result<Arc<DesktopState>, String> {
+    state
+        .lock()
+        .map(|current| Arc::clone(&current))
+        .map_err(|e| e.to_string())
+}
+
+/// Runs a command body off the main thread against the current project.
+async fn run_blocking<T, F>(state: &SharedState, op: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&DesktopState) -> Result<T, String> + Send + 'static,
+{
+    let current = snapshot(state)?;
+    tauri::async_runtime::spawn_blocking(move || op(&current))
+        .await
+        .map_err(|e| format!("background task failed: {e}"))?
 }
 
 impl DesktopState {
@@ -90,39 +121,27 @@ impl DesktopState {
 }
 
 #[tauri::command]
-fn submit_analysis_job(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn submit_analysis_job(
+    state: tauri::State<'_, SharedState>,
     request: archaeodash_contracts::SubmitAnalysisJobRequest,
 ) -> Result<archaeodash_contracts::AnalysisJobSnapshot, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clustering
-        .submit_analysis_job(request)
+    run_blocking(&state, move |s| s.clustering.submit_analysis_job(request)).await
 }
 
 #[tauri::command]
-fn get_analysis_job(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn get_analysis_job(
+    state: tauri::State<'_, SharedState>,
     id: String,
 ) -> Result<archaeodash_contracts::AnalysisJobSnapshot, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clustering
-        .get_analysis_job(&id)
+    run_blocking(&state, move |s| s.clustering.get_analysis_job(&id)).await
 }
 
 #[tauri::command]
-fn cancel_analysis_job(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn cancel_analysis_job(
+    state: tauri::State<'_, SharedState>,
     id: String,
 ) -> Result<archaeodash_contracts::AnalysisJobSnapshot, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clustering
-        .cancel_analysis_job(&id)
+    run_blocking(&state, move |s| s.clustering.cancel_analysis_job(&id)).await
 }
 
 /// Smoke command exposed to the React client over Tauri IPC.
@@ -133,361 +152,259 @@ fn app_info() -> DesktopAppInfo {
 
 /// Parse-only source preview (`open_import_preview`, Section 10.4).
 #[tauri::command]
-fn open_import_preview(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn open_import_preview(
+    state: tauri::State<'_, SharedState>,
     request: ImportPreviewRequest,
 ) -> Result<archaeodash_contracts::ImportPreviewResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .import
-        .open_import_preview(request)
+    run_blocking(&state, move |s| s.import.open_import_preview(request)).await
 }
 
 /// Publish one validated group Parquet file per group (`commit_group_import`).
 #[tauri::command]
-fn commit_group_import(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn commit_group_import(
+    state: tauri::State<'_, SharedState>,
     request: ImportCommitRequest,
 ) -> Result<archaeodash_contracts::ImportCommitResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .import
-        .commit_group_import(request)
+    run_blocking(&state, move |s| s.import.commit_group_import(request)).await
 }
 
 /// Recursive candidate discovery (`scan_group_candidates`, Section 10.4).
 #[tauri::command]
-fn scan_group_candidates(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn scan_group_candidates(
+    state: tauri::State<'_, SharedState>,
 ) -> Result<Vec<archaeodash_contracts::GroupCandidate>, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .groups
-        .scan_group_candidates()
+    run_blocking(&state, move |s| s.groups.scan_group_candidates()).await
 }
 
 /// Full validation-on-add (`validate_group_file`).
 #[tauri::command]
-fn validate_group_file(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn validate_group_file(
+    state: tauri::State<'_, SharedState>,
     path: String,
 ) -> Result<archaeodash_contracts::GroupSummary, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .groups
-        .validate_group_file(path)
+    run_blocking(&state, move |s| s.groups.validate_group_file(path)).await
 }
 
 /// Full row data of one group file for the client dataset table
 /// (`group_rows`; hidden UUIDs address edits, Section 9.4).
 #[tauri::command]
-fn group_rows(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn group_rows(
+    state: tauri::State<'_, SharedState>,
     path: String,
 ) -> Result<archaeodash_contracts::GroupRowsResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .groups
-        .group_rows(path)
+    run_blocking(&state, move |s| s.groups.group_rows(path)).await
 }
 
 /// Move/copy analytical units by hidden UUID (`move_analytical_units` /
 /// `copy_analytical_units`).
 #[tauri::command]
-fn transfer_units(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn transfer_units(
+    state: tauri::State<'_, SharedState>,
     request: TransferUnitsRequest,
 ) -> Result<archaeodash_contracts::TransactionResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .groups
-        .transfer_units(request)
+    run_blocking(&state, move |s| s.groups.transfer_units(request)).await
 }
 
 /// Move selected analytical units to multiple existing groups atomically.
 #[tauri::command]
-fn batch_transfer_units(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn batch_transfer_units(
+    state: tauri::State<'_, SharedState>,
     request: BatchTransferUnitsRequest,
 ) -> Result<archaeodash_contracts::TransactionResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .groups
-        .batch_transfer_units(request)
+    run_blocking(&state, move |s| s.groups.batch_transfer_units(request)).await
 }
 
 /// Merge whole groups into one target (`merge_groups`).
 #[tauri::command]
-fn merge_groups(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn merge_groups(
+    state: tauri::State<'_, SharedState>,
     request: MergeGroupsRequest,
 ) -> Result<archaeodash_contracts::TransactionResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .groups
-        .merge_groups(request)
+    run_blocking(&state, move |s| s.groups.merge_groups(request)).await
 }
 
 /// Delete one group file after exact-path confirmation and revision check
 /// (`delete_group`, Section 10.4: destructive commands are never implied).
 #[tauri::command]
-fn delete_group(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn delete_group(
+    state: tauri::State<'_, SharedState>,
     request: DeleteGroupRequest,
 ) -> Result<archaeodash_contracts::TransactionResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .groups
-        .delete_group(request)
+    run_blocking(&state, move |s| s.groups.delete_group(request)).await
 }
 
 /// Batch hidden-UUID-addressed descriptive edits (`patch_descriptive_values`).
 #[tauri::command]
-fn patch_descriptive_values(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn patch_descriptive_values(
+    state: tauri::State<'_, SharedState>,
     request: PatchDescriptiveValuesRequest,
 ) -> Result<archaeodash_contracts::TransactionResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .groups
-        .patch_descriptive_values(request)
+    run_blocking(&state, move |s| s.groups.patch_descriptive_values(request)).await
 }
 
 /// Duplicate one whole group (`duplicate_group`), preserving UUIDs and
 /// lineage by default.
 #[tauri::command]
-fn duplicate_group(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn duplicate_group(
+    state: tauri::State<'_, SharedState>,
     request: DuplicateGroupRequest,
 ) -> Result<archaeodash_contracts::TransactionResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .groups
-        .duplicate_group(request)
+    run_blocking(&state, move |s| s.groups.duplicate_group(request)).await
 }
 
 /// Stage-upload a source file through the bounded quarantine and promote it
 /// to the requested in-project logical path (`upload_source_file`).
 #[tauri::command]
-fn upload_source_file(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn upload_source_file(
+    state: tauri::State<'_, SharedState>,
     request: archaeodash_contracts::FileUploadRequest,
 ) -> Result<archaeodash_contracts::StagedFile, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .files
-        .upload_source_file(request)
+    run_blocking(&state, move |s| s.files.upload_source_file(request)).await
 }
 
 /// Quarantine-record metadata for one uploaded source file
 /// (`source_file_metadata`).
 #[tauri::command]
-fn source_file_metadata(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn source_file_metadata(
+    state: tauri::State<'_, SharedState>,
     file_id: String,
 ) -> Result<archaeodash_contracts::StagedFile, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .files
-        .source_file_metadata(file_id)
+    run_blocking(&state, move |s| s.files.source_file_metadata(file_id)).await
 }
 
 /// Raw bytes plus metadata for one uploaded source file
 /// (`download_source_file`).
 #[tauri::command]
-fn download_source_file(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn download_source_file(
+    state: tauri::State<'_, SharedState>,
     file_id: String,
 ) -> Result<archaeodash_contracts::FileDownload, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .files
-        .download_source_file(file_id)
+    run_blocking(&state, move |s| s.files.download_source_file(file_id)).await
 }
 
 /// Soft-delete one uploaded source file (`delete_source_file`).
 #[tauri::command]
-fn delete_source_file(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn delete_source_file(
+    state: tauri::State<'_, SharedState>,
     file_id: String,
 ) -> Result<archaeodash_contracts::StagedFile, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .files
-        .delete_source_file(file_id)
+    run_blocking(&state, move |s| s.files.delete_source_file(file_id)).await
 }
 
 /// Save (upsert by name) one transformation definition (`save_transformation`).
 #[tauri::command]
-fn save_transformation(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn save_transformation(
+    state: tauri::State<'_, SharedState>,
     definition: archaeodash_contracts::TransformationDefinition,
 ) -> Result<archaeodash_contracts::SaveTransformationResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .transforms
-        .save_transformation(definition)
+    run_blocking(&state, move |s| {
+        s.transforms.save_transformation(definition)
+    })
+    .await
 }
 
 /// List saved transformation summaries (`list_transformations`).
 #[tauri::command]
-fn list_transformations(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn list_transformations(
+    state: tauri::State<'_, SharedState>,
 ) -> Result<archaeodash_contracts::TransformationListResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .transforms
-        .list_transformations()
+    run_blocking(&state, move |s| s.transforms.list_transformations()).await
 }
 
 /// Load one saved transformation definition (`load_transformation`).
 #[tauri::command]
-fn load_transformation(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn load_transformation(
+    state: tauri::State<'_, SharedState>,
     name: String,
 ) -> Result<archaeodash_contracts::TransformationDefinition, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .transforms
-        .load_transformation(name)
+    run_blocking(&state, move |s| s.transforms.load_transformation(name)).await
 }
 
 /// Delete one saved transformation definition (`delete_transformation`).
 #[tauri::command]
-fn delete_transformation(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn delete_transformation(
+    state: tauri::State<'_, SharedState>,
     name: String,
 ) -> Result<archaeodash_contracts::TransformationDefinition, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .transforms
-        .delete_transformation(name)
+    run_blocking(&state, move |s| s.transforms.delete_transformation(name)).await
 }
 
 /// One-to-one or Cartesian batch ratio-spec generation (`batch_ratio_specs`).
 #[tauri::command]
-fn batch_ratio_specs(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn batch_ratio_specs(
+    state: tauri::State<'_, SharedState>,
     request: BatchRatioRequest,
 ) -> Result<Vec<archaeodash_contracts::RatioSpecDto>, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .transforms
-        .batch_ratio_specs(request)
+    run_blocking(&state, move |s| s.transforms.batch_ratio_specs(request)).await
 }
 
 /// Ephemeral on-demand transformation application (`apply_transformation`);
 /// calculated values are never persisted (Section 5 storage invariant).
 #[tauri::command]
-fn apply_transformation(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn apply_transformation(
+    state: tauri::State<'_, SharedState>,
     request: ApplyTransformationRequest,
 ) -> Result<archaeodash_contracts::AppliedTransformation, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .transforms
-        .apply_transformation(request)
+    run_blocking(&state, move |s| s.transforms.apply_transformation(request)).await
 }
 
 /// `explore_missing_profile`: `profile_missing` band summary (Section 8.12).
 #[tauri::command]
-fn explore_missing_profile(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn explore_missing_profile(
+    state: tauri::State<'_, SharedState>,
     request: ExploreMissingProfileRequest,
 ) -> Result<archaeodash_contracts::ExploreMissingProfileResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .explore
-        .explore_missing_profile(request)
+    run_blocking(&state, move |s| s.explore.explore_missing_profile(request)).await
 }
 
 /// `explore_histogram`: `hist.default` breakpoints and counts.
 #[tauri::command]
-fn explore_histogram(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn explore_histogram(
+    state: tauri::State<'_, SharedState>,
     request: ExploreHistogramRequest,
 ) -> Result<archaeodash_contracts::ExploreHistogramResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .explore
-        .explore_histogram(request)
+    run_blocking(&state, move |s| s.explore.explore_histogram(request)).await
 }
 
 /// `explore_crosstab`: legacy `compute_crosstab_summary`.
 #[tauri::command]
-fn explore_crosstab(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn explore_crosstab(
+    state: tauri::State<'_, SharedState>,
     request: ExploreCrosstabRequest,
 ) -> Result<archaeodash_contracts::ExploreCrosstabResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .explore
-        .explore_crosstab(request)
+    run_blocking(&state, move |s| s.explore.explore_crosstab(request)).await
 }
 
 /// `explore_compositional_profile`: the `pivot_longer` long table.
 #[tauri::command]
-fn explore_compositional_profile(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn explore_compositional_profile(
+    state: tauri::State<'_, SharedState>,
     request: ExploreCompositionalProfileRequest,
 ) -> Result<archaeodash_contracts::ExploreCompositionalProfileResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .explore
-        .explore_compositional_profile(request)
+    run_blocking(&state, move |s| {
+        s.explore.explore_compositional_profile(request)
+    })
+    .await
 }
 
 /// `ordination_pca`: prcomp-parity PCA; results are ephemeral and never
 /// persisted (Section 5 storage invariant).
 #[tauri::command]
-fn ordination_pca(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn ordination_pca(
+    state: tauri::State<'_, SharedState>,
     request: PcaRequest,
 ) -> Result<archaeodash_contracts::PcaResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .ordination
-        .ordination_pca(request)
+    run_blocking(&state, move |s| s.ordination.ordination_pca(request)).await
 }
 
 /// `ordination_lda`: `MASS::lda` moment-method parity with the legacy
 /// three-group minimum; results are ephemeral and never persisted (Section 5).
 #[tauri::command]
-fn ordination_lda(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn ordination_lda(
+    state: tauri::State<'_, SharedState>,
     request: LdaRequest,
 ) -> Result<archaeodash_contracts::LdaResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .ordination
-        .ordination_lda(request)
+    run_blocking(&state, move |s| s.ordination.ordination_lda(request)).await
 }
 
 /// `ordination_umap`: legacy naive UMAP parity with the deterministic seed;
@@ -495,138 +412,101 @@ fn ordination_lda(
 /// `ordination_umap`: legacy naive UMAP parity; results are ephemeral and
 /// never persisted (Section 5).
 #[tauri::command]
-fn ordination_umap(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn ordination_umap(
+    state: tauri::State<'_, SharedState>,
     request: UmapRequest,
 ) -> Result<archaeodash_contracts::UmapResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .ordination
-        .ordination_umap(request)
+    run_blocking(&state, move |s| s.ordination.ordination_umap(request)).await
 }
 
 /// `cluster_diagnostics`: WSS elbow + mean-silhouette series; results are
 /// ephemeral and never persisted (Section 5).
 #[tauri::command]
-fn cluster_diagnostics(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn cluster_diagnostics(
+    state: tauri::State<'_, SharedState>,
     request: ClusterDiagnosticsRequest,
 ) -> Result<archaeodash_contracts::ClusterDiagnosticsResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clustering
-        .cluster_diagnostics(request)
+    run_blocking(&state, move |s| s.clustering.cluster_diagnostics(request)).await
 }
 
 /// `cluster_fit`: one kmeans/pam/ward.D2/DIANA fit; results are ephemeral
 /// and never persisted (Section 5).
 #[tauri::command]
-fn cluster_fit(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn cluster_fit(
+    state: tauri::State<'_, SharedState>,
     request: ClusterFitRequest,
 ) -> Result<archaeodash_contracts::ClusterFitResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clustering
-        .cluster_fit(request)
+    run_blocking(&state, move |s| s.clustering.cluster_fit(request)).await
 }
 
 /// `membership_probabilities`: `group.mem.probs` parity; results are
 /// ephemeral and never persisted (Section 5).
 #[tauri::command]
-fn membership_probabilities(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn membership_probabilities(
+    state: tauri::State<'_, SharedState>,
     request: MembershipProbabilitiesRequest,
 ) -> Result<archaeodash_contracts::MembershipProbabilitiesResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clustering
-        .membership_probabilities(request)
+    run_blocking(&state, move |s| {
+        s.clustering.membership_probabilities(request)
+    })
+    .await
 }
 
 /// `euclidean_matches`: `calcEDistance` parity; results are ephemeral and
 /// never persisted (Section 5).
 #[tauri::command]
-fn euclidean_matches(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn euclidean_matches(
+    state: tauri::State<'_, SharedState>,
     request: EuclideanMatchesRequest,
 ) -> Result<archaeodash_contracts::EuclideanMatchesResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clustering
-        .euclidean_matches(request)
+    run_blocking(&state, move |s| s.clustering.euclidean_matches(request)).await
 }
 
 /// `export_measured_data`: measured chemical frame as ephemeral CSV
 /// (Section 7.3; legacy `rvals$selectedData`).
 #[tauri::command]
-fn export_measured_data(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn export_measured_data(
+    state: tauri::State<'_, SharedState>,
     request: ExportMeasuredDataRequest,
 ) -> Result<archaeodash_contracts::ExportResult, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .exports
-        .export_measured_data(request)
+    run_blocking(&state, move |s| s.exports.export_measured_data(request)).await
 }
 
 /// `export_transformed`: explicitly computed transformed result as ephemeral
 /// CSV (Section 7.3; never persisted, Section 5 storage invariant).
 #[tauri::command]
-fn export_transformed(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn export_transformed(
+    state: tauri::State<'_, SharedState>,
     request: ExportTransformedRequest,
 ) -> Result<archaeodash_contracts::ExportResult, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .exports
-        .export_transformed(request)
+    run_blocking(&state, move |s| s.exports.export_transformed(request)).await
 }
 
 /// `export_pca_scores`: computed PCA score frame as ephemeral CSV (Section 3.2
 /// correction of the legacy `rvals$pcaData` bug).
 #[tauri::command]
-fn export_pca_scores(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn export_pca_scores(
+    state: tauri::State<'_, SharedState>,
     request: ExportPcaScoresRequest,
 ) -> Result<archaeodash_contracts::ExportResult, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .exports
-        .export_pca_scores(request)
+    run_blocking(&state, move |s| s.exports.export_pca_scores(request)).await
 }
 
 /// `preferences_get`: every stored allowlisted preference (Section 10.1).
 #[tauri::command]
-fn preferences_get(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn preferences_get(
+    state: tauri::State<'_, SharedState>,
 ) -> Result<GetPreferencesResponse, String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .preferences
-        .preferences_get()
+    run_blocking(&state, move |s| s.preferences.preferences_get()).await
 }
 
 /// `preferences_set`: upsert one allowlisted, shape-validated preference.
 #[tauri::command]
-fn preferences_set(
-    state: tauri::State<'_, Mutex<DesktopState>>,
+async fn preferences_set(
+    state: tauri::State<'_, SharedState>,
     request: PutPreferenceRequest,
 ) -> Result<(), String> {
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .preferences
-        .preferences_set(request)
+    run_blocking(&state, move |s| s.preferences.preferences_set(request)).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -645,7 +525,7 @@ pub fn run() {
             tracing::info!(version = env!("CARGO_PKG_VERSION"), "desktop app starting");
             Ok(())
         })
-        .manage(Mutex::new(DesktopState::empty()))
+        .manage::<SharedState>(Mutex::new(Arc::new(DesktopState::empty())))
         .invoke_handler(tauri::generate_handler![
             app_info,
             projects::open_project,

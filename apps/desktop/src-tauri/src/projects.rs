@@ -1,12 +1,12 @@
 use archaeodash_contracts::{ProjectInfo, RecentProject};
 use archaeodash_desktop::recent::{now_unix_secs, RecentProjects};
-use std::sync::Mutex;
+use std::sync::Arc;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
 #[tauri::command]
 pub(crate) fn current_project(
-    state: tauri::State<'_, Mutex<super::DesktopState>>,
+    state: tauri::State<'_, super::SharedState>,
 ) -> Result<Option<ProjectInfo>, String> {
     Ok(state.lock().map_err(|e| e.to_string())?.project.clone())
 }
@@ -22,7 +22,7 @@ fn recent_store(app: &tauri::AppHandle) -> Result<RecentProjects, String> {
 
 /// Swaps in a freshly opened project and bumps the generation.
 fn activate(
-    state: &Mutex<super::DesktopState>,
+    state: &super::SharedState,
     mut candidate: super::DesktopState,
 ) -> Result<Option<ProjectInfo>, String> {
     let mut current = state.lock().map_err(|e| e.to_string())?;
@@ -31,7 +31,7 @@ fn activate(
         project.generation = candidate.project_generation;
     }
     let info = candidate.project.clone();
-    *current = candidate;
+    *current = Arc::new(candidate);
     Ok(info)
 }
 
@@ -50,7 +50,7 @@ fn remember(app: &tauri::AppHandle, info: Option<&ProjectInfo>) {
 #[tauri::command]
 pub(crate) async fn open_project(
     app: tauri::AppHandle,
-    state: tauri::State<'_, Mutex<super::DesktopState>>,
+    state: tauri::State<'_, super::SharedState>,
 ) -> Result<Option<ProjectInfo>, String> {
     let picker = app.clone();
     let candidate = tauri::async_runtime::spawn_blocking(move || {
@@ -84,7 +84,7 @@ pub(crate) fn recent_projects(app: tauri::AppHandle) -> Result<Vec<RecentProject
 #[tauri::command]
 pub(crate) async fn open_recent_project(
     app: tauri::AppHandle,
-    state: tauri::State<'_, Mutex<super::DesktopState>>,
+    state: tauri::State<'_, super::SharedState>,
     path: String,
 ) -> Result<Option<ProjectInfo>, String> {
     if !recent_store(&app)?.contains(&path) {

@@ -600,7 +600,11 @@ export interface ExportMeasuredDataRequest {
   /** Extra group files read together with `path` (see `OrdinationRequestBase`). */
   extra_paths?: string[];
   raw_text?: boolean;
+  /** Output format (default CSV). XLSX: an "All groups" sheet plus one sheet per group. */
+  format?: ExportFormat;
 }
+
+export type ExportFormat = 'csv' | 'xlsx';
 
 export interface ExportTransformedRequest {
   path: string;
@@ -617,7 +621,9 @@ export interface ExportPcaScoresRequest extends OrdinationRequestBase {
 export interface ExportResult {
   file_name: string;
   media_type: string;
+  /** CSV text, or base64 bytes when `content_encoding` is `"base64"` (XLSX). */
   content: string;
+  content_encoding?: 'base64' | null;
 }
 
 // --- Preferences (Section 10.1) ---

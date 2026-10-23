@@ -10,6 +10,8 @@ import { DataManager, type DataManagerTransport } from '../data-manager/DataMana
 import type { ProjectInfo, RecentProject } from '@archaeodash/contracts';
 import type { ProjectsService } from '@archaeodash/client';
 import { ProjectMenu, RecentProjectList, useRecentProjects } from './RecentProjects.tsx';
+import { ActivityIndicator } from './ActivityIndicator.tsx';
+import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
 
 export interface AppShellProps {
   readonly theme: string;
@@ -109,7 +111,7 @@ export function AppShell({
         {projects && (
           <span className="project-controls">
             <button type="button" className="project-open" onClick={() => void openProject()} disabled={openingProject}>
-              {openingProject ? 'Opening…' : projectPath ? 'Switch Project' : 'Open Project'}
+              <BusyLabel busy={openingProject} busyText="Opening…">{projectPath ? 'Switch Project' : 'Open Project'}</BusyLabel>
             </button>
             {hasRecent && (
               <ProjectMenu
@@ -166,6 +168,7 @@ export function AppShell({
             ),
           )}
         </ul>
+        <ActivityIndicator />
         <label className="theme-select">
           Theme
           <select
@@ -217,12 +220,12 @@ export function AppShell({
             <section className="start-screen" aria-labelledby="start-heading">
               <h1 id="start-heading">Open a project</h1>
               {projectStatus ? (
-                <p role="status">{projectStatus}</p>
+                <BusyNote>{projectStatus}</BusyNote>
               ) : (
                 <p>Open a project folder to browse groups and run analyses.</p>
               )}
               <button type="button" className="start-open" onClick={() => void openProject()} disabled={openingProject}>
-                {openingProject ? 'Opening…' : 'Open a folder…'}
+                <BusyLabel busy={openingProject} busyText="Opening…">Open a folder…</BusyLabel>
               </button>
               {recent.length > 0 && (
                 <>

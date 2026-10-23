@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import { Link } from 'react-router';
 import type { AuthService, SessionInfo } from '@archaeodash/client';
+import { BusyNote } from '../ui/Busy.tsx';
 
 export interface AccountPageProps {
   /** Hosted-account service; absent in desktop (Tauri) mode. */
@@ -178,7 +179,7 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
   return (
     <section aria-labelledby="account-heading">
       <h1 id="account-heading">Account</h1>
-      {session?.authenticated ? null : !checked && <p role="status">Checking session…</p>}
+      {session?.authenticated ? null : !checked && <BusyNote>Checking session…</BusyNote>}
       {checked && session?.authenticated ? null : (
         <>
           {mode === 'signin' && (
@@ -392,7 +393,7 @@ export function VerifyEmailPage({ auth }: AccountPageProps): ReactElement {
     <section aria-labelledby="verify-heading">
       <h1 id="verify-heading">Email verification</h1>
       {!token && <p role="alert">This verification link is missing its token.</p>}
-      {state === 'working' && <p role="status">Verifying your email address…</p>}
+      {state === 'working' && <BusyNote>Verifying your email address…</BusyNote>}
       {state === 'done' && (
         <p role="status">
           Your email address is verified. You can now{' '}

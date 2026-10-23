@@ -16,6 +16,7 @@ import type {
   ClusterFitResponse, ClusterDiagnosticsResponse,
   MembershipProbabilitiesResponse, EuclideanMatchesResponse,
 } from '@archaeodash/client';
+import { BusyNote } from '../ui/Busy.tsx';
 
 export type AnalysisKind = 'cluster' | 'membership' | 'euclidean';
 export type AnalysisDeps = Pick<Transport, 'groups' | 'clustering' | 'jobs' | 'transformations'>;
@@ -218,7 +219,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     <h1>{titles[kind]}</h1>
     <p>Analyze measured or transformed columns and recomputed ordination scores. Results are temporary.</p>
     <label>Dataset <GroupMultiSelect disabled={busy} options={dataset.options} selected={dataset.selectedPaths} onChange={next => { reset(); dataset.setSelectedPaths(next); }} /></label>
-    {dataset.load.kind === 'loading' && <p role="status">Loading dataset…</p>}
+    {dataset.load.kind === 'loading' && <BusyNote>Loading dataset…</BusyNote>}
     {dataset.orderedPaths.length === 0 && dataset.load.kind !== 'loading' && <p>No groups are included. Tick groups in the Data Manager, or choose them in Dataset.</p>}
     {data && <fieldset disabled={busy} onChange={reset}><legend>Analysis settings</legend>
       <label>Transformation <select value={definitionName} onChange={e => {
@@ -269,7 +270,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     </fieldset>}
     <button disabled={disabled} onClick={() => void run()}>Run analysis</button>
     {kind === 'cluster' && <button disabled={disabled} onClick={() => void run(true)}>Run cluster diagnostics</button>}
-    {busy && <p role="status">{moving.current ? 'Moving analytical units…' : cancelling ? 'Cancelling analysis…' : job ? `${job.state}: ${job.stage?.replaceAll('_', ' ') ?? 'waiting'} (${job.progress}%)` : 'Submitting analysis…'}</p>}
+    {busy && <BusyNote>{moving.current ? 'Assigning analytical units to groups…' : cancelling ? 'Cancelling analysis…' : job ? `${job.state}: ${job.stage?.replaceAll('_', ' ') ?? 'waiting'} (${job.progress}%)` : 'Submitting analysis…'}</BusyNote>}
     {busy && !moving.current && <button disabled={cancelling} onClick={() => { setCancelling(true); activeJob.current?.abort(); }}>Cancel analysis</button>}{notice && <p role="status">{notice}</p>}{error && <p role="alert">{error}</p>}
     {result && <div key={generation.current}><AnalysisPlots result={result} cutK={cutK} onCutKChange={setCutK} disabled={busy || reviewing} /><ResultAssignment result={result} cutK={cutK} destinations={paths} candidates={candidates} multiSource={multiSource} busy={busy} onReviewChange={setReviewing} onConfirm={request => void assign(request)} onBatchConfirm={request => void assign(request)} /><ResultTable result={result} /></div>}
   </section>;

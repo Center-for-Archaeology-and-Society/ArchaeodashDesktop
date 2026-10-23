@@ -72,6 +72,27 @@ fn write_export(path: &Path, content: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// The bytes to save: text as UTF-8, or decoded binary content (XLSX).
+fn export_bytes(result: &ExportResult) -> Result<Vec<u8>, String> {
+    use base64::Engine as _;
+    match result.content_encoding.as_deref() {
+        None => Ok(result.content.as_bytes().to_vec()),
+        Some("base64") => base64::engine::general_purpose::STANDARD
+            .decode(&result.content)
+            .map_err(|error| format!("export content is not valid base64: {error}")),
+        Some(other) => Err(format!("unsupported export encoding {other:?}")),
+    }
+}
+
+/// Save-dialog file type for the suggested name.
+fn dialog_filter(file_name: &str) -> (&'static str, &'static [&'static str]) {
+    if file_name.to_ascii_lowercase().ends_with(".xlsx") {
+        ("Excel workbook", &["xlsx"])
+    } else {
+        ("CSV", &["csv"])
+    }
+}
+
 fn validate_export(result: &ExportResult) -> Result<(), String> {
     validate_file_name(&result.file_name)?;
     if result.content.len() > MAX_EXPORT_BYTES {
@@ -91,13 +112,15 @@ pub(crate) async fn save_export_file(
     result: ExportResult,
 ) -> Result<bool, String> {
     validate_export(&result)?;
+    let content = export_bytes(&result)?;
+    let (filter_name, extensions) = dialog_filter(&result.file_name);
 
     let selected_path = tauri::async_runtime::spawn_blocking(move || {
         let selected = app
             .dialog()
             .file()
             .set_file_name(&result.file_name)
-            .add_filter("CSV", &["csv"])
+            .add_filter(filter_name, extensions)
             .blocking_save_file();
         selected
             .map(|file| {
@@ -112,7 +135,6 @@ pub(crate) async fn save_export_file(
     let Some(path) = selected_path else {
         return Ok(false);
     };
-    let content = result.content.into_bytes();
     tauri::async_runtime::spawn_blocking(move || write_export(&path, &content))
         .await
         .map_err(|error| format!("export write failed: {error}"))??;
@@ -121,7 +143,10 @@ pub(crate) async fn save_export_file(
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_export, validate_file_name, write_export, MAX_EXPORT_BYTES};
+    use super::{
+        dialog_filter, export_bytes, validate_export, validate_file_name, write_export,
+        MAX_EXPORT_BYTES,
+    };
     use archaeodash_contracts::ExportResult;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -149,11 +174,43 @@ mod tests {
     }
 
     #[test]
+    fn decodes_binary_exports_and_picks_the_dialog_filter() {
+        let text = ExportResult {
+            file_name: "a.csv".into(),
+            media_type: "text/csv".into(),
+            content: "a,b
+"
+            .into(),
+            content_encoding: None,
+        };
+        assert_eq!(
+            export_bytes(&text).unwrap(),
+            b"a,b
+"
+        );
+        let binary = ExportResult {
+            file_name: "a.xlsx".into(),
+            media_type: "application/octet-stream".into(),
+            content: "UEsDBA==".into(),
+            content_encoding: Some("base64".into()),
+        };
+        assert_eq!(export_bytes(&binary).unwrap(), b"PK");
+        let bad = ExportResult {
+            content_encoding: Some("rot13".into()),
+            ..binary.clone()
+        };
+        assert!(export_bytes(&bad).is_err());
+        assert_eq!(dialog_filter("a.XLSX").1, &["xlsx"]);
+        assert_eq!(dialog_filter("a.csv").1, &["csv"]);
+    }
+
+    #[test]
     fn rejects_oversized_export_before_opening_a_dialog() {
         let result = ExportResult {
             file_name: "large.csv".into(),
             media_type: "text/csv".into(),
             content: "x".repeat(MAX_EXPORT_BYTES + 1),
+            content_encoding: None,
         };
         assert!(validate_export(&result).is_err());
     }

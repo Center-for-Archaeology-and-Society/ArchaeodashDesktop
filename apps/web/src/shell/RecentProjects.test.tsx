@@ -54,5 +54,5 @@ test('without a project the shell shows the start screen', () => {
   assert.match(html, /Open a folder…/);
   assert.match(html, /aria-label="Recent projects"/, 'menu toggle beside the project button');
   const reopening = renderToStaticMarkup(<MemoryRouter><AppShell theme="light" onThemeChange={() => {}} projects={projects} projectStatus="Reopening Site A…" /></MemoryRouter>);
-  assert.match(reopening, /role="status">Reopening Site A…/);
+  assert.match(reopening, /role="status"[^>]*><span class="spinner" aria-hidden="true"><\/span>Reopening Site A…/);
 });

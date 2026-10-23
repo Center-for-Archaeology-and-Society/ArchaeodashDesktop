@@ -1311,6 +1311,19 @@ pub struct ExportMeasuredDataRequest {
     /// the byte-exact legacy `fwrite` output for the measured-data case.
     #[serde(default)]
     pub raw_text: bool,
+    /// Output format; CSV when omitted.
+    #[serde(default)]
+    pub format: ExportFormat,
+}
+
+/// Export file format. XLSX workbooks hold one sheet with every row and,
+/// for several groups, one sheet per group.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    #[default]
+    Csv,
+    Xlsx,
 }
 
 /// `POST /exports/transformed` request: the explicitly computed transformed
@@ -1360,11 +1373,14 @@ pub struct ExportPcaScoresRequest {
 pub struct ExportResult {
     /// Suggested download filename (legacy `saveexportTab.R` name rule).
     pub file_name: String,
-    /// MIME type, always `text/csv` for this slice (XLSX/TSV are deferred
-    /// per the Section 7.1 capability matrix).
+    /// MIME type: `text/csv`, or the XLSX type for workbook exports.
     pub media_type: String,
-    /// Full CSV text, header row first, `\n` line endings.
+    /// Full CSV text, header row first, `\n` line endings; for binary
+    /// formats (XLSX) the file bytes encoded per `content_encoding`.
     pub content: String,
+    /// `"base64"` when `content` holds encoded binary bytes; absent for text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_encoding: Option<String>,
 }
 
 /// Allowlisted preference keys (Section 10.1: typed allowlisted preference
@@ -2099,6 +2115,7 @@ mod export_dto_tests {
             path: "groups/Baca.parquet".into(),
             extra_paths: vec![],
             raw_text: false,
+            format: Default::default(),
         };
         let json = serde_json::to_string(&measured).unwrap();
         assert_eq!(
@@ -2165,6 +2182,7 @@ mod export_dto_tests {
             file_name: "Baca.csv".into(),
             media_type: "text/csv".into(),
             content: "anid,Site,as\nA1,Baca,'=x\n".into(),
+            content_encoding: None,
         };
         let json = serde_json::to_string(&result).unwrap();
         assert_eq!(serde_json::from_str::<ExportResult>(&json).unwrap(), result);

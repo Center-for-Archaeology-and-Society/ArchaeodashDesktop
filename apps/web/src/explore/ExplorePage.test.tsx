@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToString } from 'react-dom/server';
 import type { ExploreService, ExportsService, GroupsService } from '@archaeodash/client';
-import { CrosstabCountTable, ExplorePage, DataTable, VIRTUALIZE_FROM, profileTraces, type ExploreDeps } from './ExplorePage.tsx';
+import { CrosstabCountTable, ExplorePage, DataTable, MissingView, VIRTUALIZE_FROM, profileTraces, type ExploreDeps } from './ExplorePage.tsx';
 import { CellAutosave } from './autosave.ts';
 function makeDeps(): ExploreDeps {
   const groups = {
@@ -140,10 +140,26 @@ test('explore renders the legacy view tabs; table hides hidden identity', async 
   assert.ok(!tableHtml.includes('Save descriptive edits'));
 });
 
-test('explore missing view renders band table rows', async () => {
+test('explore missing view renders band table rows from loaded rows, as percentages', () => {
+  const row = (elemental: (number | null)[]) => ({ analytical_uuid: 'u', descriptive: [], elemental });
+  const html = renderToString(
+    <MissingView
+      combined={{ visibleIdColumn: 'anid', legacyRowidColumn: 'rowid', descriptiveColumns: ['Group'], elementalColumns: ['Ti', 'Sr'], groupColumn: 'Group', rows: [row([1, null]), row([2, 3])], groupOf: ['A', 'A'], pathOf: ['p', 'p'], groupNames: ['A'] }}
+      columns={['Ti', 'Sr']}
+    />,
+  );
+  // Sr first (1 missing of 2 = 50.0%, Bad), then Ti (0%, Good).
+  assert.match(html, /<tr data-band="Bad"><td>Sr<\/td><td>1<\/td><td>50.0<\/td><td>Bad<\/td><\/tr><tr data-band="Good"><td>Ti<\/td>/);
+});
+
+test('dataset table offers Excel and CSV export', async () => {
   const deps = makeDeps();
-  const html = renderToString(<ExplorePage deps={deps} />);
-  assert.ok(html.includes('Missing values'));
+  const rows = await deps.groups.rows('groups/Baca.parquet');
+  const html = renderToString(
+    <DataTable files={[{ path: rows.path, groupName: 'Baca', data: rows }]} deps={deps} autosave={new CellAutosave(async () => { throw new Error('unused'); }, new Map())} onReload={() => {}} />,
+  );
+  assert.ok(html.includes('Export to Excel'));
+  assert.ok(html.includes('Export CSV'));
 });
 
 test('count crosstab is a long table: group field, second field, count', () => {

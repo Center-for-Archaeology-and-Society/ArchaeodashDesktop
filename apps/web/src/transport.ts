@@ -2,8 +2,12 @@
  * Transport selection (Section 9.2): the Tauri IPC adapter inside the
  * desktop webview, the HTTP adapter against the Axum API elsewhere. The
  * detection key matches Tauri 2's injected `window.__TAURI_INTERNALS__`.
+ *
+ * Every backend call is reported to the app-wide activity tracker, which
+ * drives the top bar's loading indicator.
  */
 import { HttpTransport, TauriTransport, type Transport } from '@archaeodash/client';
+import { activity, activityLabel } from './activity.ts';
 
 declare global {
   interface Window {
@@ -15,11 +19,25 @@ export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
+/** `METHOD /path` of a fetch call, for activity labels. */
+export function requestKey(url: string, init?: RequestInit): string {
+  const method = (init?.method ?? 'GET').toUpperCase();
+  let path = url;
+  try {
+    path = new URL(url, 'http://localhost').pathname;
+  } catch {
+    /* keep the raw text */
+  }
+  return `${method} ${path}`;
+}
+
 export async function createTransport(): Promise<Transport> {
   if (isTauri()) {
     const { invoke } = await import('@tauri-apps/api/core');
     const { listen } = await import('@tauri-apps/api/event');
-    return new TauriTransport(invoke as never, listen as never);
+    const tracked = <T,>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
+      activity.track(activityLabel(cmd), invoke<T>(cmd, args));
+    return new TauriTransport(tracked, listen as never);
   }
-  return new HttpTransport();
+  return new HttpTransport(undefined, (input, init) => activity.track(activityLabel(requestKey(input, init)), fetch(input, init)));
 }

@@ -13,7 +13,7 @@ use std::{
 use archaeodash_contracts::{AnalysisJobEvent, AnalysisJobState};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::DesktopState;
+use crate::SharedState;
 
 const MAX_WATCHERS: usize = 16;
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -53,7 +53,7 @@ fn registry() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
 #[tauri::command]
 pub(crate) fn watch_analysis_job(
     app: AppHandle,
-    state: State<'_, Mutex<DesktopState>>,
+    state: State<'_, SharedState>,
     id: String,
 ) -> Result<(), String> {
     // Validate before reserving a watcher slot.
@@ -83,7 +83,7 @@ pub(crate) fn watch_analysis_job(
             let mut last: Option<AnalysisJobEvent> = None;
             while !stop.load(Ordering::Acquire) {
                 let snapshot = app
-                    .state::<Mutex<DesktopState>>()
+                    .state::<SharedState>()
                     .lock()
                     .ok()
                     .and_then(|state| state.clustering.get_analysis_job(&id_for_thread).ok());

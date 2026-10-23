@@ -38,6 +38,7 @@ import {
   type LabelMode,
   type Selection,
 } from './visualize-model.ts';
+import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
 
 export interface VisualizeDeps {
   readonly groups: GroupsService;
@@ -528,7 +529,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
           {symbolColumn} has {symbolLevels.length} values; symbols repeat after ten.
         </p>
       )}
-      {loadState.kind === 'loading' && <p role="status">Loading groups…</p>}
+      {loadState.kind === 'loading' && <BusyNote>Loading groups…</BusyNote>}
       {loadState.kind === 'error' && <p role="alert">Error: {loadState.message}</p>}
       {orderedPaths.length === 0 && <p className="muted">No groups are included. Tick groups in the Data Manager, or choose them in Dataset.</p>}
       {analysisSetup.setup && combined.rows.length > 0 && (
@@ -537,9 +538,9 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
           {setupInput.missing.length > 0 && ` (not in every selected group: ${setupInput.missing.join(', ')})`}
         </p>
       )}
-      {transformedView.kind === 'loading' && <p role="status">Transforming element values…</p>}
+      {transformedView.kind === 'loading' && <BusyNote>Transforming element values…</BusyNote>}
       {transformedView.kind === 'error' && <p role="alert">Could not transform element values: {transformedView.message}</p>}
-      {scoreState === 'loading' && <p role="status">Computing {source.toUpperCase()}…</p>}
+      {scoreState === 'loading' && <BusyNote>Computing {source.toUpperCase()}…</BusyNote>}
       {scoreState !== null && scoreState !== 'loading' && <p role="alert">{scoreState}</p>}
       {scores.kind === 'loaded' && scores.data.note && <p className="muted">{scores.data.note}</p>}
       {plotMode === 'multiplot' && combined.rows.length > 0 ? (
@@ -597,9 +598,14 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
           disabled={selection.uuids.size === 0 || assignTarget === '' || assignState.kind === 'loading' || (assignTarget === '__new__' && newGroupName.trim() === '')}
           onClick={() => void assign()}
         >
-          Assign {selection.uuids.size} unit{selection.uuids.size === 1 ? '' : 's'}
+          <BusyLabel busy={assignState.kind === 'loading'} busyText="Assigning…">
+            Assign {selection.uuids.size} unit{selection.uuids.size === 1 ? '' : 's'}
+          </BusyLabel>
         </button>
       </div>
+      {assignState.kind === 'loading' && (
+        <BusyNote>{assignTarget === '__new__' ? `Creating group “${newGroupName.trim()}” and moving units…` : 'Moving units into the group…'}</BusyNote>
+      )}
       {assignState.kind === 'error' && <p role="alert">Assignment failed: {assignState.message}</p>}
       {assignState.kind === 'loaded' && <p role="status">Assignment committed.</p>}
       <h2>Selected rows</h2>
