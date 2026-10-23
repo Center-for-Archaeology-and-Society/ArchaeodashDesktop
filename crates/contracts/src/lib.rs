@@ -461,6 +461,21 @@ pub struct TransformationDefinition {
     /// Ratio specs applied in order after the base transform.
     pub ratios: Vec<RatioSpecDto>,
     pub ratio_mode: RatioMode,
+    /// Ordinations the Data Manager precomputes in the background for this
+    /// definition (the project's Analysis setup). Results go to the
+    /// disposable ordination cache, never to group files. Empty — and then
+    /// omitted from JSON — for ordinary definitions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub precompute: Vec<OrdinationKind>,
+}
+
+/// An ordination method, as named in Analysis setup precompute choices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OrdinationKind {
+    Pca,
+    Umap,
+    Lda,
 }
 
 /// Listing entry for one saved transformation definition.
@@ -1599,6 +1614,7 @@ mod tests {
                 denominator: "fe".into(),
             }],
             ratio_mode: RatioMode::Append,
+            precompute: Vec::new(),
         };
         let json = serde_json::to_string(&definition).unwrap();
         assert_eq!(
@@ -2111,6 +2127,7 @@ mod export_dto_tests {
                 denominator: "fe".into(),
             }],
             ratio_mode: RatioMode::Append,
+            precompute: Vec::new(),
         };
         let transformed = ExportTransformedRequest {
             path: "groups/Baca.parquet".into(),

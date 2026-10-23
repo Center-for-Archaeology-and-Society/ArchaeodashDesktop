@@ -17,7 +17,7 @@ import type {
   TransformationsService,
 } from '@archaeodash/client';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
-import { analysisInput, setupSummary } from '../analysis-setup/setup.ts';
+import { UMAP_SEED, analysisInput, setupSummary } from '../analysis-setup/setup.ts';
 import { notifyGroupsChanged } from '../data-manager/events.ts';
 import { selectionBySource } from './combine.ts';
 import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
@@ -240,7 +240,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
         };
       }
       if (source === 'umap') {
-        const r = await deps.ordination.umap({ ...base, seed: 20260914 });
+        const r = await deps.ordination.umap({ ...base, seed: UMAP_SEED });
         return {
           names: r.score_names,
           labels: r.score_names.map((n) => `UMAP ${n}`),

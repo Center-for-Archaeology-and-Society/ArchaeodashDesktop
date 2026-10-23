@@ -196,6 +196,15 @@ test('analysis setup form shows the replayable seed when imputing', () => {
   assert.match(html, /same seed gives the same imputed values/);
 });
 
+test('analysis setup form offers background precompute of PCA, UMAP, and LDA', () => {
+  const setup = { ...newSetup(['fe']), precompute: ['umap' as const] };
+  const html = renderToStaticMarkup(<AnalysisSetupForm elements={['fe']} setup={setup} onSave={async () => {}} onCancel={() => {}} />);
+  assert.match(html, /Precompute in the background/);
+  assert.match(html, /type="checkbox"\/> PCA/);
+  assert.match(html, /type="checkbox" checked=""\/> UMAP/);
+  assert.match(html, /LDA needs three or more groups/);
+});
+
 test('analysis setup panel stays hidden without a setup provider', () => {
   const html = renderToStaticMarkup(<AnalysisSetupPanel elements={['na']} />);
   assert.equal(html, '');

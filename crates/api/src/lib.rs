@@ -1928,6 +1928,7 @@ mod tests {
                 denominator: "fe".into(),
             }],
             ratio_mode: RatioMode::Append,
+            precompute: Vec::new(),
         };
         let response = app
             .clone()
@@ -2786,6 +2787,7 @@ mod tests {
                 denominator: "fe".into(),
             }],
             ratio_mode: RatioMode::Append,
+            precompute: Vec::new(),
         };
         let response = app
             .clone()

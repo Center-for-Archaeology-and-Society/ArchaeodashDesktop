@@ -24,7 +24,7 @@ import { useGroupFiles } from '../datasets/useGroupFiles.ts';
 import { asRowsResponse, defaultGroupColumn, inputPaths } from '../visualize/combine.ts';
 import { groupColors } from '../visualize/visualize-model.ts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
-import { analysisInput, setupSummary } from '../analysis-setup/setup.ts';
+import { UMAP_SEED, analysisInput, setupSummary } from '../analysis-setup/setup.ts';
 
 export interface OrdinationDeps {
   readonly groups: GroupsService;
@@ -312,7 +312,7 @@ function UmapView({ deps, data, extraPaths, groups, columns, transformation }: {
         extra_paths: [...extraPaths],
         columns: [...(columns ?? data.elemental_columns)],
         transformation: transformation ?? null,
-        seed: 20260914,
+        seed: UMAP_SEED,
       }),
     [deps, data, extraPaths, columns, transformation],
   );

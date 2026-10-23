@@ -1,18 +1,27 @@
 //! Ordination use cases (Phase 4, Section 8.5): PCA, LDA, and UMAP over one
 //! group file's measured elemental values (or several files concatenated
-//! row-wise), optionally after an ephemeral transformation. Results are
-//! returned to the caller and never persisted (Section 5 storage invariant:
-//! no ordination values reach group files).
+//! row-wise), optionally after an ephemeral transformation. No ordination
+//! values reach group files (Section 5 storage invariant); results are kept
+//! only in the disposable cache below.
+//!
+//! Cache (Section 6 `CacheStore`): each result is stored under
+//! `.archaeodash/cache/ordination/<kind>/<key>.json`, keyed by the request,
+//! every input file's size and modification time, the engine version, and
+//! `CACHE_VERSION`. Any rewrite of an input file changes the key, so stale
+//! results are never served; the Data Manager can precompute results that
+//! pages then reuse instantly. The cache can be deleted at any time.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use archaeodash_analysis::{lda, pca, umap, ColumnMatrix, DEFAULT_SEED};
 use archaeodash_contracts::{
     LdaRequest, LdaResponse, PcaRequest, PcaResponse, TransformationDefinition, UmapRequest,
     UmapResponse,
 };
-use archaeodash_data_io::GroupFileData;
+use archaeodash_data_io::{write_atomic, GroupFileData};
 use archaeodash_domain::DomainError;
+use serde::{de::DeserializeOwned, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::combined::CombinedInput;
 use super::transforms::TransformService;
@@ -24,6 +33,12 @@ fn validation(code: &str, message: impl Into<String>) -> DomainError {
 fn io_err(e: std::io::Error) -> DomainError {
     DomainError::Internal(Box::new(e))
 }
+
+/// Bump when an ordination algorithm or response shape changes so cached
+/// results from older engines are never served.
+const CACHE_VERSION: &str = "ordination-cache-1";
+/// Most cached results kept per ordination kind; the oldest go first.
+const CACHE_MAX_FILES: usize = 200;
 
 /// Ordination use cases rooted at one local project directory, sharing the
 /// transform definition engine with `TransformService`.
@@ -124,8 +139,108 @@ impl OrdinationService {
         Ok((input, matrix))
     }
 
-    /// prcomp-parity PCA (Section 15.4 procedure 6) over one group file.
+    /// Cache file for one request over `path` + `extra_paths`; `None` when an
+    /// input file cannot be inspected (the computation then reports it).
+    fn cache_file(
+        &self,
+        kind: &str,
+        request: &impl Serialize,
+        path: &str,
+        extra_paths: &[String],
+    ) -> Option<PathBuf> {
+        let mut hasher = Sha256::new();
+        hasher.update(CACHE_VERSION);
+        hasher.update(env!("CARGO_PKG_VERSION"));
+        hasher.update(kind);
+        hasher.update(serde_json::to_vec(request).ok()?);
+        for rel in std::iter::once(path).chain(extra_paths.iter().map(String::as_str)) {
+            let meta = std::fs::metadata(self.root.join(rel)).ok()?;
+            let modified = meta
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_nanos();
+            hasher.update(rel.as_bytes());
+            hasher.update([0]);
+            hasher.update(meta.len().to_le_bytes());
+            hasher.update(modified.to_le_bytes());
+        }
+        Some(
+            self.root
+                .join(".archaeodash/cache/ordination")
+                .join(kind)
+                .join(format!("{:x}.json", hasher.finalize())),
+        )
+    }
+
+    fn cache_get<T: DeserializeOwned>(file: Option<&Path>) -> Option<T> {
+        serde_json::from_slice(&std::fs::read(file?).ok()?).ok()
+    }
+
+    /// Best effort: a failed cache write never fails the ordination.
+    fn cache_put<T: Serialize>(file: Option<&Path>, value: &T) {
+        let Some(file) = file else { return };
+        let Ok(bytes) = serde_json::to_vec(value) else {
+            return;
+        };
+        if write_atomic(file, &bytes).is_err() {
+            return;
+        }
+        let Some(dir) = file.parent() else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+            .collect();
+        if files.len() > CACHE_MAX_FILES {
+            files.sort();
+            for (_, old) in &files[..files.len() - CACHE_MAX_FILES] {
+                let _ = std::fs::remove_file(old);
+            }
+        }
+    }
+
+    /// PCA, served from the cache when this exact request already ran on
+    /// the same input files.
     pub fn pca(&self, req: &PcaRequest) -> Result<PcaResponse, DomainError> {
+        let file = self.cache_file("pca", req, &req.path, &req.extra_paths);
+        if let Some(hit) = Self::cache_get(file.as_deref()) {
+            return Ok(hit);
+        }
+        let result = self.compute_pca(req)?;
+        Self::cache_put(file.as_deref(), &result);
+        Ok(result)
+    }
+
+    /// LDA, served from the cache when possible (see [`Self::pca`]).
+    pub fn lda(&self, req: &LdaRequest) -> Result<LdaResponse, DomainError> {
+        let file = self.cache_file("lda", req, &req.path, &req.extra_paths);
+        if let Some(hit) = Self::cache_get(file.as_deref()) {
+            return Ok(hit);
+        }
+        let result = self.compute_lda(req)?;
+        Self::cache_put(file.as_deref(), &result);
+        Ok(result)
+    }
+
+    /// UMAP, served from the cache when possible (see [`Self::pca`]). UMAP
+    /// is the slow one, so this is where precomputing pays off most.
+    pub fn umap(&self, req: &UmapRequest) -> Result<UmapResponse, DomainError> {
+        let file = self.cache_file("umap", req, &req.path, &req.extra_paths);
+        if let Some(hit) = Self::cache_get(file.as_deref()) {
+            return Ok(hit);
+        }
+        let result = self.compute_umap(req)?;
+        Self::cache_put(file.as_deref(), &result);
+        Ok(result)
+    }
+
+    /// prcomp-parity PCA (Section 15.4 procedure 6) over one group file.
+    fn compute_pca(&self, req: &PcaRequest) -> Result<PcaResponse, DomainError> {
         if req.columns.is_empty() {
             return Err(validation(
                 "ordination_empty",
@@ -172,7 +287,7 @@ impl OrdinationService {
 
     /// lda-parity LDA (Section 15.4 procedure 8) over one group file, with
     /// the legacy `validate_lda_groups` three-group minimum.
-    pub fn lda(&self, req: &LdaRequest) -> Result<LdaResponse, DomainError> {
+    fn compute_lda(&self, req: &LdaRequest) -> Result<LdaResponse, DomainError> {
         if req.columns.is_empty() {
             return Err(validation(
                 "ordination_empty",
@@ -215,7 +330,7 @@ impl OrdinationService {
     /// Legacy `umap::umap(method = "naive")` parity (Section 15.4 procedure
     /// 7, class D) over one group file, with a deterministic seed replacing
     /// the legacy unseeded global stream.
-    pub fn umap(&self, req: &UmapRequest) -> Result<UmapResponse, DomainError> {
+    fn compute_umap(&self, req: &UmapRequest) -> Result<UmapResponse, DomainError> {
         if req.columns.is_empty() {
             return Err(validation(
                 "ordination_empty",
@@ -303,6 +418,54 @@ mod tests {
             dir,
             merge.outputs[0].path.clone(),
         )
+    }
+
+    #[test]
+    fn results_are_cached_per_request_and_input_file_state() {
+        let (service, dir, path) = service_with_merged_group();
+        let cache = dir.join(".archaeodash/cache/ordination/pca");
+        let count = || std::fs::read_dir(&cache).map(|d| d.count()).unwrap_or(0);
+        let request = PcaRequest {
+            path: path.clone(),
+            columns: vec!["as".into(), "fe".into()],
+            scale: false,
+            transformation: None,
+            extra_paths: vec![],
+        };
+        let first = service.pca(&request).expect("pca");
+        assert_eq!(count(), 1, "the first run stores its result");
+        // A cached entry is what a repeat request returns (proved by
+        // planting a marker in it).
+        let entry = std::fs::read_dir(&cache)
+            .expect("cache dir")
+            .next()
+            .expect("entry")
+            .expect("entry")
+            .path();
+        let mut planted = first.clone();
+        planted.revision_id = "from-cache".into();
+        std::fs::write(&entry, serde_json::to_vec(&planted).expect("json")).expect("plant");
+        assert_eq!(
+            service.pca(&request).expect("cached").revision_id,
+            "from-cache"
+        );
+        // A different request gets its own entry.
+        service
+            .pca(&PcaRequest {
+                scale: true,
+                ..request.clone()
+            })
+            .expect("scaled");
+        assert_eq!(count(), 2);
+        // Rewriting the group file invalidates its entries.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let bytes = std::fs::read(dir.join(&path)).expect("read group");
+        std::fs::write(dir.join(&path), &bytes).expect("rewrite group");
+        let fresh = service.pca(&request).expect("recomputed");
+        assert_eq!(fresh.revision_id, first.revision_id);
+        assert_eq!(count(), 3);
+        // The cache never touches the group file itself.
+        assert_eq!(std::fs::read(dir.join(&path)).expect("read group"), bytes);
     }
 
     #[test]
@@ -462,6 +625,7 @@ mod tests {
                         denominator: "fe".into(),
                     }],
                     ratio_mode: RatioMode::Append,
+                    precompute: Vec::new(),
                 }),
                 extra_paths: vec![],
             })

@@ -25,6 +25,9 @@ export const IMPUTATION_CHOICES: readonly { value: ImputationMethod; label: stri
   { value: 'midastouch', label: 'Weighted predictive mean matching', short: 'weighted PMM imputation', hint: 'mice midastouch: donors weighted by closeness.' },
 ];
 
+/** Seed every page uses for UMAP, so precomputed and on-page results match. */
+export const UMAP_SEED = 20260914;
+
 /** Default imputation seed; shown and editable so results can be replayed. */
 export const DEFAULT_IMPUTATION_SEED = 20260914;
 
@@ -48,6 +51,7 @@ export function newSetup(elements: readonly string[]): TransformationDefinition 
     group_column: null,
     ratios: [],
     ratio_mode: 'append',
+    precompute: [],
   };
 }
 

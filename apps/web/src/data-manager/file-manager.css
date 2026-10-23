@@ -576,6 +576,29 @@
   flex: 1;
 }
 
+.fm-setup-precompute {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  margin: 0.35rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.fm-setup-precompute .is-ready {
+  color: var(--accent);
+}
+
+.fm-setup-precompute .is-ready::before {
+  content: '✓ ';
+}
+
+.fm-setup-precompute .is-failed {
+  color: #c0392b;
+}
+
 .setup-seed {
   display: inline-flex;
   align-items: center;

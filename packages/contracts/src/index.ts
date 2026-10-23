@@ -260,7 +260,11 @@ export interface TransformationDefinition {
   group_column?: string | null;
   ratios: RatioSpecDto[];
   ratio_mode: RatioMode;
+  /** Ordinations the Data Manager precomputes for the Analysis setup. */
+  precompute?: OrdinationKind[];
 }
+
+export type OrdinationKind = 'pca' | 'umap' | 'lda';
 
 export interface TransformationSummary {
   name: string;

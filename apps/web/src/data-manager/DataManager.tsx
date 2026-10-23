@@ -303,7 +303,12 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
         {error && <p role="alert">{error}</p>}
       </div>
 
-      <AnalysisSetupPanel elements={projectElements} />
+      <AnalysisSetupPanel
+        elements={projectElements}
+        groups={transport.groups}
+        ordination={transport.ordination}
+        dataKey={entries.map((entry) => `${entry.path}@${entry.revision ?? ''}`).join('|')}
+      />
 
       <GroupDetails entries={selectedEntries} />
 

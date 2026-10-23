@@ -1442,6 +1442,7 @@ mod tests {
                 denominator: "fe".into(),
             }],
             ratio_mode: RatioMode::Append,
+            precompute: Vec::new(),
         };
         let saved = transforms
             .save_transformation(definition.clone())
