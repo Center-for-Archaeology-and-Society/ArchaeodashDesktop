@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { GroupCandidate, GroupSummary } from '@archaeodash/contracts';
 import { DataManager, GroupDetails, GroupFileTree, loadGroupFiles, type DataManagerTransport, type GroupFileEntry } from './DataManager.tsx';
 import { ImportWizard } from './ImportWizard.tsx';
+import { DEFAULT_VALUE_OPTIONS, ImportValueOptions, recipeFromOptions } from './ImportValueOptions.tsx';
 import { ImportProgress, elapsedLabel, importStepLabel } from './ImportProgress.tsx';
 import { ImportDialog } from './ImportDialog.tsx';
 import { AnalysisSetupForm, AnalysisSetupPanel } from './AnalysisSetupPanel.tsx';
@@ -233,4 +234,20 @@ test('group file tree shows inclusion boxes separately from the selection highli
   assert.match(on, /aria-checked="true"/);
   assert.match(on, /class="fm-check fm-include is-on"[^>]*>✓/);
   assert.doesNotMatch(on, /is-excluded/);
+});
+
+test('import value handling defaults match the original ArchaeoDash loader', () => {
+  const html = renderToStaticMarkup(<ImportValueOptions value={DEFAULT_VALUE_OPTIONS} onChange={() => {}} />);
+  assert.match(html, /<legend>Value handling<\/legend>/);
+  assert.match(html, /checked=""\/> Replace empty\/NA non-element fields with \[blank\]/);
+  assert.match(html, /checked=""\/> Treat zero values as NA/);
+  assert.match(html, /checked=""\/> Treat negative values as NA/);
+  assert.match(html, /type="checkbox"\/> Replace NA values with 0/);
+  assert.deepEqual(recipeFromOptions(DEFAULT_VALUE_OPTIONS), {
+    zero_as_na: true,
+    negative_as_na: true,
+    na_as_zero: false,
+    blank_non_element_label: '[blank]',
+  });
+  assert.equal(recipeFromOptions({ ...DEFAULT_VALUE_OPTIONS, blankNonElement: false }).blank_non_element_label, null);
 });

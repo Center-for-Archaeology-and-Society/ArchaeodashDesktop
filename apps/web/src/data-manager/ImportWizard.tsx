@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import type { ImportPreviewResponse, StagedFile } from '@archaeodash/contracts';
 import { ImportProgress, type ImportStep } from './ImportProgress.tsx';
+import { DEFAULT_VALUE_OPTIONS, ImportValueOptions, recipeFromOptions } from './ImportValueOptions.tsx';
 import type { DataManagerTransport } from './types.ts';
 
 export type ImportCommitResult = Awaited<ReturnType<DataManagerTransport['imports']['commit']>>;
@@ -26,6 +27,7 @@ export function ImportWizard({ transport, onImported, onClose }: ImportWizardPro
   const [groupName, setGroupName] = useState('');
   const [idColumn, setIdColumn] = useState('');
   const [measured, setMeasured] = useState<string[]>([]);
+  const [valueOptions, setValueOptions] = useState(DEFAULT_VALUE_OPTIONS);
   const [step, setStep] = useState<ImportStep | null>(null);
   const [startedAt, setStartedAt] = useState(0);
   const [done, setDone] = useState<ImportCommitResult | null>(null);
@@ -114,7 +116,7 @@ export function ImportWizard({ transport, onImported, onClose }: ImportWizardPro
     if (done || !preview || !measured.length || (groupMode === 'column' && !groupColumn) || (groupMode === 'single' && !groupName.trim())) return;
     setMessage('');
     await run('importing', async () => {
-      const result = await transport.imports.commit({ source, group_column: groupMode === 'column' ? groupColumn : '', group_name: groupMode === 'single' ? groupName.trim() : null, visible_id_column: idColumn || null, elemental_columns: measured, ...sheetArg(sheet) });
+      const result = await transport.imports.commit({ source, group_column: groupMode === 'column' ? groupColumn : '', group_name: groupMode === 'single' ? groupName.trim() : null, visible_id_column: idColumn || null, elemental_columns: measured, recipe: recipeFromOptions(valueOptions), ...sheetArg(sheet) });
       setDone(result);
       setMessage(`Imported ${result.groups.length} group${result.groups.length === 1 ? '' : 's'} (${result.groups.reduce((sum, item) => sum + item.row_count, 0)} rows).`);
       await onImported?.(result);
@@ -151,6 +153,7 @@ export function ImportWizard({ transport, onImported, onClose }: ImportWizardPro
         </label>)}
         <p>Unselected columns are stored as descriptive data. Choose at least one measured column.</p>
       </fieldset>
+      <ImportValueOptions value={valueOptions} onChange={setValueOptions} disabled={locked} />
       {((groupMode === 'column' && groupColumn) || (groupMode === 'single' && preview.partitions.length > 0)) && <>
         <h3>Import preview</h3>
         {preview.partitions.length ? <ul>{preview.partitions.map((partition, index) => <li key={`${partition.group_name}-${index}`}>{partition.group_name}: {partition.row_count} rows</li>)}</ul> : <p>No groups found for this column.</p>}
