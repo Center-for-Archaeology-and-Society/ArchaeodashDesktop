@@ -496,3 +496,82 @@
     max-height: 40vh;
   }
 }
+
+/* Analysis setup section in the sidebar. */
+.fm-setup {
+  margin-top: 0.75rem;
+  padding: 0.6rem 0.7rem;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.fm-setup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.fm-setup-head h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.fm-setup-summary {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+}
+
+.fm-setup-hint {
+  margin: 0.3rem 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+/* Analysis setup dialog form. */
+.setup-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.setup-form fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.setup-row,
+.setup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.setup-element-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr));
+  gap: 0.15rem 0.6rem;
+  max-height: 14rem;
+  overflow-y: auto;
+}
+
+.setup-choice {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+}
+
+.setup-note {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.setup-spacer {
+  flex: 1;
+}

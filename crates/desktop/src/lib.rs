@@ -1462,6 +1462,7 @@ mod tests {
         let before = std::fs::read(dir.join(&path)).expect("read group");
         let applied = transforms
             .apply_transformation(ApplyTransformationRequest {
+                extra_paths: vec![],
                 path: path.clone(),
                 definition,
             })

@@ -6,6 +6,8 @@ import { DataManager, GroupDetails, GroupFileTree, loadGroupFiles, type DataMana
 import { ImportWizard } from './ImportWizard.tsx';
 import { ImportProgress, elapsedLabel, importStepLabel } from './ImportProgress.tsx';
 import { ImportDialog } from './ImportDialog.tsx';
+import { AnalysisSetupForm, AnalysisSetupPanel } from './AnalysisSetupPanel.tsx';
+import { newSetup } from '../analysis-setup/setup.ts';
 import { applySelection, pruneSelection } from './selection.ts';
 import { GROUPS_CHANGED_EVENT, notifyGroupsChanged, onGroupsChanged } from './events.ts';
 
@@ -171,4 +173,19 @@ test('import wizard shows no Close button before an import finishes', () => {
   const html = renderToStaticMarkup(<ImportWizard transport={{ ...transport, kind: 'http' } as DataManagerTransport} onClose={() => {}} />);
   assert.doesNotMatch(html, />Close</);
   assert.doesNotMatch(html, /role="progressbar"/);
+});
+
+test('analysis setup form lists elements and transforms, preselecting the saved setup', () => {
+  const setup = { ...newSetup(['fe']), transform_method: 'log10' as const };
+  const html = renderToStaticMarkup(<AnalysisSetupForm elements={['na', 'fe']} setup={setup} onSave={async () => {}} onCancel={() => {}} />);
+  assert.match(html, /Elements used in analyses and plots \(1 of 2\)/);
+  assert.match(html, /type="checkbox" checked=""[^>]*\/> fe/);
+  assert.doesNotMatch(html, /type="checkbox" checked=""[^>]*\/> na/);
+  assert.match(html, /checked="" value="log10"/);
+  assert.match(html, /Zeros, negative and missing values have no logarithm/);
+});
+
+test('analysis setup panel stays hidden without a setup provider', () => {
+  const html = renderToStaticMarkup(<AnalysisSetupPanel elements={['na']} />);
+  assert.equal(html, '');
 });

@@ -14,7 +14,10 @@ import type {
   GroupRowDto,
   GroupsService,
   OrdinationService,
+  TransformationsService,
 } from '@archaeodash/client';
+import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
+import { analysisInput, setupSummary } from '../analysis-setup/setup.ts';
 import { notifyGroupsChanged } from '../data-manager/events.ts';
 import { selectionBySource } from './combine.ts';
 import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
@@ -40,6 +43,14 @@ export interface VisualizeDeps {
   readonly groups: GroupsService;
   readonly ordination: OrdinationService;
   readonly exports: ExportsService;
+  /** Applies the Analysis setup transform for the element axes. */
+  readonly transformations?: Pick<TransformationsService, 'apply'>;
+}
+
+/** Element-axis data: column names and column-major values per combined row. */
+interface ElementView {
+  readonly columns: string[];
+  readonly values: (number | null)[][];
 }
 
 type AsyncState<T> =
@@ -143,6 +154,54 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
   const dataset = useGroupFiles(deps.groups);
   const { ready, options: groupOptions, selectedPaths, setSelectedPaths, orderedPaths, files, combined, rescan } = dataset;
   const loadState = dataset.load;
+  const analysisSetup = useAnalysisSetup();
+  const setupInput = useMemo(
+    () => analysisInput(analysisSetup.setup, combined.elementalColumns),
+    [analysisSetup.setup, combined.elementalColumns],
+  );
+
+  // Element axes use the Analysis setup's elements; with a transform, values
+  // come from the backend over all loaded groups pooled (like ordination).
+  const rawElementView = useMemo((): ElementView => {
+    const columns = setupInput.columns;
+    return {
+      columns,
+      values: columns.map((c) => {
+        const i = combined.elementalColumns.indexOf(c);
+        return combined.rows.map((r) => r.elemental[i] ?? null);
+      }),
+    };
+  }, [setupInput.columns, combined]);
+  const [transformedView, setTransformedView] = useState<AsyncState<ElementView>>({ kind: 'idle' });
+  useEffect(() => {
+    const definition = setupInput.transformation;
+    const apply = deps.transformations?.apply;
+    const [first, ...rest] = files.map((f) => f.path);
+    if (!definition || !apply || !first || setupInput.columns.length === 0) {
+      setTransformedView({ kind: 'idle' });
+      return;
+    }
+    let cancelled = false;
+    setTransformedView({ kind: 'loading' });
+    apply({ path: first, extra_paths: rest, definition })
+      .then((r) => {
+        if (cancelled) return;
+        setTransformedView({
+          kind: 'loaded',
+          data: { columns: r.columns, values: r.columns.map((_, j) => r.rows.map((row) => row[j] ?? null)) },
+        });
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setTransformedView({ kind: 'error', message: errorText(err) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [deps, files, setupInput]);
+  const elementView: ElementView =
+    setupInput.transformation && transformedView.kind === 'loaded' ? transformedView.data
+      : setupInput.transformation ? { columns: [], values: [] }
+        : rawElementView;
 
   // A new set of rows invalidates the current selection.
   useEffect(() => {
@@ -156,19 +215,19 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
 
   // Ordination scores over all loaded groups (one request, rows in file order).
   useEffect(() => {
-    if (source === 'elements' || files.length === 0) {
+    if (source === 'elements' || files.length === 0 || !analysisSetup.loaded) {
       setScores({ kind: 'idle' });
       return;
     }
-    const columns = combined.elementalColumns;
+    const columns = setupInput.columns;
     const [first, ...rest] = files.map((f) => f.path);
     if (!first || columns.length < 2) {
-      setScores({ kind: 'error', message: 'Ordination needs at least two shared measured columns.' });
+      setScores({ kind: 'error', message: 'Ordination needs at least two selected elements shared by the loaded groups.' });
       return;
     }
     let cancelled = false;
     setScores({ kind: 'loading' });
-    const base = { path: first, extra_paths: rest, columns };
+    const base = { path: first, extra_paths: rest, columns, transformation: setupInput.transformation ?? null };
     const run = async (): Promise<Scores> => {
       if (source === 'pca') {
         const r = await deps.ordination.pca(base);
@@ -210,7 +269,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [deps, source, files, combined]);
+  }, [deps, source, files, combined, setupInput, analysisSetup.loaded]);
 
   // Reset axes to the first two dimensions whenever the axis source changes.
   useEffect(() => {
@@ -245,12 +304,12 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
 
   const coordinate = useCallback(
     (rowIdx: number, axis: number): number | null => {
-      if (source === 'elements') return combined.rows[rowIdx]?.elemental[axis] ?? null;
+      if (source === 'elements') return elementView.values[axis]?.[rowIdx] ?? null;
       if (scores.kind !== 'loaded') return null;
       const v = scores.data.values[rowIdx]?.[axis];
       return v === undefined || !Number.isFinite(v) ? null : v;
     },
-    [source, combined, scores],
+    [source, elementView, scores],
   );
 
   const traces = useMemo((): ScatterTraceSpec[] => {
@@ -303,11 +362,11 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
 
   const axisOptions = useMemo(() => {
     if (source === 'elements') {
-      return combined.elementalColumns.map((c, i) => ({ value: String(i), label: c }));
+      return elementView.columns.map((c, i) => ({ value: String(i), label: c }));
     }
     if (scores.kind !== 'loaded') return [];
     return scores.data.labels.map((label, i) => ({ value: String(i), label }));
-  }, [source, combined, scores]);
+  }, [source, elementView, scores]);
 
   const axisLabel = (idx: number, fallback: string) =>
     axisOptions[idx]?.label ?? fallback;
@@ -472,13 +531,21 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       {loadState.kind === 'loading' && <p role="status">Loading groups…</p>}
       {loadState.kind === 'error' && <p role="alert">Error: {loadState.message}</p>}
       {orderedPaths.length === 0 && <p className="muted">Choose one or more groups in Dataset.</p>}
+      {analysisSetup.setup && combined.rows.length > 0 && (
+        <p className="setup-in-use">
+          Analysis setup: {setupSummary(analysisSetup.setup, combined.elementalColumns)}
+          {setupInput.missing.length > 0 && ` (not in every selected group: ${setupInput.missing.join(', ')})`}
+        </p>
+      )}
+      {transformedView.kind === 'loading' && <p role="status">Transforming element values…</p>}
+      {transformedView.kind === 'error' && <p role="alert">Could not transform element values: {transformedView.message}</p>}
       {scoreState === 'loading' && <p role="status">Computing {source.toUpperCase()}…</p>}
       {scoreState !== null && scoreState !== 'loading' && <p role="alert">{scoreState}</p>}
       {scores.kind === 'loaded' && scores.data.note && <p className="muted">{scores.data.note}</p>}
       {plotMode === 'multiplot' && combined.rows.length > 0 ? (
         <Multiplot
-          columns={combined.elementalColumns}
-          values={transposeElementalRows(combined.rows, combined.elementalColumns.length)}
+          columns={elementView.columns}
+          values={elementView.values}
           groupLabels={combined.groupOf}
           groupNames={combined.groupNames}
           rowIndices={filteredIdx}

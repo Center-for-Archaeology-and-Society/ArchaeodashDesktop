@@ -537,6 +537,12 @@ pub struct ApplyTransformationRequest {
     pub path: String,
     /// Inline definition to apply.
     pub definition: TransformationDefinition,
+    /// Additional project-relative group files pooled with `path` before
+    /// the transform (rows: `path`'s rows, then each entry's rows, in order),
+    /// so column-wise transforms such as z-score see every selected group,
+    /// matching the ordination requests. Empty keeps single-file behaviour.
+    #[serde(default)]
+    pub extra_paths: Vec<String>,
 }
 
 /// `POST /ordination/pca` request: prcomp-parity PCA over one group file
@@ -1615,6 +1621,7 @@ mod tests {
         );
 
         let apply = ApplyTransformationRequest {
+            extra_paths: vec![],
             path: "groups/Baca.parquet".into(),
             definition: definition.clone(),
         };

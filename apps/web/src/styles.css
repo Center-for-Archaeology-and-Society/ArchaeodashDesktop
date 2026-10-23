@@ -522,3 +522,10 @@ body {
 .data-table td.cell-error input {
   border: 1px solid #d92d20;
 }
+
+/* "Analysis setup: …" note above analyses that follow the Data Manager setup. */
+.setup-in-use {
+  margin: 0.25rem 0 0.5rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}

@@ -38,6 +38,8 @@ import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
 import { useGroupFiles } from '../datasets/useGroupFiles.ts';
 import { HiddenIdNote } from './HiddenIdNote.tsx';
 import { CellAutosave, cellKey } from './autosave.ts';
+import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
+import { analysisInput } from '../analysis-setup/setup.ts';
 export interface ExploreDeps {
   readonly groups: GroupsService;
   readonly explore: ExploreService;
@@ -697,6 +699,9 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
   const [view, setView] = useState<ExploreView>('table');
 
   const data = useMemo(() => asRowsResponse(files, combined), [files, combined]);
+  // Plots use the Analysis setup's elements; values stay as measured here.
+  const { setup } = useAnalysisSetup();
+  const plotColumns = useMemo(() => analysisInput(setup, combined.elementalColumns).columns, [setup, combined.elementalColumns]);
   // One autosave (and undo history) per loaded set of files, kept while you
   // switch Explore tabs. Saves update revisions in place, without reloading.
   const autosave = useMemo(
@@ -758,9 +763,9 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
             <DataTable files={files} deps={deps} autosave={autosave} onReload={dataset.reload} />
           )}
           {view !== 'table' && !savesSettled && <p role="status">Saving table edits…</p>}
-          {savesSettled && view === 'missing' && <MissingView deps={deps} input={input} columns={combined.elementalColumns} />}
+          {savesSettled && view === 'missing' && <MissingView deps={deps} input={input} columns={plotColumns} />}
           {savesSettled && view === 'histogram' && (
-            <HistogramView deps={deps} input={input} columns={combined.elementalColumns} />
+            <HistogramView deps={deps} input={input} columns={plotColumns} />
           )}
           {savesSettled && view === 'crosstab' && (
             <CrosstabView deps={deps} input={input} data={data} defaultGroupColumn={defaultGroupColumn(combined)} />
@@ -769,7 +774,7 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
             <ProfileView
               deps={deps}
               input={input}
-              columns={combined.elementalColumns}
+              columns={plotColumns}
               groupColumns={combined.descriptiveColumns}
               defaultGroupColumn={files.length > 1 ? combined.groupColumn : ''}
             />

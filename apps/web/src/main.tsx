@@ -9,6 +9,7 @@ import { createRoot } from 'react-dom/client';
 import { createBrowserRouter, Navigate, Outlet, RouterProvider, type RouteObject } from 'react-router';
 import type { AppInfo, Transport } from '@archaeodash/client';
 import { AppShell } from './shell/AppShell.tsx';
+import { AnalysisSetupProvider } from './analysis-setup/AnalysisSetupContext.tsx';
 import {
   HelpPage,
   HomePage,
@@ -67,6 +68,7 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
   }, [transport]);
 
   return (
+    <AnalysisSetupProvider service={transport.transformations} generation={projectGeneration}>
     <AppShell
       theme={theme}
       onThemeChange={(next) => {
@@ -91,6 +93,7 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
         setProjectGeneration(project.generation);
       }}
     />
+    </AnalysisSetupProvider>
   );
 }
 
@@ -130,6 +133,7 @@ export function createAppRouter(transport: Transport) {
     groups: transport.groups,
     ordination: transport.ordination,
     exports: transport.exports,
+    transformations: transport.transformations,
   };
   const exploreDeps: ExploreDeps = {
     groups: transport.groups,

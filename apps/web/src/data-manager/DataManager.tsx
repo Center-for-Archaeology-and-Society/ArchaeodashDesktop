@@ -4,8 +4,10 @@
  * tree (role="tree") with multi-select, inline name/confirm forms, a details
  * panel for the selected file, and the import wizard in a modal dialog.
  */
-import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactElement } from 'react';
 import type { GroupSummary } from '@archaeodash/contracts';
+import { unionElements } from '../analysis-setup/setup.ts';
+import { AnalysisSetupPanel } from './AnalysisSetupPanel.tsx';
 import { ImportDialog } from './ImportDialog.tsx';
 import { ImportWizard } from './ImportWizard.tsx';
 import { onGroupsChanged } from './events.ts';
@@ -225,6 +227,9 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
     }
   };
 
+  // Every measured column across the project's files, for the Analysis setup.
+  const projectElements = useMemo(() => unionElements(entries.map((entry) => entry.summary?.elemental_columns ?? [])), [entries]);
+
   const setRef = (id: string) => (element: HTMLLIElement | null) => {
     if (element) itemRefs.current.set(id, element);
     else itemRefs.current.delete(id);
@@ -297,6 +302,8 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
         {status && <p role="status">{status}</p>}
         {error && <p role="alert">{error}</p>}
       </div>
+
+      <AnalysisSetupPanel elements={projectElements} />
 
       <GroupDetails entries={selectedEntries} />
 

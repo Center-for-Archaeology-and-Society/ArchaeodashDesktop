@@ -16,7 +16,7 @@ use archaeodash_contracts::{
     ImputationMethod, RatioMode, RatioSpecDto, SaveTransformationResponse, TransformMethod,
     TransformationDefinition, TransformationListResponse, TransformationSummary,
 };
-use archaeodash_data_io::{read_group_file, sanitize_group_name, GroupFileData};
+use archaeodash_data_io::{sanitize_group_name, GroupFileData};
 use archaeodash_domain::DomainError;
 
 /// Legacy `transform_table_name_max_len`: saved names sanitize to at most
@@ -417,8 +417,10 @@ impl TransformService {
         &self,
         req: &ApplyTransformationRequest,
     ) -> Result<AppliedTransformation, DomainError> {
-        let data = read_group_file(&self.root.join(&req.path))
-            .map_err(|e| DomainError::Internal(Box::new(e)))?;
+        let input =
+            crate::combined::CombinedInput::read_local(&self.root, &req.path, &req.extra_paths)?;
+        input.require_inputs(&[], Some(&req.definition))?;
+        let data = input.data;
         let (matrix, non_finite_to_zero) =
             Self::apply_definition(&data, &req.definition, &req.path)?;
         let n_rows = matrix.n_rows();
@@ -673,6 +675,42 @@ mod tests {
     }
 
     #[test]
+    fn apply_pools_extra_paths_before_transforming() {
+        let (service, _dir, path) = service_with_group();
+        let def = definition("log", TransformMethod::Log10);
+        let pooled = service
+            .apply(&ApplyTransformationRequest {
+                path: path.clone(),
+                extra_paths: vec!["groups/Hooper.parquet".into()],
+                definition: def.clone(),
+            })
+            .expect("pooled apply");
+        // Baca's two rows, then Hooper's one row, in request order.
+        assert_eq!(pooled.columns, vec!["as", "fe"]);
+        assert_eq!(pooled.rows.len(), 3);
+        // log10 of 1.5, 2, 5, rounded to three decimals like the legacy app.
+        let as_values: Vec<f64> = pooled.rows.iter().map(|r| r[0].expect("value")).collect();
+        assert_eq!(as_values, vec![0.176, 0.301, 0.699]);
+        // Column-wise z-score sees all pooled rows, so it differs from Baca alone.
+        let z = definition("z", TransformMethod::ZScore);
+        let single = service
+            .apply(&ApplyTransformationRequest {
+                path: path.clone(),
+                extra_paths: vec![],
+                definition: z.clone(),
+            })
+            .expect("single");
+        let both = service
+            .apply(&ApplyTransformationRequest {
+                path,
+                extra_paths: vec!["groups/Hooper.parquet".into()],
+                definition: z,
+            })
+            .expect("both");
+        assert_ne!(single.rows[0], both.rows[0]);
+    }
+
+    #[test]
     fn apply_is_ephemeral_and_matches_golden_semantics() {
         let (service, dir, path) = service_with_group();
 
@@ -681,6 +719,7 @@ mod tests {
         let def = definition("z", TransformMethod::ZScore);
         let applied = service
             .apply(&ApplyTransformationRequest {
+                extra_paths: vec![],
                 path: path.clone(),
                 definition: def.clone(),
             })
@@ -719,6 +758,7 @@ mod tests {
         };
         let applied = service
             .apply(&ApplyTransformationRequest {
+                extra_paths: vec![],
                 path,
                 definition: ratio_def,
             })
@@ -742,6 +782,7 @@ mod tests {
         }];
         let applied = service
             .apply(&ApplyTransformationRequest {
+                extra_paths: vec![],
                 path: path.clone(),
                 definition: def,
             })
@@ -754,6 +795,7 @@ mod tests {
         def.elemental_columns = vec!["Site".into()];
         let err = service
             .apply(&ApplyTransformationRequest {
+                extra_paths: vec![],
                 path,
                 definition: def,
             })

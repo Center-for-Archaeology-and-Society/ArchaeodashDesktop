@@ -1985,6 +1985,7 @@ mod tests {
         // result with log10 + ratio columns, group file untouched on disk.
         let before = std::fs::read(dir.path().join(&group_path)).expect("read group");
         let apply = ApplyTransformationRequest {
+            extra_paths: vec![],
             path: group_path.clone(),
             definition: definition.clone(),
         };

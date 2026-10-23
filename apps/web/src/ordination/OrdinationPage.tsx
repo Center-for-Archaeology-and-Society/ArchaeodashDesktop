@@ -13,6 +13,7 @@ import type {
   LdaResponse,
   OrdinationService,
   PcaResponse,
+  TransformationDefinition,
   UmapResponse,
 } from '@archaeodash/client';
 import type { Data } from 'plotly.js-dist-min';
@@ -22,6 +23,8 @@ import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
 import { useGroupFiles } from '../datasets/useGroupFiles.ts';
 import { asRowsResponse, defaultGroupColumn, inputPaths } from '../visualize/combine.ts';
 import { groupColors } from '../visualize/visualize-model.ts';
+import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
+import { analysisInput, setupSummary } from '../analysis-setup/setup.ts';
 
 export interface OrdinationDeps {
   readonly groups: GroupsService;
@@ -204,8 +207,9 @@ export function PcaResult({
       </div>
       {result.scale === null || result.scale === undefined ? (
         <p className="muted">
-          Unscaled PCA on raw values: elements with large concentrations (e.g. Fe, Na, K) dominate
-          the first components. Apply a log transformation for compositional work.
+          Unscaled PCA: on untransformed values, elements with large concentrations (e.g. Fe, Na,
+          K) dominate the first components. For compositional work choose Log10 in the Data
+          Manager&apos;s Analysis setup.
         </p>
       ) : null}
       <h2>Scores</h2>
@@ -261,12 +265,21 @@ interface OrdinationInput {
   readonly data: GroupRowsResponse;
   readonly extraPaths: readonly string[];
   readonly groups?: readonly string[];
+  /** Columns to ordinate (Analysis setup); defaults to every measured column. */
+  readonly columns?: readonly string[];
+  /** Analysis setup transform applied on demand before ordinating. */
+  readonly transformation?: TransformationDefinition;
 }
 
-function PcaView({ deps, data, extraPaths, groups }: { deps: OrdinationDeps } & OrdinationInput): ReactElement {
+function PcaView({ deps, data, extraPaths, groups, columns, transformation }: { deps: OrdinationDeps } & OrdinationInput): ReactElement {
   const request = useMemo(
-    () => ({ path: data.path, extra_paths: [...extraPaths], columns: data.elemental_columns }),
-    [data, extraPaths],
+    () => ({
+      path: data.path,
+      extra_paths: [...extraPaths],
+      columns: [...(columns ?? data.elemental_columns)],
+      transformation: transformation ?? null,
+    }),
+    [data, extraPaths, columns, transformation],
   );
   const { state, reload } = useOrdination<PcaResponse>(() => deps.ordination.pca(request), [deps, request]);
   return (
@@ -291,16 +304,17 @@ function PcaView({ deps, data, extraPaths, groups }: { deps: OrdinationDeps } & 
   );
 }
 
-function UmapView({ deps, data, extraPaths, groups }: { deps: OrdinationDeps } & OrdinationInput): ReactElement {
+function UmapView({ deps, data, extraPaths, groups, columns, transformation }: { deps: OrdinationDeps } & OrdinationInput): ReactElement {
   const { state } = useOrdination<UmapResponse>(
     () =>
       deps.ordination.umap({
         path: data.path,
         extra_paths: [...extraPaths],
-        columns: data.elemental_columns,
+        columns: [...(columns ?? data.elemental_columns)],
+        transformation: transformation ?? null,
         seed: 20260914,
       }),
-    [deps, data, extraPaths],
+    [deps, data, extraPaths, columns, transformation],
   );
   if (state.kind === 'loading') return <p role="status">Computing UMAP…</p>;
   if (state.kind === 'error') return <p role="alert">Error: {state.message}</p>;
@@ -340,6 +354,8 @@ export function LdaView({
   data,
   extraPaths = NO_EXTRA_PATHS,
   defaultGroupColumn,
+  columns,
+  transformation,
 }: { deps: OrdinationDeps; defaultGroupColumn?: string } & Omit<OrdinationInput, 'extraPaths'> & {
   extraPaths?: readonly string[];
 }): ReactElement {
@@ -351,10 +367,11 @@ export function LdaView({
       deps.ordination.lda({
         path: data.path,
         extra_paths: [...extraPaths],
-        columns: data.elemental_columns,
+        columns: [...(columns ?? data.elemental_columns)],
+        transformation: transformation ?? null,
         group_column: groupColumn,
       }),
-    [deps, data, extraPaths, groupColumn],
+    [deps, data, extraPaths, groupColumn, columns, transformation],
   );
 
   if (!groupColumn) {
@@ -411,6 +428,11 @@ export function OrdinationPage({ deps }: { deps: OrdinationDeps }): ReactElement
   const data = useMemo(() => asRowsResponse(files, combined), [files, combined]);
   const extraPaths = useMemo(() => inputPaths(files).extra_paths, [files]);
   const viewKey = files.map((f) => `${f.path}@${f.data.revision_id}`).join('|');
+  const analysisSetup = useAnalysisSetup();
+  const input = useMemo(
+    () => analysisInput(analysisSetup.setup, data.elemental_columns),
+    [analysisSetup.setup, data.elemental_columns],
+  );
 
   return (
     <section aria-labelledby="ordination-heading">
@@ -444,16 +466,30 @@ export function OrdinationPage({ deps }: { deps: OrdinationDeps }): ReactElement
       {(load.kind !== 'loaded' || files.length === 0) && load.kind !== 'loading' && (
         <p role="status">Load a dataset to run ordination.</p>
       )}
-      {load.kind === 'loaded' && files.length > 0 && (
+      {load.kind === 'loaded' && files.length > 0 && analysisSetup.setup && (
+        <p className="setup-in-use">
+          Analysis setup: {setupSummary(analysisSetup.setup, data.elemental_columns)}
+          {input.missing.length > 0 && ` (not in every selected group: ${input.missing.join(', ')})`}
+        </p>
+      )}
+      {load.kind === 'loaded' && files.length > 0 && !analysisSetup.loaded && (
+        <p role="status">Loading the analysis setup…</p>
+      )}
+      {load.kind === 'loaded' && files.length > 0 && analysisSetup.loaded && input.columns.length < 2 && (
+        <p role="alert">Ordination needs at least two selected elements measured in these groups. Change the Analysis setup in the Data Manager.</p>
+      )}
+      {load.kind === 'loaded' && files.length > 0 && analysisSetup.loaded && input.columns.length >= 2 && (
         <div key={viewKey}>
-          {view === 'pca' && <PcaView deps={deps} data={data} extraPaths={extraPaths} groups={combined.groupOf} />}
-          {view === 'umap' && <UmapView deps={deps} data={data} extraPaths={extraPaths} groups={combined.groupOf} />}
+          {view === 'pca' && <PcaView deps={deps} data={data} extraPaths={extraPaths} groups={combined.groupOf} columns={input.columns} transformation={input.transformation} />}
+          {view === 'umap' && <UmapView deps={deps} data={data} extraPaths={extraPaths} groups={combined.groupOf} columns={input.columns} transformation={input.transformation} />}
           {view === 'lda' && (
             <LdaView
               deps={deps}
               data={data}
               extraPaths={extraPaths}
               defaultGroupColumn={defaultGroupColumn(combined)}
+              columns={input.columns}
+              transformation={input.transformation}
             />
           )}
         </div>

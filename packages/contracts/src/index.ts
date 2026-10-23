@@ -292,6 +292,8 @@ export interface BatchRatioRequest {
 export interface ApplyTransformationRequest {
   path: string;
   definition: TransformationDefinition;
+  /** Group files pooled with `path` before transforming (rows in order). */
+  extra_paths?: string[];
 }
 
 export interface AppliedTransformation {

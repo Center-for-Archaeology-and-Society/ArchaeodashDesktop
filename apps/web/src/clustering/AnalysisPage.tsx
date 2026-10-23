@@ -5,6 +5,8 @@ import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
 import { useGroupFiles } from '../datasets/useGroupFiles.ts';
 import { asRowsResponse, defaultGroupColumn, inputPaths } from '../visualize/combine.ts';
 import { notifyGroupsChanged } from '../data-manager/events.ts';
+import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
+import { ANALYSIS_SETUP_NAME, analysisInput } from '../analysis-setup/setup.ts';
 import { ResultAssignment } from './ResultAssignment.tsx';
 import { AnalysisPlots } from './AnalysisPlots.tsx';
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
@@ -102,7 +104,17 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   const [projection, setProjection] = useState<string[] | null>(null);
   const [definitions, setDefinitions] = useState<TransformationDefinition[]>([]);
   const [definitionName, setDefinitionName] = useState('');
-  const definition = definitions.find(d => d.name === definitionName) ?? null;
+  const analysisSetup = useAnalysisSetup();
+  // The Data Manager's Analysis setup is offered first and used by default;
+  // other saved definitions stay selectable.
+  const setupInput = useMemo(
+    () => (data ? analysisInput(analysisSetup.setup, data.elemental_columns) : null),
+    [data, analysisSetup.setup],
+  );
+  const savedDefinitions = definitions.filter(d => d.name !== ANALYSIS_SETUP_NAME);
+  const usingSetup = definitionName === ANALYSIS_SETUP_NAME && !!analysisSetup.setup;
+  const definition = usingSetup ? (setupInput?.transformation ?? null) : savedDefinitions.find(d => d.name === definitionName) ?? null;
+  const columnChoices = !data ? [] : usingSetup ? (setupInput?.columns ?? []) : analysisColumns(data, definition);
   const [job, setJob] = useState<AnalysisJobSnapshot | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const activeJob = useRef<AbortController | null>(null);
@@ -130,9 +142,10 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   const defaultGroup = defaultGroupColumn(combined);
   useEffect(() => {
     if (!data) return;
-    setColumns(data.elemental_columns); setGroup(defaultGroup);
-    setId(data.visible_id_column); setSourceGroup(defaultGroup); setPlotGroup(defaultGroup); setProjection(null); setDefinitionName('');
-  }, [data, defaultGroup]);
+    const followSetup = !!analysisSetup.setup && !!setupInput;
+    setColumns(followSetup ? setupInput.columns : data.elemental_columns); setGroup(defaultGroup);
+    setId(data.visible_id_column); setSourceGroup(defaultGroup); setPlotGroup(defaultGroup); setProjection(null); setDefinitionName(followSetup ? ANALYSIS_SETUP_NAME : '');
+  }, [data, defaultGroup, analysisSetup.setup, setupInput]);
   useEffect(() => { if (dataset.load.kind === 'error') setError(dataset.load.message); }, [dataset.load]);
   useEffect(() => {
     if (data && columns.length) setPcCount(current => Math.max(1, Math.min(current, columns.length, data.rows.length)));
@@ -208,8 +221,14 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     {dataset.load.kind === 'loading' && <p role="status">Loading dataset…</p>}
     {dataset.orderedPaths.length === 0 && dataset.load.kind !== 'loading' && <p>Choose one or more groups in Dataset.</p>}
     {data && <fieldset disabled={busy} onChange={reset}><legend>Analysis settings</legend>
-      <label>Transformation <select value={definitionName} onChange={e => { const selected = definitions.find(d => d.name === e.target.value) ?? null; setDefinitionName(e.target.value); setColumns(analysisColumns(data, selected)); }}>
-        <option value="">Measured values</option>{definitions.map(d => <option key={d.name}>{d.name}</option>)}
+      <label>Transformation <select value={definitionName} onChange={e => {
+        const name = e.target.value;
+        setDefinitionName(name);
+        if (name === ANALYSIS_SETUP_NAME) setColumns(setupInput?.columns ?? []);
+        else setColumns(analysisColumns(data, savedDefinitions.find(d => d.name === name) ?? null));
+      }}>
+        {analysisSetup.setup && <option value={ANALYSIS_SETUP_NAME}>Analysis setup (Data Manager)</option>}
+        <option value="">Measured values</option>{savedDefinitions.map(d => <option key={d.name}>{d.name}</option>)}
       </select></label>
       <label>Analysis source <select value={source} onChange={e => setSource(e.target.value as AnalysisSource)}>
         <option value="elements">Elements / ratios</option><option value="pca">PCA scores</option><option value="umap">UMAP dimensions</option><option value="lda">Linear discriminants</option>
@@ -218,7 +237,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
       {source === 'lda' && <label>LDA grouping column <select value={sourceGroup} onChange={e => setSourceGroup(e.target.value)}>{data.descriptive_columns.map(c => <option key={c}>{c}</option>)}</select></label>}
       {source === 'umap' && <label>UMAP seed <input type="number" min={0} max={2147483627} value={seed} onChange={e => setSeed(Number(e.target.value))} /></label>}
       <label>Input columns <select multiple value={columns} onChange={e => setColumns(Array.from(e.target.selectedOptions, o => o.value))}>
-        {analysisColumns(data, definition).map(c => <option key={c}>{c}</option>)}
+        {columnChoices.map(c => <option key={c}>{c}</option>)}
       </select></label>
       {kind === 'cluster' ? <>
         <label>Method <select value={method} onChange={e => { setMethod(e.target.value as ClusterMethod); setMetric('euclidean'); }}>
