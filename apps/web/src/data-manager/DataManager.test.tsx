@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { GroupCandidate, GroupSummary } from '@archaeodash/contracts';
 import { DataManager, GroupDetails, GroupFileTree, loadGroupFiles, type DataManagerTransport, type GroupFileEntry } from './DataManager.tsx';
 import { ImportWizard } from './ImportWizard.tsx';
+import { ImportProgress, elapsedLabel, importStepLabel } from './ImportProgress.tsx';
 import { ImportDialog } from './ImportDialog.tsx';
 import { applySelection, pruneSelection } from './selection.ts';
 import { GROUPS_CHANGED_EVENT, notifyGroupsChanged, onGroupsChanged } from './events.ts';
@@ -146,4 +147,28 @@ test('groups-changed event helpers dispatch on window', () => {
   } finally {
     (globalThis as { window?: unknown }).window = previous;
   }
+});
+
+test('import progress shows an indeterminate bar with the current step', () => {
+  const html = renderToStaticMarkup(<ImportProgress step="importing" startedAt={Date.now()} groups={3} />);
+  assert.match(html, /role="progressbar"/);
+  assert.match(html, /aria-valuetext="Writing 3 group files…"/);
+  assert.match(html, /Writing 3 group files…/);
+  assert.match(html, /0 s/);
+});
+
+test('import step labels and elapsed time read naturally', () => {
+  assert.equal(importStepLabel('importing', 1), 'Writing 1 group file…');
+  assert.equal(importStepLabel('importing'), 'Writing group files…');
+  assert.equal(importStepLabel('reading'), 'Reading columns and rows…');
+  assert.equal(elapsedLabel(0, 4_900), '4 s');
+  assert.equal(elapsedLabel(0, 125_000), '2 min 5 s');
+  assert.equal(elapsedLabel(10_000, 0), '0 s');
+});
+
+test('import wizard shows no Close button before an import finishes', () => {
+  const transport = {} as DataManagerTransport;
+  const html = renderToStaticMarkup(<ImportWizard transport={{ ...transport, kind: 'http' } as DataManagerTransport} onClose={() => {}} />);
+  assert.doesNotMatch(html, />Close</);
+  assert.doesNotMatch(html, /role="progressbar"/);
 });

@@ -412,6 +412,72 @@
   margin: 0;
 }
 
+/* Indeterminate import progress: a segment slides across the track. */
+.import-progress {
+  width: 100%;
+}
+
+.import-progress-track {
+  position: relative;
+  height: 0.5rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.import-progress-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 35%;
+  border-radius: inherit;
+  background: var(--accent);
+  animation: import-progress-slide 1.3s ease-in-out infinite;
+}
+
+@keyframes import-progress-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(290%); }
+}
+
+/* Without motion, show a still striped bar; the step text still updates. */
+@media (prefers-reduced-motion: reduce) {
+  .import-progress-bar {
+    width: 100%;
+    animation: none;
+    background: repeating-linear-gradient(
+      45deg,
+      var(--accent) 0 0.5rem,
+      color-mix(in srgb, var(--accent) 60%, transparent) 0.5rem 1rem
+    );
+  }
+}
+
+.import-progress-text {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.35rem !important;
+  font-size: 0.9rem;
+}
+
+.import-progress-elapsed {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.import-wizard-done {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.import-wizard-footer {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+  padding-top: 0.75rem;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
 /* Sidebar sizing for the file manager (overrides the 18rem default). */
 .sidebar.sidebar-file-manager {
   flex-basis: 21rem;

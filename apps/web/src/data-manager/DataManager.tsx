@@ -304,6 +304,7 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
         <ImportDialog title="Import data" onClose={() => setImportOpen(false)}>
           <ImportWizard
             transport={transport}
+            onClose={() => setImportOpen(false)}
             onImported={async () => {
               await refresh();
               onDataChanged?.();
