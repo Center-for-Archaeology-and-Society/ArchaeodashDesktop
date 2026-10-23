@@ -24,3 +24,6 @@ scripts/e2e/out/
 
 # Local hosted file store (e2e/dev runs of the hosted binary)
 data/
+
+# Personal Claude Code settings (machine-specific permission rules)
+.claude/settings.local.json
