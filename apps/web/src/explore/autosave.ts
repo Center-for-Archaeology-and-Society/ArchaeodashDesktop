@@ -103,6 +103,11 @@ export class CellAutosave {
     this.emit();
   }
 
+  /** Each file's current revision (changes with every save), for cache keys. */
+  get revisionsKey(): string {
+    return [...this.revisions].map(([path, revision]) => `${path}@${revision}`).join('|');
+  }
+
   get saving(): boolean {
     return this.inFlight.size > 0 || [...this.pending.values()].some((ops) => ops.length > 0);
   }

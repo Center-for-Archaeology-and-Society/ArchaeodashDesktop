@@ -11,6 +11,7 @@ import type { AppInfo, Transport } from '@archaeodash/client';
 import { AppShell } from './shell/AppShell.tsx';
 import { AnalysisSetupProvider } from './analysis-setup/AnalysisSetupContext.tsx';
 import { GroupInclusionProvider } from './datasets/GroupInclusion.tsx';
+import { DataCacheProvider } from './datasets/DataCache.tsx';
 import {
   HelpPage,
   HomePage,
@@ -87,6 +88,7 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
   return (
     <AnalysisSetupProvider service={transport.transformations} generation={projectGeneration}>
     <GroupInclusionProvider key={projectPath} projectKey={projectPath || 'default'}>
+    <DataCacheProvider key={`${projectPath}:${projectGeneration}`}>
     <AppShell
       theme={theme}
       onThemeChange={(next) => {
@@ -112,6 +114,7 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
         setProjectGeneration(project.generation);
       }}
     />
+    </DataCacheProvider>
     </GroupInclusionProvider>
     </AnalysisSetupProvider>
   );

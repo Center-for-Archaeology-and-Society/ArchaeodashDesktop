@@ -7,6 +7,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -39,6 +40,7 @@ import { useGroupFiles } from '../datasets/useGroupFiles.ts';
 import { HiddenIdNote } from './HiddenIdNote.tsx';
 import { CellAutosave, cellKey } from './autosave.ts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
+import { useCachedResult, useDataCache } from '../datasets/DataCache.tsx';
 import { analysisInput } from '../analysis-setup/setup.ts';
 export interface ExploreDeps {
   readonly groups: GroupsService;
@@ -69,6 +71,11 @@ const VIEWS: readonly [ExploreView, string][] = [
  * provides undo/redo. The synthetic group column, and columns a row's file
  * does not have, are read-only.
  */
+/** Tables longer than this render only the rows in view. */
+export const VIRTUALIZE_FROM = 200;
+const DEFAULT_ROW_HEIGHT = 34;
+const OVERSCAN_ROWS = 15;
+
 export function DataTable({
   files,
   deps,
@@ -82,6 +89,31 @@ export function DataTable({
   onReload: () => void;
 }): ReactElement {
   const combined = useMemo(() => combineGroupFiles(files), [files]);
+  // Large tables render only the rows in view (plus a margin), so scrolling
+  // and typing stay fast however many rows are loaded.
+  const total = combined.rows.length;
+  const virtual = total > VIRTUALIZE_FROM;
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [rowHeight, setRowHeight] = useState(DEFAULT_ROW_HEIGHT);
+  const [windowStart, setWindowStart] = useState(0);
+  const [windowSize, setWindowSize] = useState(60);
+  const updateWindow = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setWindowStart(Math.max(0, Math.floor(el.scrollTop / rowHeight) - OVERSCAN_ROWS));
+    setWindowSize(Math.ceil(el.clientHeight / rowHeight) + 2 * OVERSCAN_ROWS);
+  }, [rowHeight]);
+  useLayoutEffect(() => {
+    if (!virtual) return;
+    // Measure the real row height once rows are on screen.
+    const row = scrollRef.current?.querySelector<HTMLTableRowElement>('tbody tr[data-row]');
+    if (row && row.offsetHeight > 0 && Math.abs(row.offsetHeight - rowHeight) > 0.5) setRowHeight(row.offsetHeight);
+    updateWindow();
+  }, [virtual, rowHeight, updateWindow]);
+  const first = virtual ? Math.min(windowStart, Math.max(0, total - windowSize)) : 0;
+  const last = virtual ? Math.min(total, first + windowSize) : total;
+  const visibleRows = virtual ? combined.rows.slice(first, last) : combined.rows;
+  const columnCount = 2 + combined.descriptiveColumns.length + combined.elementalColumns.length;
   // Drafts key on uuid+NUL+column (the UUID itself is never rendered).
   const [drafts, setDrafts] = useState<Map<string, string>>(new Map());
   const [, setTick] = useState(0);
@@ -210,8 +242,17 @@ export function DataTable({
         </p>
       )}
       {exportError && <p role="alert">Export failed: {exportError}</p>}
-      <div className="table-scroll">
-        <table className="data-table">
+      {virtual && (
+        <p className="table-window-note">
+          {`${total.toLocaleString()} rows; scroll the table to see more (rows ${(first + 1).toLocaleString()}–${last.toLocaleString()} are drawn).`}
+        </p>
+      )}
+      <div
+        className={virtual ? 'table-scroll is-virtual' : 'table-scroll'}
+        ref={scrollRef}
+        onScroll={virtual ? updateWindow : undefined}
+      >
+        <table className="data-table" aria-rowcount={total + 1}>
           <thead>
             <tr>
               <th>{combined.visibleIdColumn}</th>
@@ -227,12 +268,18 @@ export function DataTable({
             </tr>
           </thead>
           <tbody>
-            {combined.rows.map((row, rowIndex) => {
+            {virtual && first > 0 && (
+              <tr aria-hidden="true" className="table-spacer" style={{ height: first * rowHeight }}>
+                <td colSpan={columnCount} />
+              </tr>
+            )}
+            {visibleRows.map((row, offset) => {
+              const rowIndex = first + offset;
               const path = combined.pathOf[rowIndex]!;
               const own = fileOf.get(path)?.data.descriptive_columns ?? [];
               const rowLabel = row.visible_id ?? `row ${rowIndex + 1}`;
               return (
-                <tr key={row.analytical_uuid}>
+                <tr key={row.analytical_uuid} data-row aria-rowindex={rowIndex + 2}>
                   <td>{row.visible_id ?? ''}</td>
                   <td>{row.legacy_rowid ?? ''}</td>
                   {row.descriptive.map((value, i) => {
@@ -294,6 +341,11 @@ export function DataTable({
                 </tr>
               );
             })}
+            {virtual && last < total && (
+              <tr aria-hidden="true" className="table-spacer" style={{ height: (total - last) * rowHeight }}>
+                <td colSpan={columnCount} />
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -305,26 +357,28 @@ export function DataTable({
 type InputPaths = { path: string; extra_paths: string[] };
 
 /** Missing-value bands (Good ≤5% / OK ≤40% / Bad ≤80% / Remove). */
+/** Cache key for an Explore result: view, file revisions, and request. */
+export function exploreKey(kind: string, revKey: string, request: unknown): string {
+  return `explore:${kind}:${revKey}:${JSON.stringify(request)}`;
+}
+
 function MissingView({
   deps,
   input,
   columns,
+  revKey,
 }: {
   deps: ExploreDeps;
   input: InputPaths;
   columns: string[];
+  /** Revisions of the loaded files; part of the cache key. */
+  revKey: string;
 }): ReactElement {
-  const [state, setState] = useState<AsyncState<ExploreMissingProfileResponse>>({ kind: 'idle' });
-
-  useEffect(() => {
-    setState({ kind: 'loading' });
-    deps.explore
-      .missingProfile({ ...input, columns, transformation: null })
-      .then((r) => setState({ kind: 'loaded', data: r }))
-      .catch((err: unknown) =>
-        setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) }),
-      );
-  }, [deps, input, columns]);
+  const request = useMemo(() => ({ ...input, columns, transformation: null }), [input, columns]);
+  const state: AsyncState<ExploreMissingProfileResponse> = useCachedResult(
+    exploreKey('missing', revKey, request),
+    () => deps.explore.missingProfile(request),
+  );
 
   if (state.kind === 'loading') return <p role="status">Computing missing profile…</p>;
   if (state.kind === 'error') return <p role="alert">Error: {state.message}</p>;
@@ -358,25 +412,20 @@ function HistogramView({
   deps,
   input,
   columns,
+  revKey,
 }: {
   deps: ExploreDeps;
   input: InputPaths;
   columns: string[];
+  revKey: string;
 }): ReactElement {
   const [column, setColumn] = useState(columns[0] ?? '');
   const [bins, setBins] = useState(30);
-  const [state, setState] = useState<AsyncState<ExploreHistogramResponse>>({ kind: 'idle' });
-
-  useEffect(() => {
-    if (!column) return;
-    setState({ kind: 'loading' });
-    deps.explore
-      .histogram({ ...input, column, bins, transformation: null })
-      .then((r) => setState({ kind: 'loaded', data: r }))
-      .catch((err: unknown) =>
-        setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) }),
-      );
-  }, [deps, input, column, bins]);
+  const request = useMemo(() => ({ ...input, column, bins, transformation: null }), [input, column, bins]);
+  const state: AsyncState<ExploreHistogramResponse> = useCachedResult(
+    column ? exploreKey('histogram', revKey, request) : null,
+    () => deps.explore.histogram(request),
+  );
 
   const maxCount = state.kind === 'loaded' ? Math.max(...state.data.counts, 1) : 1;
   return (
@@ -425,11 +474,13 @@ function CrosstabView({
   input,
   data,
   defaultGroupColumn,
+  revKey,
 }: {
   deps: ExploreDeps;
   input: InputPaths;
   data: GroupRowsResponse;
   defaultGroupColumn: string;
+  revKey: string;
 }): ReactElement {
   const [groupColumn, setGroupColumn] = useState(defaultGroupColumn);
   // Default to the first other descriptive field with two or more distinct
@@ -448,23 +499,14 @@ function CrosstabView({
     return informative ?? data.descriptive_columns[1] ?? data.elemental_columns[0] ?? '';
   });
   const [method, setMethod] = useState<'count' | 'mean' | 'median' | 'sd'>('count');
-  const [state, setState] = useState<AsyncState<ExploreCrosstabResponse>>({ kind: 'idle' });
-
-  useEffect(() => {
-    if (!groupColumn || !valueColumn) return;
-    setState({ kind: 'loading' });
-    deps.explore
-      .crosstab({
-        ...input,
-        group_column: groupColumn,
-        value_column: valueColumn,
-        summary_method: method,
-      })
-      .then((result) => setState({ kind: 'loaded', data: result }))
-      .catch((err: unknown) =>
-        setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) }),
-      );
-  }, [deps, input, groupColumn, valueColumn, method]);
+  const request = useMemo(
+    () => ({ ...input, group_column: groupColumn, value_column: valueColumn, summary_method: method }),
+    [input, groupColumn, valueColumn, method],
+  );
+  const state: AsyncState<ExploreCrosstabResponse> = useCachedResult(
+    groupColumn && valueColumn ? exploreKey('crosstab', revKey, request) : null,
+    () => deps.explore.crosstab(request),
+  );
 
   return (
     <div>
@@ -616,40 +658,25 @@ function ProfileView({
   columns,
   groupColumns,
   defaultGroupColumn,
+  revKey,
 }: {
   deps: ExploreDeps;
   input: InputPaths;
   columns: string[];
   groupColumns: string[];
   defaultGroupColumn: string;
+  revKey: string;
 }): ReactElement {
   const [groupColumn, setGroupColumn] = useState(defaultGroupColumn);
   const [logScale, setLogScale] = useState(true);
-  const [state, setState] = useState<AsyncState<ExploreCompositionalProfileResponse>>({
-    kind: 'idle',
-  });
-
-  useEffect(() => {
-    let cancelled = false;
-    setState({ kind: 'loading' });
-    deps.explore
-      .compositionalProfile({
-        ...input,
-        columns,
-        group_column: groupColumn || null,
-        transformation: null,
-      })
-      .then((r) => {
-        if (!cancelled) setState({ kind: 'loaded', data: r });
-      })
-      .catch((err: unknown) => {
-        if (!cancelled)
-          setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [deps, input, columns, groupColumn]);
+  const request = useMemo(
+    () => ({ ...input, columns, group_column: groupColumn || null, transformation: null }),
+    [input, columns, groupColumn],
+  );
+  const state: AsyncState<ExploreCompositionalProfileResponse> = useCachedResult(
+    exploreKey('profile', revKey, request),
+    () => deps.explore.compositionalProfile(request),
+  );
 
   const traces = useMemo(
     () => (state.kind === 'loaded' ? profileTraces(state.data.rows, groupColumn !== '') : []),
@@ -722,6 +749,17 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
   // Remount views when the selection or a file revision changes.
   const viewKey = files.map((f) => `${f.path}@${f.data.revision_id}`).join('|');
 
+  // Compute the missing-value profile as soon as the data is in, so its tab
+  // opens instantly (the result is cached with the file revisions).
+  const cache = useDataCache();
+  // Saved table edits change revisions, so results recompute after them.
+  const revKey = autosave.revisionsKey;
+  useEffect(() => {
+    if (!cache || load.kind !== 'loaded' || files.length === 0 || !savesSettled) return;
+    const request = { ...input, columns: plotColumns, transformation: null };
+    void cache.result(exploreKey('missing', revKey, request), () => deps.explore.missingProfile(request)).catch(() => undefined);
+  }, [cache, load.kind, files.length, savesSettled, input, plotColumns, revKey, deps]);
+
   return (
     <section aria-labelledby="explore-heading">
       <h1 id="explore-heading">Explore</h1>
@@ -763,18 +801,19 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
             <DataTable files={files} deps={deps} autosave={autosave} onReload={dataset.reload} />
           )}
           {view !== 'table' && !savesSettled && <p role="status">Saving table edits…</p>}
-          {savesSettled && view === 'missing' && <MissingView deps={deps} input={input} columns={plotColumns} />}
+          {savesSettled && view === 'missing' && <MissingView deps={deps} input={input} columns={plotColumns} revKey={revKey} />}
           {savesSettled && view === 'histogram' && (
-            <HistogramView deps={deps} input={input} columns={plotColumns} />
+            <HistogramView deps={deps} input={input} columns={plotColumns} revKey={revKey} />
           )}
           {savesSettled && view === 'crosstab' && (
-            <CrosstabView deps={deps} input={input} data={data} defaultGroupColumn={defaultGroupColumn(combined)} />
+            <CrosstabView deps={deps} input={input} data={data} defaultGroupColumn={defaultGroupColumn(combined)} revKey={revKey} />
           )}
           {savesSettled && view === 'profile' && (
             <ProfileView
               deps={deps}
               input={input}
               columns={plotColumns}
+              revKey={revKey}
               groupColumns={combined.descriptiveColumns}
               defaultGroupColumn={files.length > 1 ? combined.groupColumn : ''}
             />

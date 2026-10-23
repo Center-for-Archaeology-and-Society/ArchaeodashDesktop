@@ -1320,10 +1320,31 @@ mod tests {
         assert_eq!(after.profile.revision_id, "rev-2");
         assert_eq!(after.rows[0].uuid, before.rows[0].uuid);
 
+        // Back-to-back saves of same-length values (same file size, possibly
+        // the same coarse timestamp) are still seen: the read cache keys on
+        // the Parquet footer, which carries the new revision.
+        service
+            .patch_descriptive_values(&PatchDescriptiveValuesRequest {
+                path: paths[0].clone(),
+                expected_revision: "rev-2".into(),
+                edits: vec![DescriptiveEdit {
+                    analytical_uuid: uuid.clone(),
+                    column: "Site".into(),
+                    value: Some("Zee".into()),
+                }],
+            })
+            .expect("second patch");
+        let again = read_group_file(&dir.path().join(&paths[0])).expect("read again");
+        assert_eq!(again.rows[0].descriptive[0].as_deref(), Some("Zee"));
+        assert_eq!(again.profile.revision_id, "rev-3");
+        let rows = service.rows(&paths[0]).expect("rows");
+        assert_eq!(rows.revision_id, "rev-3");
+        assert_eq!(rows.rows[0].descriptive[0].as_deref(), Some("Zee"));
+
         // Elemental columns are locked.
         let elemental_edit = PatchDescriptiveValuesRequest {
             path: paths[0].clone(),
-            expected_revision: "rev-2".into(),
+            expected_revision: "rev-3".into(),
             edits: vec![DescriptiveEdit {
                 analytical_uuid: uuid.clone(),
                 column: "as".into(),
@@ -1338,7 +1359,7 @@ mod tests {
         // Unknown analytical uuid aborts.
         let unknown = PatchDescriptiveValuesRequest {
             path: paths[0].clone(),
-            expected_revision: "rev-2".into(),
+            expected_revision: "rev-3".into(),
             edits: vec![DescriptiveEdit {
                 analytical_uuid: "01900000-0000-7000-8000-00000000000f".into(),
                 column: "Site".into(),

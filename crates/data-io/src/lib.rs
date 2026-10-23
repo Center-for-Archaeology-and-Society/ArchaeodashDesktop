@@ -4,6 +4,7 @@
 pub mod clean_names;
 pub mod excel;
 pub mod export;
+pub mod group_cache;
 pub mod group_profile;
 pub mod loader;
 pub mod rnum;

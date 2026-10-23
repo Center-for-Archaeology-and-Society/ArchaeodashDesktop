@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type
 import type { GroupSummary } from '@archaeodash/contracts';
 import { unionElements } from '../analysis-setup/setup.ts';
 import { exclusionFor, includedAmong, useGroupInclusion } from '../datasets/GroupInclusion.tsx';
+import { useDataCache } from '../datasets/DataCache.tsx';
 import { AnalysisSetupPanel } from './AnalysisSetupPanel.tsx';
 import { ImportDialog } from './ImportDialog.tsx';
 import { ImportWizard } from './ImportWizard.tsx';
@@ -121,6 +122,20 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
   };
   const includeOnly = (path: string) => { if (readyPaths.includes(path)) setIncluded([path]); };
   const selectedReady = selectedEntries.map((entry) => entry.path).filter((path) => readyPaths.includes(path));
+
+  // Preload every ready group's rows in the background (included groups
+  // first) so analysis pages open without waiting for the data.
+  const cache = useDataCache();
+  const preloadKey = entries.map((entry) => `${entry.path}@${entry.revision ?? ''}`).join('|');
+  useEffect(() => {
+    if (!cache) return;
+    const ready = entries.filter((entry) => entry.summary && !entry.error && entry.revision);
+    const excluded = inclusion?.excluded;
+    const ordered = [...ready.filter((e) => !excluded?.has(e.path)), ...ready.filter((e) => excluded?.has(e.path))];
+    void cache.preload(transport.groups, ordered.map((e) => ({ path: e.path, revision: e.revision, rowCount: e.summary?.row_count })));
+    // `preloadKey` captures the file list and revisions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cache, preloadKey, transport.groups]);
   const single = selectedEntries.length === 1 ? selectedEntries[0]! : null;
   const visibleIds = folderOpen ? [FOLDER_ID, ...order] : [FOLDER_ID];
 

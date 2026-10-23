@@ -441,6 +441,20 @@ pub fn write_group_rows(
 /// Reads and fully validates a group file, returning its profile and all row
 /// data (Section 6.6 validation-on-add, reused for move/copy/merge reads).
 pub fn read_group_file(path: &Path) -> Result<GroupFileData, ImportError> {
+    // Served from the in-process cache until the file changes (see
+    // `group_cache` for the freshness key).
+    let key = crate::group_cache::key_for(path);
+    if let Some(hit) = key.as_ref().and_then(crate::group_cache::data) {
+        return Ok(hit);
+    }
+    let data = read_group_file_uncached(path)?;
+    if let Some(key) = key {
+        crate::group_cache::put_data(key, &data);
+    }
+    Ok(data)
+}
+
+fn read_group_file_uncached(path: &Path) -> Result<GroupFileData, ImportError> {
     let profile = validate_group_file(path)?;
     let file = File::open(path).map_err(|e| ImportError::Io(e.to_string()))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
@@ -652,6 +666,18 @@ pub fn scan_project(root: &Path) -> Result<Vec<ScanCandidate>, ImportError> {
 /// with unique UUIDs, elemental columns are Float64, and the measured-element
 /// checksum matches the stored profile.
 pub fn validate_group_file(path: &Path) -> Result<GroupProfile, ImportError> {
+    let key = crate::group_cache::key_for(path);
+    if let Some(hit) = key.as_ref().and_then(crate::group_cache::profile) {
+        return Ok(hit);
+    }
+    let profile = validate_group_file_uncached(path)?;
+    if let Some(key) = key {
+        crate::group_cache::put_profile(key, &profile);
+    }
+    Ok(profile)
+}
+
+fn validate_group_file_uncached(path: &Path) -> Result<GroupProfile, ImportError> {
     let json = read_profile_metadata(path)?
         .ok_or_else(|| ImportError::Parse("missing archaeodash.profile.v1 metadata".into()))?;
     let profile: GroupProfile = serde_json::from_str(&json)

@@ -402,6 +402,34 @@ body {
   overflow-x: auto;
 }
 
+/* Large dataset tables: a scrolling panel that draws only the rows in view. */
+.table-scroll.is-virtual {
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.table-scroll.is-virtual thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg);
+}
+
+.table-scroll.is-virtual tbody td {
+  white-space: nowrap;
+}
+
+.table-spacer td {
+  padding: 0;
+  border: 0;
+}
+
+.table-window-note {
+  margin: 0.25rem 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
 .crosstab-table {
   width: auto;
   min-width: 24rem;

@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { GroupCandidate, GroupsService } from '@archaeodash/client';
 import { combineGroupFiles, type CombinedRows, type LoadedGroupFile } from '../visualize/combine.ts';
 import { exclusionFor, includedAmong, useGroupInclusion } from './GroupInclusion.tsx';
+import { useDataCache } from './DataCache.tsx';
 
 export type GroupFilesLoad =
   | { kind: 'idle' }
@@ -51,6 +52,9 @@ export function useGroupFiles(groups: GroupsService): GroupFiles {
   const [files, setFiles] = useState<LoadedGroupFile[]>([]);
   const [load, setLoad] = useState<GroupFilesLoad>({ kind: 'idle' });
   const [token, setToken] = useState(0);
+  const cache = useDataCache();
+  // Set by `reload()` so the next load skips cached rows.
+  const forceReload = useRef(false);
 
   const ready = useMemo(
     () => candidates.filter((c) => c.ready && c.group !== null && c.group !== undefined),
@@ -104,11 +108,20 @@ export function useGroupFiles(groups: GroupsService): GroupFiles {
     () => ready.map((c) => c.path).filter((p) => selectedPaths.includes(p)),
     [ready, selectedPaths],
   );
-  // Stable key so a rescan that changes nothing does not refetch rows.
-  const selectionKey = orderedPaths.join('\u0000');
+  // Stable key so a rescan that changes nothing does not refetch rows; it
+  // includes each file's revision, so a saved change reloads that file.
+  const selectionKey = orderedPaths
+    .map((p) => `${p}\u0001${ready.find((c) => c.path === p)?.group?.revision_id ?? ''}`)
+    .join('\u0000');
 
   useEffect(() => {
-    const paths = selectionKey === '' ? [] : selectionKey.split('\u0000');
+    const entries = selectionKey === '' ? [] : selectionKey.split('\u0000').map((e) => e.split('\u0001') as [string, string]);
+    const paths = entries.map(([path]) => path);
+    const revisionOf = new Map(entries);
+    if (forceReload.current) {
+      cache?.dropRows(paths);
+      forceReload.current = false;
+    }
     if (paths.length === 0) {
       setFiles([]);
       setLoad({ kind: 'idle' });
@@ -118,7 +131,8 @@ export function useGroupFiles(groups: GroupsService): GroupFiles {
     setLoad({ kind: 'loading' });
     Promise.all(
       paths.map(async (path) => {
-        const data = await groups.rows(path);
+        const revision = revisionOf.get(path) || undefined;
+        const data = cache ? await cache.rowsFor(path, revision, () => groups.rows(path)) : await groups.rows(path);
         return {
           path,
           groupName: ready.find((c) => c.path === path)?.group?.group_name ?? path,
@@ -139,10 +153,13 @@ export function useGroupFiles(groups: GroupsService): GroupFiles {
     };
     // `ready` only supplies group names; the selection key drives reloads.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groups, selectionKey, token]);
+  }, [groups, selectionKey, token, cache]);
 
   const combined = useMemo(() => combineGroupFiles(files), [files]);
-  const reload = useCallback(() => setToken((t) => t + 1), []);
+  const reload = useCallback(() => {
+    forceReload.current = true;
+    setToken((t) => t + 1);
+  }, []);
 
   return {
     candidates,

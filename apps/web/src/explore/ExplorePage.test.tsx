@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToString } from 'react-dom/server';
 import type { ExploreService, ExportsService, GroupsService } from '@archaeodash/client';
-import { CrosstabCountTable, ExplorePage, DataTable, profileTraces, type ExploreDeps } from './ExplorePage.tsx';
+import { CrosstabCountTable, ExplorePage, DataTable, VIRTUALIZE_FROM, profileTraces, type ExploreDeps } from './ExplorePage.tsx';
 import { CellAutosave } from './autosave.ts';
 function makeDeps(): ExploreDeps {
   const groups = {
@@ -184,4 +184,29 @@ test('profile traces draw one gapped line per sample, grouped, log-safe', () => 
   // Non-positive values gap on the log axis.
   assert.deepEqual(traces[0]!.y, [3, 15000, null, null, 12000]);
   assert.deepEqual(traces[1]!.y, [5, null]);
+});
+
+test('large dataset tables draw only the rows in view', async () => {
+  const deps = makeDeps();
+  const base = await deps.groups.rows('groups/Baca.parquet');
+  const template = base.rows[0]!;
+  const many = {
+    ...base,
+    rows: Array.from({ length: 5000 }, (_, i) => ({ ...template, analytical_uuid: `uuid-${i}`, visible_id: `S${i}` })),
+  };
+  const html = renderToString(
+    <DataTable files={[{ path: many.path, groupName: 'Baca', data: many }]} deps={deps} autosave={new CellAutosave(async () => { throw new Error('unused'); }, new Map())} onReload={() => {}} />,
+  );
+  const drawn = html.match(/data-row="true"/g)?.length ?? 0;
+  assert.ok(drawn > 0 && drawn < 200, `only a window of rows is drawn (${drawn})`);
+  assert.match(html, /aria-rowcount="5001"/, 'screen readers still get the full row count');
+  assert.match(html, /class="table-spacer"/, 'a spacer stands in for the rows below');
+  assert.match(html, /5,000 rows; scroll the table to see more/);
+  assert.ok(5000 > VIRTUALIZE_FROM);
+  // Small tables render every row, as before.
+  const small = renderToString(
+    <DataTable files={[{ path: base.path, groupName: 'Baca', data: base }]} deps={deps} autosave={new CellAutosave(async () => { throw new Error('unused'); }, new Map())} onReload={() => {}} />,
+  );
+  assert.equal(small.match(/data-row="true"/g)?.length, base.rows.length);
+  assert.doesNotMatch(small, /table-spacer/);
 });
