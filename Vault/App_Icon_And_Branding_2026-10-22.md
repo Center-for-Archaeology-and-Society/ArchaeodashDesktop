@@ -23,4 +23,10 @@ Up: [[Index]]
 - Vite production build copies all public assets into `dist`; previewed the build in a browser in the Simple and Dark themes; favicon served.
 - Not checked: the Tauri window/taskbar icon in a rebuilt desktop app (needs a full desktop build).
 
-Related: [[Interaction_Log_2026-10-22]]
+## Windows taskbar icon fix (2026-10-23)
+- The taskbar button looked pixelated: Tauri sets the window icon from one image of `icon.ico`, and Windows stretched that single bitmap to the taskbar size.
+- `apps/desktop/src-tauri/src/windows_icon.rs` loads the exe's embedded multi-size icon (tauri-build's resource id 32512, else the first icon group) with `LoadImageW` at the window DPI's `SM_CXICON`/`SM_CXSMICON` and sets it with `WM_SETICON` (big and small); re-applied on scale-factor changes. Windows then uses the hand-made 16/24/32/48 px mark entries.
+- The shell crate's lints copy the workspace lints but deny (not forbid) unsafe code, so this one module can opt in. `windows-sys` 0.59 (already in the lockfile) is a Windows-only dependency.
+- Possible follow-up: add 20 and 40 px entries to the `.ico` (125% scaling) with `scripts/generate-icons.sh`.
+
+Related: [[Interaction_Log_2026-10-22]], [[Interaction_Log_2026-10-23]]

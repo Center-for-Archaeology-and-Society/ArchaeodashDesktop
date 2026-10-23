@@ -24,6 +24,8 @@ mod job_events;
 mod logging;
 mod projects;
 mod source_files;
+#[cfg(windows)]
+mod windows_icon;
 
 /// Project-scoped state shared by the import, group, file, transformation,
 /// explore, ordination, export, and preference commands.
@@ -523,7 +525,23 @@ pub fn run() {
                 std::mem::forget(guard);
             }
             tracing::info!(version = env!("CARGO_PKG_VERSION"), "desktop app starting");
+            // Sharp taskbar/title-bar icons from the exe's multi-size icon.
+            #[cfg(windows)]
+            for window in app.webview_windows().values() {
+                if let Ok(hwnd) = window.hwnd() {
+                    windows_icon::apply(hwnd.0);
+                }
+            }
             Ok(())
+        })
+        .on_window_event(|_window, _event| {
+            // Icon sizes depend on the monitor's scale.
+            #[cfg(windows)]
+            if let tauri::WindowEvent::ScaleFactorChanged { .. } = _event {
+                if let Ok(hwnd) = _window.hwnd() {
+                    windows_icon::apply(hwnd.0);
+                }
+            }
         })
         .manage::<SharedState>(Mutex::new(Arc::new(DesktopState::empty())))
         .invoke_handler(tauri::generate_handler![

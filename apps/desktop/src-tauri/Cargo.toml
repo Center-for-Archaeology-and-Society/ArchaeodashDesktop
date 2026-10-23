@@ -30,5 +30,22 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 base64 = { workspace = true }
 
-[lints]
-workspace = true
+# Win32 calls that give the window its icon at the right sizes
+# (src/windows_icon.rs).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_System_LibraryLoader",
+  "Win32_UI_HiDpi",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+# The workspace lints, except unsafe code is denied rather than forbidden so
+# that src/windows_icon.rs (Win32 FFI) can opt in with #[allow(unsafe_code)].
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
