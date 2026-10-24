@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { GroupCandidate, GroupSummary } from '@archaeodash/contracts';
-import { AddColumnForm, DataManager, GroupDetails, GroupFileTree, columnNameProblem, folderNodes, groupsWithColumn, loadGroupFiles, renamedExclusions, type DataManagerTransport, type GroupFileEntry } from './DataManager.tsx';
+import { AddColumnForm, DataManager, GroupDetails, GroupFileTree, columnNameProblem, folderNodes, groupsWithColumn, loadGroupFiles, pathLike, renamedExclusions, type DataManagerTransport, type GroupFileEntry } from './DataManager.tsx';
 import { ImportWizard } from './ImportWizard.tsx';
 import { DEFAULT_VALUE_OPTIONS, ImportValueOptions, recipeFromOptions } from './ImportValueOptions.tsx';
 import { ImportProgress, elapsedLabel, importStepLabel } from './ImportProgress.tsx';
@@ -334,4 +334,11 @@ test('toolbar offers Add column… and Rename… when the transport supports the
   const html = renderToStaticMarkup(<DataManager transport={transport} projectName="Sample" />);
   assert.match(html, /disabled="" aria-pressed="false" title="Add a descriptive column[^"]*">Add column…<\/button>/);
   assert.match(html, /title="Rename the selected folder or the one highlighted group \(F2\)">Rename…<\/button>/);
+});
+
+test('a renamed group keeps the separators of the scanned path (Windows)', () => {
+  // The backend returns the renamed path with '/', but Windows scans list '\\'.
+  assert.equal(pathLike('Site\\A.parquet', 'Site/A2.parquet'), 'Site\\A2.parquet');
+  assert.equal(pathLike('Site/A.parquet', 'Site/A2.parquet'), 'Site/A2.parquet');
+  assert.deepEqual(renamedExclusions(['Site\\A.parquet', 'Site\\B.parquet'], 'Site\\A.parquet', 'Site/A2.parquet'), ['Site\\A2.parquet', 'Site\\B.parquet']);
 });

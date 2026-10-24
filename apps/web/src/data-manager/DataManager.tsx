@@ -95,9 +95,18 @@ export function columnNameProblem(entries: readonly GroupFileEntry[], folder: st
   return measured ? `“${name}” is a measured column in ${measured.name}; measured values cannot be replaced.` : '';
 }
 
+/**
+ * `path` written with the separators of `like`: the backend returns '/'
+ * paths from transactions while Windows scans list '\\' paths.
+ */
+export function pathLike(like: string, path: string): string {
+  return like.includes('\\') ? path.replace(/\//g, '\\') : path;
+}
+
 /** Keeps exclusions with a renamed group file. */
 export function renamedExclusions(excluded: Iterable<string>, from: string, to: string): string[] {
-  return [...excluded].map((path) => (path === from ? to : path));
+  const renamed = pathLike(from, to);
+  return [...excluded].map((path) => (path === from ? renamed : path));
 }
 
 export async function loadGroupFiles(groups: DataManagerTransport['groups']): Promise<GroupFileEntry[]> {
@@ -352,7 +361,8 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     if (!name || name === entry.name) return;
     void runChange(async () => {
       const result = await rename({ path: entry.path, expected_revision: entry.revision!, new_name: name });
-      const renamed = result.outputs[0]?.path ?? entry.path;
+      // Same separators as the scanned paths, so selection and inclusion match.
+      const renamed = pathLike(entry.path, result.outputs[0]?.path ?? entry.path);
       // Keep the group's inclusion in analyses with its new file name.
       if (inclusion && renamed !== entry.path) inclusion.setExcluded(renamedExclusions(inclusion.excluded, entry.path, renamed));
       return [renamed];
