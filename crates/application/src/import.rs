@@ -162,6 +162,42 @@ fn align_rows(rows: Vec<GroupRow>, from: &[String], to: &[String]) -> Vec<GroupR
         .collect()
 }
 
+/// Lineage label of an imported source: the project-relative path, plus
+/// `#sheet` for a workbook so imports of different worksheets of one file
+/// are told apart.
+fn source_label(source: &str, sheet: Option<&str>) -> String {
+    match sheet {
+        Some(sheet) if is_workbook(source) => format!("{source}#{sheet}"),
+        _ => source.to_string(),
+    }
+}
+
+fn is_workbook(path: &str) -> bool {
+    path.to_ascii_lowercase().ends_with(".xlsx")
+}
+
+/// The worksheet recorded in a lineage label (`None` for text sources and
+/// for labels written before worksheets were recorded).
+fn sheet_of_label(label: &str) -> Option<&str> {
+    label
+        .rsplit_once('#')
+        .filter(|(path, _)| is_workbook(path))
+        .map(|(_, sheet)| sheet)
+}
+
+/// Whether a group was imported from the same source as `sha256`/`sheet`:
+/// same bytes and, when both record one, the same worksheet.
+fn same_source(profile: &GroupProfile, sha256: &str, sheet: Option<&str>) -> bool {
+    if profile.source_sha256.as_deref() != Some(sha256) {
+        return false;
+    }
+    let recorded = profile.source_path.as_deref().and_then(sheet_of_label);
+    match (recorded, sheet) {
+        (Some(recorded), Some(sheet)) => recorded == sheet,
+        _ => true,
+    }
+}
+
 /// Everything one commit decided about the source, shared by the modes.
 struct ImportPlan<'a> {
     frame: &'a TextFrame,
@@ -171,13 +207,15 @@ struct ImportPlan<'a> {
     descriptive_columns: Option<Vec<String>>,
     recipe: ImportRecipe,
     destination_dir: String,
+    /// Lineage label (`source_label`).
     source: String,
     source_sha256: String,
+    sheet: Option<String>,
 }
 
 impl ImportPlan<'_> {
     fn is_same_source(&self, profile: &GroupProfile) -> bool {
-        profile.source_sha256.as_deref() == Some(self.source_sha256.as_str())
+        same_source(profile, &self.source_sha256, self.sheet.as_deref())
     }
 
     /// `folder/id.parquet`, or `folder/id_N.parquet` for `n > 1`.
@@ -363,12 +401,13 @@ impl ImportService {
         })
         .collect();
         let source_sha256 = sha256_file(&self.resolve(&req.source)?)?;
+        let sheet = loaded.sheet.as_deref();
         let existing_groups = self
             .ready_groups()?
             .into_iter()
             .map(|(path, profile)| ExistingImportGroup {
                 folder: folder_of(&path),
-                same_source: profile.source_sha256.as_deref() == Some(source_sha256.as_str()),
+                same_source: same_source(&profile, &source_sha256, sheet),
                 path,
                 group_name: profile.group_name,
                 revision_id: profile.revision_id,
@@ -416,7 +455,8 @@ impl ImportService {
         options: &ImportCommitOptions,
     ) -> Result<ImportCommitResponse, ImportError> {
         let source_path = self.resolve(&req.source)?;
-        let frame = self.load(&req.source, req.sheet.as_deref())?.frame;
+        let loaded = self.load(&req.source, req.sheet.as_deref())?;
+        let frame = loaded.frame;
 
         let visible_id_column = resolve_visible_id(req.visible_id_column.as_deref(), &frame);
         let elemental_columns = req
@@ -461,8 +501,9 @@ impl ImportService {
             descriptive_columns: options.descriptive_columns.clone(),
             recipe,
             destination_dir,
-            source: req.source.clone(),
+            source: source_label(&req.source, loaded.sheet.as_deref()),
             source_sha256,
+            sheet: loaded.sheet,
         };
         let groups = match options.mode {
             None => self.publish_new(&plan, true)?,
@@ -627,20 +668,20 @@ impl ImportService {
         let old = self.read_snapshot(&replaced_paths)?;
         let other_data = self.read_snapshot(&other_paths)?;
 
-        // Same source bytes, so the same row numbers are the same samples.
-        let mut identity: HashMap<String, Uuid> = HashMap::new();
-        let mut repeated: HashSet<String> = HashSet::new();
+        // Same source bytes, so the same row number with the same visible ID
+        // is the same sample.
+        let key = |row: &GroupRow| (row.legacy_rowid.clone(), row.visible.clone());
+        let mut identity: HashMap<(Option<String>, Option<String>), Uuid> = HashMap::new();
+        let mut repeated = HashSet::new();
         for (_, data) in &old {
-            for row in &data.rows {
-                if let Some(rowid) = &row.legacy_rowid {
-                    if identity.insert(rowid.clone(), row.uuid).is_some() {
-                        repeated.insert(rowid.clone());
-                    }
+            for row in data.rows.iter().filter(|row| row.legacy_rowid.is_some()) {
+                if identity.insert(key(row), row.uuid).is_some() {
+                    repeated.insert(key(row));
                 }
             }
         }
-        for rowid in &repeated {
-            identity.remove(rowid);
+        for row_key in &repeated {
+            identity.remove(row_key);
         }
         let elsewhere: HashMap<Uuid, &str> = other_data
             .iter()
@@ -659,7 +700,7 @@ impl ImportService {
         for partition in &plan.partitions {
             let (roles, mut rows) = plan.build(partition, &plan.elemental_columns)?;
             for row in &mut rows {
-                let kept = row.legacy_rowid.as_ref().and_then(|r| identity.remove(r));
+                let kept = identity.remove(&key(row));
                 if let Some(uuid) = kept {
                     if let Some(group) = elsewhere.get(&uuid) {
                         return Err(ImportError::Parse(format!(
@@ -1627,5 +1668,49 @@ A2,Zuni,2,11
         let baca = read_group_file(&dir.path().join("Site/Baca.parquet")).expect("read");
         assert_eq!(baca.profile.revision_id, "rev-1");
         assert_eq!(baca.rows.len(), 2);
+    }
+
+    #[test]
+    fn worksheets_of_one_workbook_are_different_sources() {
+        let dir = tempdir::tempdir().expect("tempdir");
+        let mut book = rust_xlsxwriter::Workbook::new();
+        for (sheet, site) in [("A", "Baca"), ("B", "Zuni")] {
+            let data = book.add_worksheet();
+            data.set_name(sheet).expect("name");
+            for (col, name) in ["anid", "Site", "as", "fe"].iter().enumerate() {
+                data.write_string(0, col as u16, *name).expect("w");
+            }
+            data.write_string(1, 0, format!("{sheet}1")).expect("w");
+            data.write_string(1, 1, site).expect("w");
+            data.write_number(1, 2, 1.0).expect("w");
+            data.write_number(1, 3, 2.0).expect("w");
+        }
+        book.save(dir.path().join("book.xlsx")).expect("save");
+        let service = ImportService::new(dir.path()).expect("service");
+        let request = |sheet: &str| ImportCommitRequest {
+            sheet: Some(sheet.into()),
+            ..site_request("book.xlsx", "Site")
+        };
+        let first = service
+            .commit_with(&request("A"), &with_mode(ImportMode::NewGroups))
+            .expect("sheet A");
+        let data = read_group_file(&dir.path().join(&first.groups[0].path)).expect("read");
+        assert_eq!(data.profile.source_path.as_deref(), Some("book.xlsx#A"));
+        let preview = service
+            .preview(&ImportPreviewRequest {
+                sheet: Some("B".into()),
+                source: "book.xlsx".into(),
+                group_column: Some("Site".into()),
+                group_name: None,
+            })
+            .expect("preview B");
+        assert!(preview.existing_groups.iter().all(|g| !g.same_source));
+        service
+            .commit_with(&request("B"), &with_mode(ImportMode::NewGroups))
+            .expect("sheet B is another source");
+        let again = service
+            .commit_with(&request("A"), &with_mode(ImportMode::NewGroups))
+            .expect_err("sheet A again");
+        assert!(again.to_string().contains("imported from this file"));
     }
 }

@@ -4,7 +4,7 @@
  * replacing the groups imported from this same file, or adding the rows to
  * the groups of the same names (the legacy "Add rows" load mode).
  */
-import type { ReactElement } from 'react';
+import { useId, type ReactElement } from 'react';
 import { newGroupsBlocked, type DestinationChoice, type ImportConflicts } from './import-request.ts';
 
 export interface ImportDestinationProps {
@@ -13,6 +13,8 @@ export interface ImportDestinationProps {
   readonly choice: DestinationChoice;
   /** Free folder name offered by "Use a new folder". */
   readonly freeFolder: string;
+  /** Existing group folders, suggested while typing. */
+  readonly folders?: readonly string[];
   readonly disabled?: boolean;
   readonly onFolderChange: (folder: string) => void;
   readonly onChoice: (choice: DestinationChoice) => void;
@@ -22,7 +24,8 @@ export interface ImportDestinationProps {
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
 const quoted = (text: string) => `“${text}”`;
 
-export function ImportDestination({ folder, conflicts, choice, freeFolder, disabled = false, onFolderChange, onChoice, onCancel }: ImportDestinationProps): ReactElement {
+export function ImportDestination({ folder, conflicts, choice, freeFolder, folders = [], disabled = false, onFolderChange, onChoice, onCancel }: ImportDestinationProps): ReactElement {
+  const listId = useId();
   const existing = conflicts.inFolder.length;
   const blocked = newGroupsBlocked(conflicts);
   const radio = (value: DestinationChoice, label: string, enabled = true) => (
@@ -32,7 +35,8 @@ export function ImportDestination({ folder, conflicts, choice, freeFolder, disab
   );
   return (
     <div className="import-destination">
-      <label>Destination folder <input value={folder} disabled={disabled} onChange={(event) => onFolderChange(event.target.value)} /></label>
+      <label>Destination folder <input value={folder} list={listId} disabled={disabled} onChange={(event) => onFolderChange(event.target.value)} /></label>
+      <datalist id={listId}>{[...new Set(folders)].filter(Boolean).sort().map((name) => <option key={name} value={name} />)}</datalist>
       {conflicts.sameSourceElsewhere.length > 0 && (
         <p className="import-destination-note">This file was already imported into {conflicts.sameSourceElsewhere.map((f) => quoted(f || 'Project root')).join(', ')}. Importing it again elsewhere makes separate copies of its samples.</p>
       )}

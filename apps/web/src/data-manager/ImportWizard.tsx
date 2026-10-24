@@ -194,6 +194,7 @@ export function ImportWizard({ transport, onImported, onClose }: ImportWizardPro
           conflicts={conflicts}
           choice={choice}
           freeFolder={freeFolderName(destinationFolder || defaultFolder, takenFolders)}
+          folders={takenFolders}
           disabled={locked}
           onFolderChange={changeFolder}
           onChoice={setChoice}
