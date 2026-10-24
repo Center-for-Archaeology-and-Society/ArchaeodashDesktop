@@ -21,6 +21,7 @@ import {
 } from './multiplot-model.ts';
 import { colorFor, groupColors } from './visualize-model.ts';
 import { plotTheme } from '../charts/PlotlyChart.tsx';
+import { plotlyText } from '../charts/plotly-text.ts';
 import { PlotSaveButtons, combineSvgParts, saveSvgPart, serializeSvg, svgFromDataUrl, type ImageFormat, type SvgPart } from '../ui/PlotSave.tsx';
 
 export const MIN_HEIGHT = 500;
@@ -227,7 +228,7 @@ export function InteractivePanel({
         // customdata[0] is the analytical_uuid for selection; never rendered.
         customdata: t.points.map((p) => [rowUuids[p.row] ?? '', t.name]),
         // Hover shows the group only, never the uuid.
-        hovertemplate: `${t.name}<extra></extra>`,
+        hovertemplate: `${plotlyText(t.name)}<extra></extra>`,
         marker: { color: t.color, size: pointSize * 2, opacity: 0.66 },
       } as Data));
       const theme = plotTheme();
@@ -358,23 +359,37 @@ export function Multiplot(props: MultiplotProps): ReactElement {
   const savePlots = async (format: ImageFormat): Promise<unknown> => {
     const holder = gridRef.current;
     if (!holder) throw new Error('There is no plot to save.');
+    // One part per grid cell, blanks included (the X = Y diagonal and
+    // undrawn panels), so the saved image keeps the on-screen rows: rows
+    // can hold different panel counts when only some Y columns are also X.
     const parts: SvgPart[] = [];
-    if (mode === 'static') {
-      holder.querySelectorAll<SVGSVGElement>('svg.multiplot-panel').forEach((svg) => parts.push(serializeSvg(svg)));
-    } else {
-      const Plotly = (await import('plotly.js-dist-min')) as PlotlyModule;
-      for (const fig of holder.querySelectorAll('div.multiplot-panel-plotly')) {
+    let drawn = 0;
+    const blank: SvgPart = {
+      text: `<svg xmlns="http://www.w3.org/2000/svg" width="${PANEL_WIDTH}" height="${panelHeight}"></svg>`,
+      width: PANEL_WIDTH,
+      height: panelHeight,
+    };
+    const Plotly = mode === 'interactive' ? ((await import('plotly.js-dist-min')) as PlotlyModule) : null;
+    for (const cell of holder.querySelectorAll(':scope > .multiplot-cell')) {
+      const svg = mode === 'static' ? cell.querySelector<SVGSVGElement>('svg.multiplot-panel') : null;
+      const fig = Plotly ? cell.querySelector('div.multiplot-panel-plotly') : null;
+      if (svg) {
+        parts.push(serializeSvg(svg));
+        drawn++;
+      } else if (Plotly && fig) {
         const url = await Plotly.toImage(fig as unknown as Parameters<typeof Plotly.toImage>[0], {
           format: 'svg',
           width: PANEL_WIDTH,
           height: panelHeight,
         });
         parts.push({ text: svgFromDataUrl(url), width: PANEL_WIDTH, height: panelHeight });
+        drawn++;
+      } else {
+        parts.push(blank);
       }
     }
-    if (parts.length === 0) throw new Error('There is no plot to save.');
-    const perRow = Math.max(1, xCols.length - (xCols.some((c) => yCols.includes(c)) ? 1 : 0));
-    return saveSvgPart(combineSvgParts(parts, Math.min(perRow, parts.length)), 'Multiplot', format);
+    if (drawn === 0) throw new Error('There is no plot to save.');
+    return saveSvgPart(combineSvgParts(parts, Math.max(1, xCols.length)), 'Multiplot', format);
   };
 
   const samplingStatus = mode === 'interactive' ? samplingStatusText(plan) : null;
