@@ -4,7 +4,7 @@
  * tests — pages see no setup and behave as before: all measured elements,
  * no transform.
  */
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactElement, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import type {
   AppliedTransformation,
   ApplyTransformationRequest,
@@ -53,9 +53,20 @@ export function AnalysisSetupProvider({ service, generation, children }: Analysi
   const [saved, setSaved] = useState<readonly TransformationSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
+  /**
+   * Bumped when another project opens: responses to requests made for the
+   * previous project are dropped instead of overwriting the new project's
+   * setup (and a saved setup loaded from it is not written into the new one).
+   */
+  const epoch = useRef(0);
 
   useEffect(() => {
     let active = true;
+    epoch.current += 1;
+    // The previous project's setup must not show (or drive a precompute)
+    // while this project's loads.
+    setSetup(null);
+    setSaved([]);
     setLoaded(false);
     setError('');
     (async () => {
@@ -77,18 +88,23 @@ export function AnalysisSetupProvider({ service, generation, children }: Analysi
   }, [service, generation]);
 
   const save = useCallback(async (next: TransformationDefinition) => {
+    const at = epoch.current;
     const saved = await service.save({ definition: { ...next, name: ANALYSIS_SETUP_NAME } });
+    if (at !== epoch.current) return;
     setSetup(saved.definition);
     setError('');
   }, [service]);
 
   const reset = useCallback(async () => {
+    const at = epoch.current;
     await service.remove(ANALYSIS_SETUP_NAME);
-    setSetup(null);
+    if (at === epoch.current) setSetup(null);
   }, [service]);
 
   const refreshSaved = useCallback(async () => {
-    setSaved(namedSetups((await service.list()).transformations));
+    const at = epoch.current;
+    const list = await service.list();
+    if (at === epoch.current) setSaved(namedSetups(list.transformations));
   }, [service]);
 
   const saveAs = useCallback(async (name: string, next: TransformationDefinition) => {
@@ -99,7 +115,11 @@ export function AnalysisSetupProvider({ service, generation, children }: Analysi
   }, [service, refreshSaved]);
 
   const loadSaved = useCallback(async (name: string) => {
-    await save(await service.load(name));
+    const at = epoch.current;
+    const definition = await service.load(name);
+    // Another project opened meanwhile: do not write this one's setup there.
+    if (at !== epoch.current) return;
+    await save(definition);
   }, [service, save]);
 
   const deleteSaved = useCallback(async (name: string) => {
