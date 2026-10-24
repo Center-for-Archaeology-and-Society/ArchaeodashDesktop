@@ -4,7 +4,7 @@
  * uses, ratio variables, and the imputation and transform applied first, and
  * named setups that can be saved, loaded into the active setup, or deleted.
  */
-import { useEffect, useId, useState, type FormEvent, type ReactElement } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import type { AppliedTransformation, GroupsService, OrdinationService } from '@archaeodash/client';
 import type {
   ImputationMethod,
@@ -338,8 +338,10 @@ export function RatioFieldset({ elements, ratios, mode, busy, onRatios, onMode, 
   const denominatorId = useId();
   const listSize = Math.min(6, Math.max(3, elements.length));
 
-  // A changed ratio list makes the shown preview stale.
-  useEffect(() => { setPreview({ state: 'idle' }); }, [ratios]);
+  // A changed ratio list makes the shown preview stale, including one still
+  // computing (its result is dropped when it arrives).
+  const previewSeq = useRef(0);
+  useEffect(() => { previewSeq.current += 1; setPreview({ state: 'idle' }); }, [ratios]);
 
   const add = () => {
     if (!numerators.length || !denominators.length) { setProblem('Choose at least one numerator and one denominator.'); return; }
@@ -354,10 +356,11 @@ export function RatioFieldset({ elements, ratios, mode, busy, onRatios, onMode, 
 
   const runPreview = () => {
     if (!onPreview) return;
+    const seq = ++previewSeq.current;
     setPreview({ state: 'loading' });
     onPreview([...ratios])
-      .then((result) => setPreview({ state: 'ready', result }))
-      .catch((cause: unknown) => setPreview({ state: 'error', message: cause instanceof Error ? cause.message : String(cause) }));
+      .then((result) => { if (seq === previewSeq.current) setPreview({ state: 'ready', result }); })
+      .catch((cause: unknown) => { if (seq === previewSeq.current) setPreview({ state: 'error', message: cause instanceof Error ? cause.message : String(cause) }); });
   };
 
   const chosen = (select: HTMLSelectElement) => Array.from(select.selectedOptions, (o) => o.value);
