@@ -250,6 +250,11 @@ export const demoFetch: FetchLike = async (url, init) => {
     if (!name || [...files].some(([path, group]) => path !== from && folderOfPath(path) === folder && group.toLowerCase() === name.toLowerCase())) {
       return json({ code: 'validation', message: `validation error: folder “${folder}” already has a group named “${name}”` }, 100, 400);
     }
+    // Another group's file (e.g. "a_b" when renaming to "a b"): refused like
+    // the backend, instead of overwriting that group.
+    if (dest.toLowerCase() !== from.toLowerCase() && [...files.keys()].some((path) => path.toLowerCase() === dest.toLowerCase())) {
+      return json({ code: 'validation', message: `validation error: a group file named ${dest.slice(dest.lastIndexOf('/') + 1)} already exists in that folder` }, 100, 400);
+    }
     const rows = rowsByGroup.get(from) ?? [];
     files.delete(from); rowsByGroup.delete(from);
     files.set(dest, name); rowsByGroup.set(dest, rows);
