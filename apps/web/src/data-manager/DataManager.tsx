@@ -1,7 +1,7 @@
 /**
  * Data Manager sidebar: a compact file manager for the project's group files.
- * Toolbar (Import…, Export…, Refresh, New folder…, Rename…, Copy to…, Move to…,
- * Merge, Delete), a keyboard-accessible
+ * Toolbar (Import…, Export…, Refresh, New folder…, Rename… (folder or one
+ * group), Add column…, Copy to…, Move to…, Merge, Delete), a keyboard-accessible
  * tree (role="tree") with multi-select, inline name/confirm forms, a details
  * panel for the selected file, and the import wizard in a modal dialog.
  */
@@ -11,7 +11,7 @@ import { activeFolderAmong, exclusionWithin, folderLabel, folderOf, inFolder } f
 import { downloadExportResult } from '../exports.ts';
 import { BusyLabel, BusyNote, Spinner } from '../ui/Busy.tsx';
 import { unionElements } from '../analysis-setup/setup.ts';
-import { includedAmong, useGroupInclusion } from '../datasets/GroupInclusion.tsx';
+import { includedAmong, invertedAmong, shownByFilter, useGroupInclusion, type InclusionFilter } from '../datasets/GroupInclusion.tsx';
 import { useDataCache } from '../datasets/DataCache.tsx';
 import { AnalysisSetupPanel } from './AnalysisSetupPanel.tsx';
 import { ImportDialog } from './ImportDialog.tsx';
@@ -51,6 +51,8 @@ type Pending =
   | { readonly kind: 'export'; readonly format: ExportFormat }
   | { readonly kind: 'new-folder'; readonly name: string }
   | { readonly kind: 'rename-folder'; readonly name: string }
+  | { readonly kind: 'rename-group'; readonly name: string }
+  | { readonly kind: 'add-column'; readonly folder: string; readonly column: string; readonly value: string; readonly confirmOverwrite: boolean }
   | { readonly kind: 'copy'; readonly move: boolean; readonly folder: string; readonly newName: string }
   | null;
 
@@ -76,6 +78,26 @@ export interface FolderNode {
 export function folderNodes(entries: readonly GroupFileEntry[], listed: readonly GroupFolder[] = []): FolderNode[] {
   const paths = [...new Set([...listed.map((f) => f.path), ...entries.map((e) => folderOf(e.path))])].sort((a, b) => a.localeCompare(b));
   return paths.map((path) => ({ path, name: folderLabel(path), entries: entries.filter((e) => folderOf(e.path) === path) }));
+}
+
+/** Groups of `folder` that already have a descriptive column named `column`. */
+export function groupsWithColumn(entries: readonly GroupFileEntry[], folder: string, column: string): GroupFileEntry[] {
+  const name = column.trim();
+  return entries.filter((entry) => folderOf(entry.path) === folder && (entry.summary?.descriptive_columns ?? []).includes(name));
+}
+
+/** Why a new descriptive column name is refused before asking the backend ('' when fine). */
+export function columnNameProblem(entries: readonly GroupFileEntry[], folder: string, column: string): string {
+  const name = column.trim();
+  if (!name) return 'Enter a column name.';
+  if (['analytical_uuid', 'legacy_rowid', 'rowid'].includes(name.toLowerCase())) return `“${name}” is reserved for sample identity.`;
+  const measured = entries.find((entry) => folderOf(entry.path) === folder && (entry.summary?.elemental_columns ?? []).includes(name));
+  return measured ? `“${name}” is a measured column in ${measured.name}; measured values cannot be replaced.` : '';
+}
+
+/** Keeps exclusions with a renamed group file. */
+export function renamedExclusions(excluded: Iterable<string>, from: string, to: string): string[] {
+  return [...excluded].map((path) => (path === from ? to : path));
 }
 
 export async function loadGroupFiles(groups: DataManagerTransport['groups']): Promise<GroupFileEntry[]> {
@@ -114,6 +136,7 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
   const [focusId, setFocusId] = useState<string>('');
   const [pending, setPending] = useState<Pending>(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [treeFilter, setTreeFilter] = useState<InclusionFilter>('all');
   const loadSeq = useRef(0);
   const itemRefs = useRef(new Map<string, HTMLLIElement>());
   const supportsFolders = Boolean(transport.groups.folders && transport.groups.copyGroups);
@@ -147,9 +170,7 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     return onGroupsChanged(() => void refresh());
   }, [refresh]);
 
-  const folders = useMemo(() => folderNodes(entries, listedFolders), [entries, listedFolders]);
-  const order = folders.flatMap((folder) => folder.entries.map((entry) => entry.path));
-  const selectedEntries = entries.filter((entry) => selection.selected.includes(entry.path));
+  const allFolders = useMemo(() => folderNodes(entries, listedFolders), [entries, listedFolders]);
 
   // Groups included in analyses (checkboxes), shared with every page's
   // Dataset picker. Analyses use one folder at a time; files that need
@@ -160,6 +181,14 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
   const activeReady = inFolder(readyPaths, activeFolder);
   const includedPaths = inclusion ? includedAmong(activeReady, inclusion.excluded) : null;
   const includedSet = includedPaths ? new Set(includedPaths) : null;
+  // The tree can show all groups or only those included in (or left out of)
+  // analyses; folders stay listed so the folder switch still works.
+  const filtering = treeFilter !== 'all' && includedSet !== null;
+  const folders = filtering
+    ? allFolders.map((folder) => ({ ...folder, entries: folder.entries.filter((entry) => shownByFilter(entry.path, treeFilter, includedSet, activeFolder === null || folder.path === activeFolder)) }))
+    : allFolders;
+  const order = folders.flatMap((folder) => folder.entries.map((entry) => entry.path));
+  const selectedEntries = entries.filter((entry) => selection.selected.includes(entry.path) && order.includes(entry.path));
   const chooseFolder = (folder: string) => inclusion?.setActiveFolder?.(folder);
   // Remember the folder analyses use as soon as it is known, so a folder
   // created or copied into later (which may sort first) never takes over.
@@ -215,14 +244,14 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     setSelection((current) => applySelection(order, current, path, modifiers));
     setSelectedFolder(null);
     setFocusId(path);
-    setPending((current) => (current?.kind === 'delete' || current?.kind === 'delete-folder' || current?.kind === 'rename-folder' ? null : current));
+    setPending((current) => (current?.kind === 'delete' || current?.kind === 'delete-folder' || current?.kind === 'rename-folder' || current?.kind === 'rename-group' ? null : current));
   };
 
   const selectFolder = (folder: string) => {
     setSelectedFolder(folder);
     setSelection({ selected: [], anchor: null });
     setFocusId(folderId(folder));
-    setPending((current) => (current?.kind === 'delete' || current?.kind === 'copy' || current?.kind === 'merge' ? null : current));
+    setPending((current) => (current?.kind === 'delete' || current?.kind === 'copy' || current?.kind === 'merge' || current?.kind === 'rename-group' ? null : current));
   };
 
   const toggleFolderOpen = (folder: string) => {
@@ -314,6 +343,58 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     }, `Renamed ${quoted(from)} to ${quoted(name)}.`, `Renaming ${quoted(from)}…`);
   };
 
+  const submitRenameGroup = (event: FormEvent) => {
+    event.preventDefault();
+    const rename = transport.groups.renameGroup;
+    const entry = selectedEntries.length === 1 ? selectedEntries[0] : undefined;
+    if (pending?.kind !== 'rename-group' || !rename || !entry?.revision) return;
+    const name = pending.name.trim();
+    if (!name || name === entry.name) return;
+    void runChange(async () => {
+      const result = await rename({ path: entry.path, expected_revision: entry.revision!, new_name: name });
+      const renamed = result.outputs[0]?.path ?? entry.path;
+      // Keep the group's inclusion in analyses with its new file name.
+      if (inclusion && renamed !== entry.path) inclusion.setExcluded(renamedExclusions(inclusion.excluded, entry.path, renamed));
+      return [renamed];
+    }, `Renamed ${entry.name} to ${name}.`, `Renaming ${entry.name}…`);
+  };
+
+  const submitAddColumn = (event: FormEvent) => {
+    event.preventDefault();
+    const add = transport.groups.addColumn;
+    if (pending?.kind !== 'add-column' || !add) return;
+    const { folder, value, confirmOverwrite } = pending;
+    const column = pending.column.trim();
+    if (columnNameProblem(entries, folder, column)) return;
+    const existing = groupsWithColumn(entries, folder, column);
+    // A column that already exists needs a second, explicit confirmation.
+    if (existing.length > 0 && !confirmOverwrite) {
+      setPending({ ...pending, confirmOverwrite: true });
+      return;
+    }
+    setBusyText(`Adding ${column} to ${quoted(folder)}…`);
+    setBusy(true);
+    setError('');
+    setStatus('');
+    void (async () => {
+      try {
+        await add({ folder, column, value: value === '' ? null : value, overwrite: confirmOverwrite });
+        setPending(null);
+        await refresh();
+        setStatus(`${confirmOverwrite ? 'Replaced' : 'Added'} the column ${column} in every group of ${quoted(folder)}.`);
+        onDataChanged?.();
+      } catch (cause) {
+        const text = message(cause);
+        // Another window may have added the column meanwhile: ask again.
+        if (!confirmOverwrite && /already exists/.test(text)) setPending({ ...pending, confirmOverwrite: true });
+        else setError(text);
+        void refresh();
+      } finally {
+        setBusy(false);
+      }
+    })();
+  };
+
   const confirmDeleteFolder = () => {
     const remove = transport.groups.deleteFolder;
     if (selectedFolder === null || !remove) return;
@@ -375,14 +456,26 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     }
   };
 
-  const selectedFolderNode = selectedFolder === null ? null : folders.find((f) => f.path === selectedFolder) ?? null;
+  const selectedFolderNode = selectedFolder === null ? null : allFolders.find((f) => f.path === selectedFolder) ?? null;
+  const renameTarget = selectedEntries.length === 1 && !selectedEntries[0]!.error && selectedEntries[0]!.revision ? selectedEntries[0]! : null;
+  const canRenameGroup = !busy && !!transport.groups.renameGroup && renameTarget !== null;
+  const canRenameFolder = !busy && supportsFolders && !!selectedFolderNode && selectedFolderNode.path !== '' && !!transport.groups.renameFolder;
+  const startRename = () => {
+    if (selectedFolderNode) setPending({ kind: 'rename-folder', name: selectedFolderNode.name });
+    else if (renameTarget) setPending({ kind: 'rename-group', name: renameTarget.name });
+  };
+  // Add column… applies to one folder: the selected folder, or the folder of
+  // the highlighted groups, or the folder analyses use.
+  const columnFolder = selectedFolderNode ? selectedFolderNode.path : selectedFolders.length === 1 ? selectedFolders[0]! : selectedEntries.length === 0 ? activeFolder : null;
+  const columnFolderGroups = columnFolder === null ? 0 : entries.filter((entry) => folderOf(entry.path) === columnFolder && entry.summary && !entry.error).length;
+  const canAddColumn = !busy && !!transport.groups.addColumn && columnFolder !== null && columnFolderGroups > 0;
   const canCopy = !busy && supportsFolders && selectedEntries.length > 0 && selectedEntries.every((entry) => entry.revision && !entry.error);
   const canMerge = !busy && selectedEntries.length >= 2 && selectedEntries.every((entry) => !entry.error) && new Set(selectedEntries.map((e) => folderOf(e.path))).size === 1;
   const canDeleteGroups = !busy && selectedEntries.length > 0 && selectedEntries.every((entry) => entry.revision);
   const canDeleteFolder = !busy && !!transport.groups.deleteFolder && selectedFolderNode !== null && selectedFolderNode.entries.length === 0 && selectedFolderNode.path !== '';
   const canDelete = canDeleteGroups || canDeleteFolder;
   const startDelete = () => setPending(canDeleteGroups ? { kind: 'delete' } : { kind: 'delete-folder' });
-  const copyChoices = folders.map((f) => f.path).filter((p) => p !== '');
+  const copyChoices = allFolders.map((f) => f.path).filter((p) => p !== '');
   const startCopy = (move: boolean) => {
     const from = new Set(selectedEntries.map((e) => folderOf(e.path)));
     const first = copyChoices.find((p) => !from.has(p));
@@ -440,6 +533,7 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
         break;
       case 'F2':
         if (onFolder && supportsFolders && folder !== '') { event.preventDefault(); selectFolder(folder); setPending({ kind: 'rename-folder', name: folderLabel(folder) }); }
+        else if (!onFolder && canRenameGroup && renameTarget?.path === currentFocus) { event.preventDefault(); setPending({ kind: 'rename-group', name: renameTarget.name }); }
         break;
       case 'Escape':
         setSelection({ selected: [], anchor: null });
@@ -491,7 +585,12 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
           {supportsFolders && (
             <span className="fm-tool-group">
               <button type="button" className="fm-tool" disabled={busy || !transport.groups.createFolder} aria-pressed={pending?.kind === 'new-folder'} onClick={() => setPending({ kind: 'new-folder', name: 'New grouping' })} title="Create an empty folder for a new grouping of the samples">New folder…</button>
-              <button type="button" className="fm-tool" disabled={busy || !selectedFolderNode || selectedFolderNode.path === '' || !transport.groups.renameFolder} aria-pressed={pending?.kind === 'rename-folder'} onClick={() => selectedFolderNode && setPending({ kind: 'rename-folder', name: selectedFolderNode.name })} title="Rename the selected folder (click a folder to select it)">Rename…</button>
+              <button type="button" className="fm-tool" disabled={!(selectedFolderNode ? canRenameFolder : canRenameGroup)} aria-pressed={pending?.kind === 'rename-folder' || pending?.kind === 'rename-group'} onClick={startRename} title="Rename the selected folder or the one highlighted group (F2)">Rename…</button>
+            </span>
+          )}
+          {transport.groups.addColumn && (
+            <span className="fm-tool-group">
+              <button type="button" className="fm-tool" disabled={!canAddColumn} aria-pressed={pending?.kind === 'add-column'} onClick={() => columnFolder !== null && setPending({ kind: 'add-column', folder: columnFolder, column: '', value: '', confirmOverwrite: false })} title="Add a descriptive column with one value to every group in the folder">Add column…</button>
             </span>
           )}
           <span className="fm-tool-group">
@@ -529,6 +628,31 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
             <button type="button" disabled={busy} onClick={() => setPending(null)}>Cancel</button>
           </div>
         </form>
+      )}
+      {pending?.kind === 'rename-group' && renameTarget && (
+        <form className="fm-inline" onSubmit={submitRenameGroup} aria-label="Rename group">
+          <label>New name for {renameTarget.name}
+            <input autoFocus value={pending.name} disabled={busy} onChange={(event) => setPending({ kind: 'rename-group', name: event.target.value })} onKeyDown={escapeCancels} />
+          </label>
+          <p className="fm-hint">The group file is renamed too. Its samples and their identities stay the same.</p>
+          <div className="fm-inline-actions">
+            <button type="submit" disabled={busy || !pending.name.trim() || pending.name.trim() === renameTarget.name}><BusyLabel busy={busy}>Rename</BusyLabel></button>
+            <button type="button" disabled={busy} onClick={() => setPending(null)}>Cancel</button>
+          </div>
+        </form>
+      )}
+      {pending?.kind === 'add-column' && (
+        <AddColumnForm
+          pending={pending}
+          problem={columnNameProblem(entries, pending.folder, pending.column)}
+          existing={groupsWithColumn(entries, pending.folder, pending.column).map((entry) => entry.name)}
+          groupCount={entries.filter((entry) => folderOf(entry.path) === pending.folder && entry.summary && !entry.error).length}
+          busy={busy}
+          onChange={(next) => setPending({ ...pending, ...next, confirmOverwrite: false })}
+          onSubmit={submitAddColumn}
+          onBack={() => setPending({ ...pending, confirmOverwrite: false })}
+          onCancel={() => setPending(null)}
+        />
       )}
       {pending?.kind === 'copy' && selectedEntries.length > 0 && (
         <form className="fm-inline" onSubmit={submitCopy} aria-label={pending.move ? 'Move groups' : 'Copy groups'}>
@@ -613,6 +737,7 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
           </span>
           <button type="button" className="fm-tool" disabled={includedSet.size === activeReady.length} onClick={() => setIncluded(activeReady)}>All</button>
           <button type="button" className="fm-tool" disabled={includedSet.size === 0} onClick={() => setIncluded([])}>None</button>
+          <button type="button" className="fm-tool" title="Include the groups that are left out, and leave out the included ones" onClick={() => setIncluded(invertedAmong(activeReady, includedSet))}>Invert</button>
           <button
             type="button"
             className="fm-tool"
@@ -622,6 +747,13 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
           >
             Only selected
           </button>
+          <label className="fm-include-filter">Show
+            <select value={treeFilter} onChange={(event) => { const next = event.target.value as InclusionFilter; setTreeFilter(next); setSelection({ selected: [], anchor: null }); }}>
+              <option value="all">All groups</option>
+              <option value="included">Included</option>
+              <option value="excluded">Left out</option>
+            </select>
+          </label>
         </div>
       )}
 
@@ -637,6 +769,7 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
         closedFolders={closedFolders}
         focusId={currentFocus}
         loading={loading}
+        filtered={filtering}
         onToggleFolder={toggleFolderOpen}
         onSelectFolder={selectFolder}
         onUseFolder={inclusion?.setActiveFolder ? (folder) => { chooseFolder(folder); setStatus(`Analyses now use the folder ${quoted(folder)}.`); } : undefined}
@@ -695,6 +828,8 @@ export interface GroupFileTreeProps {
   readonly closedFolders?: ReadonlySet<string>;
   readonly focusId?: string;
   readonly loading?: boolean;
+  /** The rows are filtered by inclusion (empty folders say so). */
+  readonly filtered?: boolean;
   readonly onToggleFolder?: (folder: string) => void;
   readonly onSelectFolder?: (folder: string) => void;
   readonly onUseFolder?: (folder: string) => void;
@@ -723,6 +858,7 @@ export function GroupFileTree({
   closedFolders,
   focusId,
   loading = false,
+  filtered = false,
   onToggleFolder,
   onSelectFolder,
   onUseFolder,
@@ -779,7 +915,7 @@ export function GroupFileTree({
             </div>
             {open && (
               <ul role="group" className="fm-group">
-                {!folder.entries.length && <li role="none" className="fm-empty">Empty folder. Copy groups into it with Copy to….</li>}
+                {!folder.entries.length && <li role="none" className="fm-empty">{filtered ? 'No groups match the filter.' : 'Empty folder. Copy groups into it with Copy to….'}</li>}
                 {folder.entries.map((entry) => {
                   const isSelected = selected.includes(entry.path);
                   const rows = entry.summary?.row_count;
@@ -838,6 +974,59 @@ export function GroupFileTree({
         );
       })}
     </ul>
+  );
+}
+
+export interface AddColumnFormProps {
+  readonly pending: { readonly folder: string; readonly column: string; readonly value: string; readonly confirmOverwrite: boolean };
+  /** Why the name is refused ('' when fine). */
+  readonly problem: string;
+  /** Groups that already have the column. */
+  readonly existing: readonly string[];
+  readonly groupCount: number;
+  readonly busy?: boolean;
+  readonly onChange: (next: { column?: string; value?: string }) => void;
+  readonly onSubmit: (event: FormEvent) => void;
+  readonly onBack: () => void;
+  readonly onCancel: () => void;
+}
+
+/**
+ * Add a descriptive column with one value to every group in a folder. An
+ * existing column needs a second confirmation before its values are
+ * replaced (legacy "Add column" overwrite prompt).
+ */
+export function AddColumnForm({ pending, problem, existing, groupCount, busy = false, onChange, onSubmit, onBack, onCancel }: AddColumnFormProps): ReactElement {
+  const column = pending.column.trim();
+  const shownProblem = column ? problem : '';
+  if (pending.confirmOverwrite) {
+    return (
+      <form className="fm-inline fm-inline-danger" onSubmit={onSubmit} aria-label="Confirm column overwrite">
+        <p role="alert">The column {column} already exists in {existing.length === 1 ? existing[0] : `${existing.length} groups (${existing.join(', ')})`}. Replace its values with “{pending.value || '(empty)'}” in every group of {quoted(pending.folder)}?</p>
+        <div className="fm-inline-actions">
+          <button type="submit" className="fm-danger" disabled={busy}><BusyLabel busy={busy}>Replace values</BusyLabel></button>
+          <button type="button" autoFocus disabled={busy} onClick={onBack}>Back</button>
+          <button type="button" disabled={busy} onClick={onCancel}>Cancel</button>
+        </div>
+      </form>
+    );
+  }
+  return (
+    <form className="fm-inline" onSubmit={onSubmit} aria-label="Add column">
+      <p className="fm-export-what">Add a descriptive column to the {plural(groupCount, 'group')} in {quoted(pending.folder)}</p>
+      <label>Column name
+        <input autoFocus value={pending.column} disabled={busy} onChange={(event) => onChange({ column: event.target.value })} onKeyDown={(event) => { if (event.key === 'Escape') onCancel(); }} />
+      </label>
+      <label>Value for every row
+        <input value={pending.value} disabled={busy} placeholder="(empty)" onChange={(event) => onChange({ value: event.target.value })} onKeyDown={(event) => { if (event.key === 'Escape') onCancel(); }} />
+      </label>
+      {shownProblem && <p className="fm-hint" role="alert">{shownProblem}</p>}
+      {!shownProblem && existing.length > 0 && <p className="fm-hint">{column} already exists in {plural(existing.length, 'group')}; you will be asked before its values are replaced.</p>}
+      <div className="fm-inline-actions">
+        <button type="submit" disabled={busy || !column || Boolean(problem)}><BusyLabel busy={busy}>Add column</BusyLabel></button>
+        <button type="button" disabled={busy} onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
   );
 }
 

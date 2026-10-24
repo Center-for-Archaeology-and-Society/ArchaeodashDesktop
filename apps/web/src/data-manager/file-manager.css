@@ -789,3 +789,52 @@
 .import-wizard-folder {
   color: var(--fg-muted);
 }
+
+/* Inclusion filter in the "In analyses" bar */
+.fm-include-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--muted);
+}
+
+.fm-include-filter select {
+  font-size: inherit;
+}
+
+/* Import destination and collision choice */
+.import-destination {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.import-destination-choice {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.import-destination-note,
+.import-destination-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.import-destination-blocked {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.5rem 0.6rem;
+  border-left: 3px solid var(--warning);
+  background: var(--warning-soft);
+}
+
+.import-destination-blocked p {
+  margin: 0;
+}
+
+.import-destination-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}

@@ -93,3 +93,22 @@ export function includedAmong(ready: readonly string[], excluded: ReadonlySet<st
 export function exclusionFor(ready: readonly string[], included: readonly string[]): string[] {
   return ready.filter((p) => !included.includes(p));
 }
+
+/** Invert: the groups of `scope` that are not included now. */
+export function invertedAmong(scope: readonly string[], included: ReadonlySet<string>): string[] {
+  return scope.filter((p) => !included.has(p));
+}
+
+/** Which group rows the Data Manager tree shows. */
+export type InclusionFilter = 'all' | 'included' | 'excluded';
+
+/**
+ * Whether a group row shows under the tree's inclusion filter. Included and
+ * excluded both mean "in the folder analyses use"; groups in other folders
+ * show only under "all".
+ */
+export function shownByFilter(path: string, filter: InclusionFilter, included: ReadonlySet<string> | null, inActiveFolder: boolean): boolean {
+  if (filter === 'all' || !included) return true;
+  if (!inActiveFolder) return false;
+  return filter === 'included' ? included.has(path) : !included.has(path);
+}

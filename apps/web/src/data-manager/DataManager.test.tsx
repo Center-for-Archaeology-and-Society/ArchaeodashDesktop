@@ -2,14 +2,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { GroupCandidate, GroupSummary } from '@archaeodash/contracts';
-import { DataManager, GroupDetails, GroupFileTree, folderNodes, loadGroupFiles, type DataManagerTransport, type GroupFileEntry } from './DataManager.tsx';
+import { AddColumnForm, DataManager, GroupDetails, GroupFileTree, columnNameProblem, folderNodes, groupsWithColumn, loadGroupFiles, renamedExclusions, type DataManagerTransport, type GroupFileEntry } from './DataManager.tsx';
 import { ImportWizard } from './ImportWizard.tsx';
 import { DEFAULT_VALUE_OPTIONS, ImportValueOptions, recipeFromOptions } from './ImportValueOptions.tsx';
 import { ImportProgress, elapsedLabel, importStepLabel } from './ImportProgress.tsx';
 import { ImportDialog } from './ImportDialog.tsx';
 import { AnalysisSetupForm, AnalysisSetupPanel } from './AnalysisSetupPanel.tsx';
 import { newSetup } from '../analysis-setup/setup.ts';
-import { exclusionFor, includedAmong } from '../datasets/GroupInclusion.tsx';
+import { exclusionFor, includedAmong, invertedAmong, shownByFilter } from '../datasets/GroupInclusion.tsx';
 import { applySelection, pruneSelection } from './selection.ts';
 import { GROUPS_CHANGED_EVENT, notifyGroupsChanged, onGroupsChanged } from './events.ts';
 
@@ -287,4 +287,51 @@ test('the tree shows one row per folder with its groups, and the analysis-folder
   // A group in another folder is not counted as included.
   assert.equal(html.match(/fm-include is-on/g)?.length, 1);
   assert.match(html, /fm-include is-other-folder/);
+});
+
+test('inclusion helpers invert and filter the tree', () => {
+  const included = new Set(['Site/A.parquet']);
+  assert.deepEqual(invertedAmong(['Site/A.parquet', 'Site/B.parquet'], included), ['Site/B.parquet']);
+  assert.equal(shownByFilter('Site/A.parquet', 'included', included, true), true);
+  assert.equal(shownByFilter('Site/B.parquet', 'included', included, true), false);
+  assert.equal(shownByFilter('Site/B.parquet', 'excluded', included, true), true);
+  assert.equal(shownByFilter('Other/C.parquet', 'excluded', included, false), false, 'other folders only under all');
+  assert.equal(shownByFilter('Other/C.parquet', 'all', included, false), true);
+  const html = renderToStaticMarkup(<GroupFileTree entries={[]} folders={[{ path: 'Site', name: 'Site', entries: [] }]} selected={[]} filtered />);
+  assert.match(html, /No groups match the filter/);
+});
+
+test('add-column helpers find existing and refused column names', () => {
+  const folderEntries: GroupFileEntry[] = [
+    { path: 'Site/A.parquet', name: 'A', summary: { ...summary('A', 3), path: 'Site/A.parquet', descriptive_columns: ['Site', 'Phase'] }, revision: 'rev-1', error: '' },
+    { path: 'Site/B.parquet', name: 'B', summary: { ...summary('B', 2), path: 'Site/B.parquet' }, revision: 'rev-1', error: '' },
+  ];
+  assert.deepEqual(groupsWithColumn(folderEntries, 'Site', ' Phase ').map((e) => e.name), ['A']);
+  assert.equal(groupsWithColumn(folderEntries, 'Other', 'Phase').length, 0);
+  assert.match(columnNameProblem(folderEntries, 'Site', 'Fe'), /measured column in A/);
+  assert.match(columnNameProblem(folderEntries, 'Site', 'analytical_uuid'), /reserved/);
+  assert.match(columnNameProblem(folderEntries, 'Site', ' '), /Enter a column name/);
+  assert.equal(columnNameProblem(folderEntries, 'Site', 'Ware'), '');
+  assert.deepEqual(renamedExclusions(['Site/A.parquet', 'Site/B.parquet'], 'Site/A.parquet', 'Site/A2.parquet'), ['Site/A2.parquet', 'Site/B.parquet']);
+});
+
+test('add-column form asks a second time before overwriting', () => {
+  const noop = () => {};
+  const first = renderToStaticMarkup(<AddColumnForm pending={{ folder: 'Site', column: 'Phase', value: 'Late', confirmOverwrite: false }} problem="" existing={['A']} groupCount={2} onChange={noop} onSubmit={noop} onBack={noop} onCancel={noop} />);
+  assert.match(first, /aria-label="Add column"/);
+  assert.match(first, /you will be asked before its values are replaced/);
+  assert.doesNotMatch(first, /Replace values/);
+  const confirm = renderToStaticMarkup(<AddColumnForm pending={{ folder: 'Site', column: 'Phase', value: 'Late', confirmOverwrite: true }} problem="" existing={['A']} groupCount={2} onChange={noop} onSubmit={noop} onBack={noop} onCancel={noop} />);
+  assert.match(confirm, /role="alert"/);
+  assert.match(confirm, /already exists in A/);
+  assert.match(confirm, /Replace values/);
+  const refused = renderToStaticMarkup(<AddColumnForm pending={{ folder: 'Site', column: 'Fe', value: '', confirmOverwrite: false }} problem="“Fe” is a measured column" existing={[]} groupCount={2} onChange={noop} onSubmit={noop} onBack={noop} onCancel={noop} />);
+  assert.match(refused, /<button type="submit" disabled="">/);
+});
+
+test('toolbar offers Add column… and Rename… when the transport supports them', () => {
+  const transport = { kind: 'http', groups: { scan: async () => [], folders: async () => [], copyGroups: async () => { throw new Error('unused'); }, renameFolder: async () => { throw new Error('unused'); }, renameGroup: async () => { throw new Error('unused'); }, addColumn: async () => { throw new Error('unused'); } } } as unknown as DataManagerTransport;
+  const html = renderToStaticMarkup(<DataManager transport={transport} projectName="Sample" />);
+  assert.match(html, /disabled="" aria-pressed="false" title="Add a descriptive column[^"]*">Add column…<\/button>/);
+  assert.match(html, /title="Rename the selected folder or the one highlighted group \(F2\)">Rename…<\/button>/);
 });
