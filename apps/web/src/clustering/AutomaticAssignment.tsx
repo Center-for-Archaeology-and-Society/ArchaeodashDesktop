@@ -2,6 +2,7 @@ import { useMemo, useState, type ReactElement } from 'react';
 import type { BatchTransferUnitsRequest, GroupCandidate } from '@archaeodash/client';
 import type { AnalysisResult } from './AnalysisPage.tsx';
 import { KEEP_IN_SOURCE, buildAutomaticAssignmentRequest, recommendedAssignments } from './automatic-assignment.ts';
+import { newGroupPath } from './new-group.ts';
 import { BusyLabel } from '../ui/Busy.tsx';
 import { TableExport } from '../ui/TableExport.tsx';
 
@@ -27,6 +28,7 @@ export function BatchConfirmation({ request, selectedCount, busy, onConfirm, onC
 }
 
 export function AutomaticAssignment({ result, selected, candidates, cutK, busy, onConfirm, onReviewChange, multiSource = false }: {
+  /** Selected row keys (analytical UUIDs; Euclidean: checked match rows). */
   result: AnalysisResult; selected: readonly string[]; candidates: readonly GroupCandidate[]; cutK: number; busy: boolean;
   onConfirm: (request: BatchTransferUnitsRequest) => void; onReviewChange: (reviewing: boolean) => void;
   /** The result spans several group files (see buildAutomaticAssignmentRequest). */
@@ -36,9 +38,11 @@ export function AutomaticAssignment({ result, selected, candidates, cutK, busy, 
   const [prepared, setPrepared] = useState<BatchTransferUnitsRequest | null>(null);
   const [error, setError] = useState('');
   const plan = useMemo(() => {
-    if (!selected.length) return { labels: [] as string[], error: '' };
-    try { return { labels: [...new Set(recommendedAssignments(result, selected, cutK).map(row => row.groupLabel))], error: '' }; }
-    catch (e) { return { labels: [] as string[], error: e instanceof Error ? e.message : String(e) }; }
+    if (!selected.length) return { labels: [] as string[], units: 0, error: '' };
+    try {
+      const recommended = recommendedAssignments(result, selected, cutK);
+      return { labels: [...new Set(recommended.map(row => row.groupLabel))], units: recommended.length, error: '' };
+    } catch (e) { return { labels: [] as string[], units: 0, error: e instanceof Error ? e.message : String(e) }; }
   }, [result, selected, cutK]);
   const defaults = (label: string): Mapping => {
     const matching = candidates.filter(candidate => candidate.ready && candidate.group?.group_name === label);
@@ -53,9 +57,9 @@ export function AutomaticAssignment({ result, selected, candidates, cutK, busy, 
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   }
   return <section aria-label="Automatic group assignments">
-    <h3>{result.kind === 'fit' ? 'Record selected cluster assignments' : result.kind === 'membership' ? 'Assign to best groups' : 'Assign to nearest matched groups'}</h3>
+    <h3>{result.kind === 'fit' ? 'Record selected cluster assignments' : result.kind === 'membership' ? 'Assign to best groups' : 'Assign to checked match groups'}</h3>
     <p>Review where each result group will be stored. No files change until you confirm.</p>
-    {result.kind === 'euclidean' && <p>The nearest finite-distance match determines the group. Equal-distance matches in different groups require manual assignment.</p>}
+    {result.kind === 'euclidean' && <p>Each checked match row assigns its sample to that match’s group. Check one match per sample (for example, its nearest match).</p>}
     {!selected.length && <p>Select analytical units above to prepare assignments.</p>}
     {plan.error && <p role="alert">{plan.error}</p>}
     <fieldset disabled={busy || prepared !== null}><legend>Destination mapping</legend>
@@ -65,10 +69,7 @@ export function AutomaticAssignment({ result, selected, candidates, cutK, busy, 
         return <div key={label}>
           <label>{label} destination <select value={isNew ? '__new__' : mapping.destinationPath} onChange={event => {
             if (event.target.value === '__new__') {
-              // Beside the analyzed groups (Windows paths use backslashes).
-              const cut = Math.max(result.data.path.lastIndexOf('/'), result.data.path.lastIndexOf('\\'));
-              const folder = result.data.path.slice(0, cut + 1);
-              update(label, { groupLabel: label, destinationPath: `${folder}${label.replace(/[^A-Za-z0-9._-]/g, '_') || `group_${index + 1}`}.parquet`, newGroupName: label });
+              update(label, { groupLabel: label, destinationPath: newGroupPath(result.data.path, label, index + 1), newGroupName: label });
             } else update(label, { groupLabel: label, destinationPath: event.target.value });
           }}>
             <option value="">Choose a destination…</option>
@@ -85,6 +86,6 @@ export function AutomaticAssignment({ result, selected, candidates, cutK, busy, 
       <button type="button" disabled={!plan.labels.length || !!plan.error} onClick={review}>Review assignments</button>
     </fieldset>
     {error && <p role="alert">{error}</p>}
-    {prepared && <BatchConfirmation request={prepared} selectedCount={selected.length} busy={busy} multiSource={multiSource} onConfirm={onConfirm} onCancel={() => { setPrepared(null); onReviewChange(false); }} />}
+    {prepared && <BatchConfirmation request={prepared} selectedCount={plan.units} busy={busy} multiSource={multiSource} onConfirm={onConfirm} onCancel={() => { setPrepared(null); onReviewChange(false); }} />}
   </section>;
 }

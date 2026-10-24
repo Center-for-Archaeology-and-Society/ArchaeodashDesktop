@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ClusterFitResponse, EuclideanMatchesResponse, MembershipProbabilitiesResponse } from '@archaeodash/client';
-import { buildAssignmentRequest, selectableRows } from './assignment-model.ts';
+import { buildAssignmentRequest, euclideanMatchKeys, nearestMatchKeys, selectableRows, selectedUnits } from './assignment-model.ts';
 
 const a = '00000000-0000-4000-8000-000000000001';
 const b = '00000000-0000-4000-8000-000000000002';
@@ -43,7 +43,7 @@ test('membership vectors fail closed on length mismatch and expose identity orde
   assert.deepEqual(selectableRows({ kind: 'membership', data: { ...membership, analytical_uuids: undefined as never } }), []);
 });
 
-test('Euclidean repeated matches deduplicate observation UUIDs, not visible IDs', () => {
+test('Euclidean selection is per match row: sample UUID plus match rank, not visible IDs', () => {
   const euclidean: EuclideanMatchesResponse = {
     path: 'groups/source.parquet', revision_id: 'r', rows: [
       { analytical_uuid: a, match_analytical_uuid: b, rowid: 'hidden-a', id: 'duplicate', match_id: 'm1', distance: 1, group: 'g', match_group: 'h' },
@@ -52,7 +52,28 @@ test('Euclidean repeated matches deduplicate observation UUIDs, not visible IDs'
       { analytical_uuid: 'bad', match_analytical_uuid: a, rowid: 'hidden-c', id: 'other', match_id: 'm1', distance: 4, group: 'g', match_group: 'h' },
     ],
   };
-  assert.deepEqual(selectableRows({ kind: 'euclidean', data: euclidean }).map(row => row.analyticalUuid), [a, b]);
+  const rows = selectableRows({ kind: 'euclidean', data: euclidean });
+  assert.deepEqual(rows.map(row => row.analyticalUuid), [a, a, b]);
+  assert.deepEqual(rows.map(row => row.key), [`${a}#1`, `${a}#2`, `${b}#1`]);
+  assert.deepEqual(euclideanMatchKeys(euclidean.rows), [`${a}#1`, `${a}#2`, `${b}#1`, null]);
+  // Two checked matches of one sample move it once.
+  assert.deepEqual(selectedUnits(rows, [`${a}#2`, `${a}#1`, `${b}#1`]), [a, b]);
+  const request = buildAssignmentRequest({ kind: 'euclidean', data: euclidean }, [`${a}#2`, `${a}#1`], 'groups/destination.parquet');
+  assert.deepEqual(request.selected_uuids, [a]);
+  assert.throws(() => buildAssignmentRequest({ kind: 'euclidean', data: euclidean }, [a], 'groups/destination.parquet'), /valid analytical units/);
+});
+
+test('nearest match keys pick the closest usable match of every sample', () => {
+  const euclidean: EuclideanMatchesResponse = {
+    path: 'p', revision_id: 'r', rows: [
+      { analytical_uuid: a, match_analytical_uuid: a, rowid: '1', id: 'A', match_id: 'A', distance: 0, group: 'g', match_group: 'self' },
+      { analytical_uuid: a, match_analytical_uuid: b, rowid: '1', id: 'A', match_id: 'B', distance: null, group: 'g', match_group: 'h' },
+      { analytical_uuid: a, match_analytical_uuid: c, rowid: '1', id: 'A', match_id: 'C', distance: 3, group: 'g', match_group: 'h' },
+      { analytical_uuid: a, match_analytical_uuid: b, rowid: '1', id: 'A', match_id: 'B', distance: 2, group: 'g', match_group: 'k' },
+      { analytical_uuid: b, match_analytical_uuid: a, rowid: '2', id: 'B', match_id: 'A', distance: 1, group: 'h', match_group: '' },
+    ],
+  };
+  assert.deepEqual(nearestMatchKeys(euclidean.rows), [`${a}#4`]);
 });
 
 test('assignment validates selection and carries the result snapshot revision', () => {

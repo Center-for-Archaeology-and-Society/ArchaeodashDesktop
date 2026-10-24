@@ -1803,3 +1803,238 @@ button .spinner {
 .activity-indicator .spinner {
   color: var(--primary);
 }
+
+/* explore */
+.sort-header {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  white-space: nowrap;
+}
+
+.sort-header:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.sort-indicator {
+  font-size: 0.65em;
+  opacity: 0.75;
+}
+
+.explore-field-error {
+  color: var(--danger);
+  font-size: 0.8125rem;
+}
+/* end explore */
+
+/* clustering */
+.result-grid-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.result-grid-columns {
+  position: relative;
+}
+
+.result-grid-menu {
+  position: absolute;
+  z-index: 25;
+  top: calc(100% + 4px);
+  left: 0;
+  display: grid;
+  gap: 0.2rem;
+  min-width: 13rem;
+  max-height: 20rem;
+  overflow-y: auto;
+  padding: 0.5rem 0.6rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  font-size: 0.85rem;
+}
+
+.result-grid-sort {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.result-grid-sort:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.result-grid-arrow {
+  font-size: 0.65rem;
+}
+
+.result-grid-filters th {
+  position: static;
+  padding-top: 0.2rem;
+  padding-bottom: 0.3rem;
+}
+
+.result-grid-filters input[type='search'] {
+  min-width: 4.5rem;
+  min-height: 24px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 0.78rem;
+}
+
+.result-grid-check {
+  width: 2rem;
+}
+
+.result-grid-table td.num {
+  text-align: right;
+}
+
+.result-grid-table tbody tr.is-selected td {
+  background: var(--primary-soft);
+}
+
+.data-table.is-compact th,
+.data-table.is-compact td {
+  padding: 0.22rem 0.5rem;
+}
+
+.data-table.is-compact {
+  width: auto;
+}
+
+.eligible-groups {
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.eligible-groups legend {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+.eligible-groups-actions {
+  display: flex;
+  gap: 0.4rem;
+  margin: 0.25rem 0;
+}
+
+.eligible-groups-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+.eligible-groups-list .is-ineligible {
+  color: var(--fg-subtle);
+}
+
+.partition-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  padding: 0;
+  list-style: none;
+}
+/* end clustering */
+
+/* analysis setup */
+.setup-ratio-builder {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.2rem 0.75rem;
+}
+.setup-ratio-builder select {
+  width: 100%;
+}
+.setup-ratio-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.setup-ratio-list,
+.setup-saved-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.setup-ratio-list li,
+.setup-saved-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem 0.5rem;
+}
+.setup-ratio-table {
+  max-width: 100%;
+  overflow-x: auto;
+  font-size: 0.85rem;
+}
+.setup-ratio-table caption {
+  text-align: left;
+  color: var(--muted);
+}
+.setup-ratio-table th,
+.setup-ratio-table td {
+  padding: 0.1rem 0.5rem;
+  text-align: right;
+}
+.setup-saved {
+  margin-top: 0.6rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+.setup-saved h4 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+.setup-saved-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+.setup-saved-form label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.setup-saved-name {
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+}
+.setup-saved-name small {
+  color: var(--muted);
+}
+.setup-saved-actions {
+  display: inline-flex;
+  gap: 0.3rem;
+}
+.setup-confirm {
+  margin: 0;
+  font-size: 0.85rem;
+}
+/* end analysis setup */

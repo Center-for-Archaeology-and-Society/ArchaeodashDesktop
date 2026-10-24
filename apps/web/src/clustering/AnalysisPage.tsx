@@ -1,19 +1,25 @@
 import { runAnalysisJob } from './job-workflow.ts';
-import { analysisColumns, projectionLabels, sourceOptions } from './input-options.ts';
+import {
+  analysisColumns, defaultIdColumn, groupEligibility, pcCountOptions, projectionLabels, sourceFeatureCount, sourceOptions, uniqueIdColumns,
+} from './input-options.ts';
 import { moveAcrossSources } from './multi-source-move.ts';
 import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
 import { useGroupFiles } from '../datasets/useGroupFiles.ts';
 import { asRowsResponse, defaultGroupColumn, inputPaths } from '../visualize/combine.ts';
 import { notifyGroupsChanged } from '../data-manager/events.ts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
-import { ANALYSIS_SETUP_NAME, analysisInput, setupSummary } from '../analysis-setup/setup.ts';
+import { ANALYSIS_SETUP_NAME, UMAP_SEED, analysisInput, setupSummary } from '../analysis-setup/setup.ts';
 import { ResultAssignment } from './ResultAssignment.tsx';
 import { AnalysisPlots } from './AnalysisPlots.tsx';
 import { layoutDendrogram } from './dendrogram-model.ts';
+import { euclideanMatchKeys, selectableRows } from './assignment-model.ts';
+import { ResultGrid, type GridSelection } from './ResultGrid.tsx';
+import type { GridColumn } from './grid-model.ts';
+import { EligibleGroupPicker, GroupSizesTable } from './MembershipGroups.tsx';
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import type {
   AnalysisSource, ClusterDistanceMetric, ClusterLinkage, TransformationDefinition, AnalysisJobSnapshot, AnalysisJobRequest,
-  Transport, ClusterMethod, MembershipMethod, TransferUnitsRequest, BatchTransferUnitsRequest,
+  Transport, ClusterMethod, MembershipMethod, TransferUnitsRequest, BatchTransferUnitsRequest, GroupCandidate,
   ClusterFitResponse, ClusterDiagnosticsResponse,
   MembershipProbabilitiesResponse, EuclideanMatchesResponse, TableCell,
 } from '@archaeodash/client';
@@ -22,7 +28,8 @@ import { TableCard, num, type TableSheet } from '../ui/TableExport.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
 
 export type AnalysisKind = 'cluster' | 'membership' | 'euclidean';
-export type AnalysisDeps = Pick<Transport, 'groups' | 'clustering' | 'jobs' | 'transformations'>;
+/** `ordination` labels the PC-count choices with explained variance (optional). */
+export type AnalysisDeps = Pick<Transport, 'groups' | 'clustering' | 'jobs' | 'transformations'> & Partial<Pick<Transport, 'ordination'>>;
 export type AnalysisResult =
   | { kind: 'fit'; data: ClusterFitResponse }
   | { kind: 'diagnostics'; data: ClusterDiagnosticsResponse }
@@ -34,7 +41,6 @@ const descriptions = {
   membership: 'Hotelling membership probabilities or Mahalanobis distances of every sample to each group.',
   euclidean: 'The nearest samples to each sample by Euclidean distance.',
 };
-const display = (value: TableCell | undefined): string => value === null || value === undefined ? 'Unavailable' : String(value);
 
 /**
  * Per-row labels for a result: the sample's ANID (visible ID) from the
@@ -48,11 +54,24 @@ export interface RowInfo {
 
 const DEFAULT_ROW_INFO: RowInfo = { idColumn: 'ID', label: (_uuid, i) => `Unit ${i + 1}`, group: () => null };
 
+/** A result table plus what the on-screen grid needs (exports ignore the extras). */
+export interface ResultSheet extends TableSheet {
+  /** Names the saved grid view (column visibility, compact mode). */
+  readonly id: string;
+  readonly gridColumns?: readonly GridColumn[];
+  /** Selection key per row (null: not selectable); first sheet only. */
+  readonly keys?: readonly (string | null)[];
+  readonly rowLabel?: (row: readonly TableCell[], index: number) => string;
+}
+
 /** The result as display/export tables (first is the main table). */
-export function resultTables(result: AnalysisResult, rows: RowInfo = DEFAULT_ROW_INFO, cutK = 2): TableSheet[] {
+export function resultTables(result: AnalysisResult, rows: RowInfo = DEFAULT_ROW_INFO, cutK = 2): ResultSheet[] {
+  const valid = new Set(selectableRows(result, cutK).map(row => row.key));
+  const keyed = (key: string | null | undefined) => (key && valid.has(key) ? key : null);
   switch (result.kind) {
     case 'diagnostics':
       return [{
+        id: 'cluster-diagnostics',
         name: 'Cluster diagnostics',
         columns: ['Cluster count', 'Within-cluster sum of squares', 'Mean silhouette'],
         rows: result.data.wss.map((wss, i) => [i + 1, num(wss), i ? num(result.data.silhouette[i - 1]) : null]),
@@ -62,25 +81,30 @@ export function resultTables(result: AnalysisResult, rows: RowInfo = DEFAULT_ROW
       const ids = data.analytical_uuids ?? [];
       if (data.cluster) {
         return [{
+          id: 'cluster-assignments',
           name: 'Cluster assignments',
           columns: [rows.idColumn, 'Group', 'Cluster', 'Silhouette'],
           rows: data.cluster.map((label, i) => [rows.label(ids[i], i), rows.group(ids[i]), label, num(data.silhouette?.[i])]),
+          keys: data.cluster.map((_, i) => keyed(ids[i])),
         }];
       }
       // hclust `merge`: negative entries are samples, positive ones earlier merges.
       const ref = (value: number) => (value < 0 ? rows.label(ids[-value - 1], -value - 1) : `Merge ${value}`);
-      const sheets: TableSheet[] = [];
+      const sheets: ResultSheet[] = [];
       const layout = layoutDendrogram(data, Math.max(1, Math.min(cutK, data.n_rows)));
       if (layout) {
         const cluster = new Array<number>(data.n_rows);
         for (const leaf of layout.leaves) cluster[leaf.row - 1] = leaf.group + 1;
         sheets.push({
+          id: 'cluster-cut',
           name: `Clusters (cut ${cutK})`,
           columns: [rows.idColumn, 'Group', 'Cluster'],
           rows: Array.from({ length: data.n_rows }, (_, i) => [rows.label(ids[i], i), rows.group(ids[i]), cluster[i] ?? null]),
+          keys: Array.from({ length: data.n_rows }, (_, i) => keyed(ids[i])),
         });
       }
       sheets.push({
+        id: 'cluster-merges',
         name: 'Merge steps',
         columns: ['Merge step', 'Left branch', 'Right branch', 'Height'],
         rows: (data.merge ?? []).map((pair, i) => [i + 1, ref(pair[0]), ref(pair[1]), num(data.height?.[i])]),
@@ -89,21 +113,33 @@ export function resultTables(result: AnalysisResult, rows: RowInfo = DEFAULT_ROW
     }
     case 'membership': {
       const data = result.data;
+      const columns = ['ID', 'Group', ...data.eligible_groups, 'Best group', 'Best value', 'In group', 'Projection included'];
       return [{
+        id: 'membership',
         name: data.effective_method === 'mahalanobis' ? 'Mahalanobis distances' : 'Membership probabilities',
-        columns: ['ID', 'Group', ...data.eligible_groups, 'Best group', 'Best value', 'In group', 'Projection included'],
+        columns,
+        // As in the legacy table: values to two decimals, Best value hidden until shown.
+        gridColumns: columns.map((label, i) => (i >= 2 && i < 2 + data.eligible_groups.length ? { label, digits: 2 }
+          : label === 'Best value' ? { label, digits: 2, hiddenByDefault: true } : { label })),
+        keys: data.ids.map((_, i) => keyed(data.analytical_uuids?.[i])),
         rows: data.ids.map((id, i) => [
           id, data.groups[i] ?? null, ...(data.probabilities[i] ?? []).map(num), data.best_group[i] ?? null, num(data.best_value[i]),
           data.in_group[i] ? 'Yes' : 'No', data.projection_included?.[i] === false ? 'No' : 'Yes',
         ]),
       }];
     }
-    case 'euclidean':
+    case 'euclidean': {
+      const matchKeys = euclideanMatchKeys(result.data.rows);
       return [{
+        id: 'euclidean',
         name: 'Euclidean matches',
         columns: ['ID', 'Group', 'Match ID', 'Match group', 'Distance'],
+        gridColumns: [{ label: 'ID' }, { label: 'Group' }, { label: 'Match ID' }, { label: 'Match group' }, { label: 'Distance', digits: 4 }],
         rows: result.data.rows.map((row) => [row.id, row.group, row.match_id, row.match_group, num(row.distance)]),
+        keys: matchKeys.map(keyed),
+        rowLabel: (row) => `${String(row[0] ?? 'sample')} match ${String(row[2] ?? '')}`,
       }];
+    }
   }
 }
 
@@ -115,8 +151,11 @@ const EXPORT_NAMES: Record<AnalysisResult['kind'], string> = {
 };
 
 /** Internal row keys and file paths never enter the visible results table. */
-export function ResultTable({ result, rows: rowInfo, cutK = 2 }: { result: AnalysisResult; rows?: RowInfo; cutK?: number }): ReactElement {
-  const [shown, setShown] = useState(100);
+export function ResultTable({ result, rows: rowInfo, cutK = 2, selection }: {
+  result: AnalysisResult; rows?: RowInfo; cutK?: number;
+  /** Checked rows of the main table (row keys; see `selectableRows`). */
+  selection?: GridSelection;
+}): ReactElement {
   const sheets = resultTables(result, rowInfo, cutK);
   let method = '';
   if (result.kind === 'fit') method = result.data.method;
@@ -124,6 +163,7 @@ export function ResultTable({ result, rows: rowInfo, cutK = 2 }: { result: Analy
   const meta = <>
     {method && <p className="muted">Method: {method}</p>}
     {result.kind === 'membership' && result.data.fallback_reason && <p role="status" className="callout callout-info">Hotelling probabilities were unavailable for this comparison. Showing Mahalanobis distances instead ({result.data.fallback_reason.replaceAll('_', ' ')}).</p>}
+    {result.kind === 'membership' && result.data.eligibility_warning && <p role="status" className="callout callout-info">{result.data.eligibility_warning}</p>}
     {result.data.source && <p className="muted">Source: {result.data.source}; columns: {result.data.column_names?.join(', ')}</p>}
     {(result.kind === 'fit' || result.kind === 'diagnostics') && result.data.metric && <p className="muted">Distance: {result.data.metric}{result.kind === 'fit' && result.data.merge ? (result.data.method === 'diana' ? '; method: DIANA' : `; linkage: ${result.data.linkage}`) : ''}</p>}
     {result.kind === 'diagnostics' && <p className="muted">Diagnostic method: {result.data.diagnostic_method ?? 'kmeans'}</p>}
@@ -135,15 +175,35 @@ export function ResultTable({ result, rows: rowInfo, cutK = 2 }: { result: Analy
       title={sheet.name}
       fileName={index === 0 ? EXPORT_NAMES[result.kind] : `${EXPORT_NAMES[result.kind]} - ${sheet.name}`}
       sheets={() => (index === 0 ? sheets : [sheet])}
-      note={`${sheet.rows.length} rows${sheet.rows.length > shown ? `; showing ${shown}` : ''}.`}
+      note={`${sheet.rows.length} rows.${index === 0 && selection && sheet.keys?.some(Boolean) ? ' Check rows to assign them below.' : ''}`}
     >
-      {sheet.rows.length === 0 ? <p className="empty-note">No eligible results for these settings.</p> : <table className="data-table">
-        <thead><tr>{sheet.columns.map((h, i) => <th key={i}>{h}</th>)}</tr></thead>
-        <tbody>{sheet.rows.slice(0, shown).map((row, i) => <tr key={i}>{row.map((v, j) => <td key={j}>{display(v)}</td>)}</tr>)}</tbody>
-      </table>}
-      {shown < sheet.rows.length && <button type="button" className="btn btn-sm" onClick={() => setShown(n => n + 100)}>Show 100 more rows</button>}
+      {sheet.rows.length === 0 ? <p className="empty-note">No eligible results for these settings.</p> : <ResultGrid
+        tableId={sheet.id}
+        columns={sheet.gridColumns ?? sheet.columns.map(label => ({ label }))}
+        rows={sheet.rows}
+        {...(index === 0 && selection && sheet.keys ? { keys: sheet.keys, selection } : {})}
+        {...(sheet.rowLabel ? { rowLabel: sheet.rowLabel } : {})}
+      />}
     </TableCard>)}
   </section>;
+}
+
+/** Plots, the result tables and the assignment controls of one result; owns the row selection. */
+function ResultsPanel({ result, cutK, onCutKChange, busy, reviewing, onReviewChange, rowInfo, destinations, candidates, multiSource, onAssign }: {
+  result: AnalysisResult; cutK: number; onCutKChange: (k: number) => void; busy: boolean; reviewing: boolean;
+  onReviewChange: (reviewing: boolean) => void; rowInfo: RowInfo; destinations: readonly string[];
+  candidates: readonly GroupCandidate[]; multiSource: boolean;
+  onAssign: (request: TransferUnitsRequest | BatchTransferUnitsRequest) => void;
+}): ReactElement {
+  // Keys (UUIDs, or Euclidean match rows) survive sorting, filtering and column changes.
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  return <>
+    <AnalysisPlots result={result} cutK={cutK} onCutKChange={onCutKChange} disabled={busy || reviewing} rowLabel={rowInfo.label} />
+    <ResultTable result={result} rows={rowInfo} cutK={cutK} selection={{ selected, onChange: setSelected, disabled: busy || reviewing }} />
+    <ResultAssignment result={result} cutK={cutK} destinations={destinations} candidates={candidates} multiSource={multiSource} busy={busy}
+      onReviewChange={onReviewChange} onConfirm={onAssign} onBatchConfirm={onAssign} rowLabel={rowInfo.label}
+      selected={selected} onSelectedChange={setSelected} />
+  </>;
 }
 
 export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: AnalysisDeps }): ReactElement {
@@ -160,10 +220,12 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   const [id, setId] = useState('');
   const [source, setSource] = useState<AnalysisSource>('elements');
   const [pcCount, setPcCount] = useState(2);
+  const [pcaVariance, setPcaVariance] = useState<{ explained: number[]; cumulative: number[] } | null>(null);
   const [plotGroup, setPlotGroup] = useState('');
   const [sourceGroup, setSourceGroup] = useState('');
   const [metric, setMetric] = useState<ClusterDistanceMetric>('euclidean');
-  const [linkage, setLinkage] = useState<ClusterLinkage>('ward_d2');
+  // R defaults: average linkage (clusterTab.R), 10 matches, exclude same-group matches (EuclideanDistance.R).
+  const [linkage, setLinkage] = useState<ClusterLinkage>('average');
   const [minkowskiP, setMinkowskiP] = useState(2);
   const [starts, setStarts] = useState(25);
   const [iterations, setIterations] = useState(100);
@@ -194,9 +256,10 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   const [method, setMethod] = useState<ClusterMethod>('kmeans');
   const [membershipMethod, setMembershipMethod] = useState<MembershipMethod>('hotellings');
   const [k, setK] = useState(2);
+  const [diagnosticMaxK, setDiagnosticMaxK] = useState(10);
   const [seed, setSeed] = useState(20260914);
-  const [limit, setLimit] = useState(5);
-  const [within, setWithin] = useState(true);
+  const [limit, setLimit] = useState(10);
+  const [within, setWithin] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -216,13 +279,26 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   useEffect(() => {
     if (!data) return;
     setGroup(defaultGroup);
-    setId(data.visible_id_column); setSourceGroup(defaultGroup); setPlotGroup(defaultGroup); setProjection(null);
+    setId(defaultIdColumn(data, uniqueIdColumns(data))); setSourceGroup(defaultGroup); setPlotGroup(defaultGroup); setProjection(null);
     setDefinitionName(analysisSetup.setup ? ANALYSIS_SETUP_NAME : '');
   }, [data, defaultGroup, analysisSetup.setup]);
   useEffect(() => { if (dataset.load.kind === 'error') setError(dataset.load.message); }, [dataset.load]);
+  // PCA of the same inputs the analysis uses, for "First n PCs (var% / cum%)" labels.
   useEffect(() => {
-    if (data && columns.length) setPcCount(current => Math.max(1, Math.min(current, columns.length, data.rows.length)));
-  }, [columns.length, data]);
+    setPcaVariance(null);
+    if (source !== 'pca' || !data || !columns.length || !deps.ordination) return;
+    let active = true;
+    deps.ordination.pca({ ...inputPaths(files), columns, transformation: definition, scale: false })
+      .then(fitted => { if (active) setPcaVariance({ explained: fitted.explained_variance, cumulative: fitted.cumulative_variance }); })
+      .catch(() => { /* Unlabelled choices remain. */ });
+    return () => { active = false; };
+  }, [source, data, files, columns, definition, deps.ordination]);
+  const pcMax = !data ? 0 : pcaVariance?.explained.length || Math.max(1, Math.min(columns.length, data.rows.length));
+  // Default to every component (GroupMembership.R / EuclideanDistance.R).
+  useEffect(() => { if (pcMax) setPcCount(pcMax); }, [pcMax]);
+  const idChoices = useMemo(() => (data ? uniqueIdColumns(data) : []), [data]);
+  const featureCount = sourceFeatureCount(source, columns.length, pcCount, data ? projectionLabels(data, sourceGroup).length : 0);
+  const eligibility = useMemo(() => (data && kind === 'membership' ? groupEligibility(data, group, featureCount) : []), [data, kind, group, featureCount]);
 
   // ANID and group of each loaded row, by hidden identity.
   const rowInfo = useMemo<RowInfo>(() => {
@@ -240,14 +316,16 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     const ticket = ++generation.current;
     setBusy(true); setError(''); setNotice(''); setReviewing(false); setCutK(2); setResult(null);
     try {
-      const input = { ...inputPaths(files), columns, transformation: definition, ...sourceOptions(source, pcCount, sourceGroup, seed) };
+      // UMAP always uses the Ordination embedding's seed; the clustering seed is separate.
+      const input = { ...inputPaths(files), columns, transformation: definition, ...sourceOptions(source, pcCount, sourceGroup, UMAP_SEED) };
       let analysis: AnalysisJobRequest;
       if (kind === 'cluster') {
         analysis = diagnostics
-          ? { kind: 'cluster_diagnostics', request: { ...input, max_k: k, seed, diagnostic_method: diagnosticMethod, metric: diagnosticMethod === 'kmeans' ? 'euclidean' : diagnosticMetric } }
+          ? { kind: 'cluster_diagnostics', request: { ...input, max_k: diagnosticMaxK, seed, diagnostic_method: diagnosticMethod, metric: diagnosticMethod === 'kmeans' ? 'euclidean' : diagnosticMetric } }
           : { kind: 'cluster_fit', request: { ...input, method, k, seed, plot_group_column: plotGroup || null, iter_max: iterations, nstart: starts, metric: method === 'kmeans' ? 'euclidean' : metric, linkage, minkowski_p: minkowskiP } };
       } else if (kind === 'membership') {
-        analysis = { kind: 'membership_probabilities', request: { ...input, group_column: group, id_column: id, method: membershipMethod, projection_groups: projection } };
+        const eligibleNow = new Set(eligibility.filter(g => g.eligible).map(g => g.group));
+        analysis = { kind: 'membership_probabilities', request: { ...input, group_column: group, id_column: id, method: membershipMethod, projection_groups: projection?.filter(g => eligibleNow.has(g)) ?? null } };
       } else {
         analysis = { kind: 'euclidean_matches', request: { ...input, group_column: group, id_column: id, limit, within_group: within, projection_groups: projection } };
       }
@@ -318,9 +396,11 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
         <label className="field">Analysis source <select value={source} onChange={e => setSource(e.target.value as AnalysisSource)}>
           <option value="elements">Elements / ratios</option><option value="pca">PCA scores</option><option value="umap">UMAP dimensions</option><option value="lda">Linear discriminants</option>
         </select></label>
-        {source === 'pca' && <label className="field">Principal components <input type="number" min={1} max={Math.min(columns.length, data.rows.length)} value={pcCount} onChange={e => setPcCount(Number(e.target.value))} /></label>}
+        {source === 'pca' && <label className="field">Principal components <select value={pcCount} onChange={e => setPcCount(Number(e.target.value))}>
+          {pcCountOptions(pcMax, pcaVariance?.explained, pcaVariance?.cumulative).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select><span className="field-hint">Shown as (PC variance / cumulative variance).</span></label>}
         {source === 'lda' && <label className="field">LDA grouping column <select value={sourceGroup} onChange={e => setSourceGroup(e.target.value)}>{data.descriptive_columns.map(c => <option key={c}>{c}</option>)}</select></label>}
-        {source === 'umap' && <label className="field">UMAP seed <input type="number" min={0} max={2147483627} value={seed} onChange={e => setSeed(Number(e.target.value))} /></label>}
+        {source === 'umap' && <p className="field-hint">UMAP uses the same embedding as the Ordination page (seed {UMAP_SEED}).</p>}
         {kind === 'cluster' ? <>
           <label className="field">Method <select value={method} onChange={e => { setMethod(e.target.value as ClusterMethod); setMetric('euclidean'); }}>
             <option value="kmeans">k-means</option><option value="pam">k-medoids (PAM)</option>
@@ -332,20 +412,23 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
           </select></label>}
           {method === 'hclust' && <label className="field">Linkage <select value={linkage} onChange={e => setLinkage(e.target.value as ClusterLinkage)}><option value="average">Average</option><option value="complete">Complete</option><option value="ward_d">Ward.D</option><option value="ward_d2">Ward.D2</option></select></label>}
           {method === 'hclust' && metric === 'minkowski' && <label className="field">Minkowski power <input type="number" min={1} step={0.1} value={minkowskiP} onChange={e => setMinkowskiP(Number(e.target.value))} /></label>}
-          <label className="field">Cluster count / diagnostic maximum <input type="number" min={1} max={20} value={k} onChange={e => setK(Number(e.target.value))} /></label>
+          <label className="field">Cluster count <input type="number" min={1} max={20} value={k} onChange={e => setK(Number(e.target.value))} /></label>
           {method === 'kmeans' && <><label className="field">Starts <input type="number" min={1} max={100} value={starts} onChange={e => setStarts(Number(e.target.value))} /></label><label className="field">Maximum iterations <input type="number" min={1} max={200} value={iterations} onChange={e => setIterations(Number(e.target.value))} /></label></>}
           {(method === 'kmeans' || method === 'pam') && <label className="field">Plot grouping column <select value={plotGroup} onChange={e => setPlotGroup(e.target.value)}><option value="">No group colors</option>{data.descriptive_columns.map(c => <option key={c}>{c}</option>)}</select></label>}
+          <label className="field">Diagnostic maximum k <input type="number" min={2} max={20} value={diagnosticMaxK} onChange={e => setDiagnosticMaxK(Number(e.target.value))} /></label>
           <label className="field">Diagnostic method <select value={diagnosticMethod} onChange={e => setDiagnosticMethod(e.target.value as 'kmeans' | 'pam')}><option value="kmeans">k-means</option><option value="pam">k-medoids (PAM)</option></select></label>
           {diagnosticMethod === 'pam' && <label className="field">Diagnostic distance <select value={diagnosticMetric} onChange={e => setDiagnosticMetric(e.target.value as 'euclidean' | 'manhattan')}><option value="euclidean">Euclidean</option><option value="manhattan">Manhattan</option></select></label>}
           <label className="field">Random seed <input type="number" min={-2147483648} max={2147483627} value={seed} onChange={e => setSeed(Number(e.target.value))} /></label>
         </> : <>
           <label className="field">Group column <select value={group} onChange={e => { setGroup(e.target.value); setProjection(null); }}>{data.descriptive_columns.map(c => <option key={c}>{c}</option>)}</select></label>
-          <label className="field">ID column <select value={id} onChange={e => setId(e.target.value)}>{[...new Set([data.visible_id_column, ...data.descriptive_columns])].map(c => <option key={c}>{c}</option>)}</select></label>
+          <label className="field">ID column <select value={id} onChange={e => setId(e.target.value)}>{idChoices.map(c => <option key={c}>{c}</option>)}</select><span className="field-hint">Only columns with a unique value per sample.</span></label>
           {kind === 'membership' ? <label className="field">Method <select value={membershipMethod} onChange={e => setMembershipMethod(e.target.value as MembershipMethod)}><option value="hotellings">Hotelling probabilities (Mahalanobis fallback)</option><option value="mahalanobis">Mahalanobis distances</option></select></label> : <>
             <label className="field">Matches per analytical unit <input type="number" min={1} max={100} value={limit} onChange={e => setLimit(Number(e.target.value))} /></label>
             <label className="field-check"><input type="checkbox" checked={within} onChange={e => setWithin(e.target.checked)} />Include same-group matches</label>
           </>}
-          <label className="field field-wide">Projection groups <GroupMultiSelect label="Projection groups" options={projectionLabels(data, group).map(g => ({ path: g, name: g }))} selected={projection ?? projectionLabels(data, group)} onChange={next => { reset(); setProjection(next); }} /></label>
+          {kind === 'membership'
+            ? <EligibleGroupPicker groups={eligibility} selected={projection} featureCount={featureCount} onChange={next => { reset(); setProjection(next); }} />
+            : <label className="field field-wide">Projection groups <GroupMultiSelect label="Projection groups" options={projectionLabels(data, group).map(g => ({ path: g, name: g }))} selected={projection ?? projectionLabels(data, group)} onChange={next => { reset(); setProjection(next); }} /></label>}
           {kind === 'euclidean' && <p className="field-hint field-wide">Same-group matches are filtered after the match limit is applied.</p>}
         </>}
       </fieldset> : <p className="empty-note">Load a dataset to choose settings.</p>}
@@ -356,12 +439,12 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
         {busy && !moving.current && <button type="button" className="btn btn-ghost" disabled={cancelling} onClick={() => { setCancelling(true); activeJob.current?.abort(); }}>Cancel analysis</button>}
       </div>
     </form>
+    {kind === 'membership' && data && group && <GroupSizesTable groups={eligibility} column={group} />}
     {busy && <BusyNote>{moving.current ? 'Assigning analytical units to groups…' : cancelling ? 'Cancelling analysis…' : job ? `${job.state}: ${job.stage?.replaceAll('_', ' ') ?? 'waiting'} (${job.progress}%)` : 'Submitting analysis…'}</BusyNote>}
     {notice && <p role="status" className="callout callout-info">{notice}</p>}{error && <p role="alert">{error}</p>}
     {result && <div key={generation.current} className="results">
-      <AnalysisPlots result={result} cutK={cutK} onCutKChange={setCutK} disabled={busy || reviewing} rowLabel={rowInfo.label} />
-      <ResultTable result={result} rows={rowInfo} cutK={cutK} />
-      <ResultAssignment result={result} cutK={cutK} destinations={paths} candidates={candidates} multiSource={multiSource} busy={busy} onReviewChange={setReviewing} onConfirm={request => void assign(request)} onBatchConfirm={request => void assign(request)} rowLabel={rowInfo.label} />
+      <ResultsPanel result={result} cutK={cutK} onCutKChange={setCutK} busy={busy} reviewing={reviewing} onReviewChange={setReviewing} rowInfo={rowInfo}
+        destinations={paths} candidates={candidates} multiSource={multiSource} onAssign={request => void assign(request)} />
     </div>}
   </section>;
 }

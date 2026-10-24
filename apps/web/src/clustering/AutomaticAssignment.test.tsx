@@ -36,7 +36,7 @@ test('automatic assignment exposes explicit destination choices without confirmi
   assert.doesNotMatch(markup, /analytical_uuid|revision_id|expected_destination_revision/);
 });
 
-test('empty selection prompts for selection and ambiguous closest groups report safely', () => {
+test('empty selection prompts for selection and conflicting checked matches report safely', () => {
   const empty = renderToStaticMarkup(<AutomaticAssignment result={membership} selected={[]} candidates={candidates} cutK={2} busy={false}
     onConfirm={noOp} onReviewChange={noOp} />);
   assert.match(empty, /Select analytical units above/);
@@ -44,9 +44,9 @@ test('empty selection prompts for selection and ambiguous closest groups report 
     { analytical_uuid: uuidA, match_analytical_uuid: uuidB, rowid: 'r1', id: 'visible A', match_id: 'visible B', distance: 1, group: 'A', match_group: 'North' },
     { analytical_uuid: uuidA, match_analytical_uuid: uuidB, rowid: 'r2', id: 'visible A', match_id: 'visible B', distance: 1, group: 'A', match_group: 'South' },
   ] } };
-  const ambiguous = renderToStaticMarkup(<AutomaticAssignment result={euclidean} selected={[uuidA]} candidates={candidates} cutK={2} busy={false}
+  const ambiguous = renderToStaticMarkup(<AutomaticAssignment result={euclidean} selected={[`${uuidA}#1`, `${uuidA}#2`]} candidates={candidates} cutK={2} busy={false}
     onConfirm={noOp} onReviewChange={noOp} />);
-  assert.match(ambiguous, /closest Euclidean matches disagree/);
+  assert.match(ambiguous, /check one match per sample/);
   assert.match(ambiguous, /role="alert"/);
   assert.doesNotMatch(ambiguous, new RegExp(`${uuidA}|${uuidB}|private-revision`));
 });

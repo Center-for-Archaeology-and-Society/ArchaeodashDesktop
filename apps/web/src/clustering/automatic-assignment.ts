@@ -1,7 +1,8 @@
 import type { BatchTransferUnitsRequest, GroupCandidate } from '@archaeodash/client';
 import type { AnalysisResult } from './AnalysisPage.tsx';
-import { selectableRows } from './assignment-model.ts';
+import { euclideanMatchKeys, selectableRows, selectedUnits } from './assignment-model.ts';
 import { layoutDendrogram } from './dendrogram-model.ts';
+import { newGroupProblem, safePath } from './new-group.ts';
 
 export interface AssignmentRecommendation {
   analyticalUuid: string;
@@ -21,23 +22,24 @@ const finite = (value: unknown): value is number => typeof value === 'number' &&
 const isIdentity = (value: unknown): value is string =>
   typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 
-function selectedIds(result: AnalysisResult, selectedUuids: readonly string[], cutK: number): string[] {
+/** The selected units (distinct, in selection order) after validating every key. */
+function selectedIds(result: AnalysisResult, selectedKeys: readonly string[], cutK: number): string[] {
   const rows = selectableRows(result, cutK);
-  const valid = new Set(rows.map(row => row.analyticalUuid));
-  const selected = [...new Set(selectedUuids)];
-  if (!selected.length || selected.some(uuid => !valid.has(uuid))) {
+  const valid = new Set(rows.map(row => row.key));
+  const keys = [...new Set(selectedKeys)];
+  if (!keys.length || keys.some(key => !valid.has(key))) {
     throw new Error('Selection must contain valid analytical units from this result.');
   }
-  return selected;
+  return selectedUnits(rows, keys);
 }
 
 /** Recommend a destination label for each selected analytical identity. */
 export function recommendedAssignments(
   result: AnalysisResult,
-  selectedUuids: readonly string[],
+  selectedKeys: readonly string[],
   cutK = 2,
 ): AssignmentRecommendation[] {
-  const selected = selectedIds(result, selectedUuids, cutK);
+  const selected = selectedIds(result, selectedKeys, cutK);
   if (result.kind === 'fit') {
     const { data } = result;
     const clusterByUuid = new Map<string, number>();
@@ -72,47 +74,40 @@ export function recommendedAssignments(
     });
   }
   if (result.kind === 'euclidean') {
-    const selectedSet = new Set(selected);
-    const closest = new Map<string, { distance: number; groups: Set<string> }>();
-    for (const row of result.data.rows) {
-      if (!selectedSet.has(row.analytical_uuid) || row.match_analytical_uuid === row.analytical_uuid || !finite(row.distance)) continue;
-      if (!isIdentity(row.match_analytical_uuid) || typeof row.match_group !== 'string' || !row.match_group.trim()) {
-        throw new Error('A finite Euclidean match has incomplete identity or group data.');
+    // Each checked match row assigns its sample to that match's group, so
+    // a later match (not only the nearest) can be chosen.
+    const rows = result.data.rows;
+    const keys = euclideanMatchKeys(rows);
+    const chosen = new Set(selectedKeys);
+    const groupOf = new Map<string, string>();
+    rows.forEach((row, i) => {
+      const key = keys[i];
+      if (!key || !chosen.has(key)) return;
+      if (row.match_analytical_uuid === row.analytical_uuid || !finite(row.distance) ||
+          !isIdentity(row.match_analytical_uuid) || typeof row.match_group !== 'string' || !row.match_group.trim()) {
+        throw new Error('A checked Euclidean match has incomplete identity, distance, or group data.');
       }
-      const current = closest.get(row.analytical_uuid);
-      if (!current || row.distance < current.distance) {
-        closest.set(row.analytical_uuid, { distance: row.distance, groups: new Set([row.match_group]) });
-      } else if (row.distance === current.distance) {
-        current.groups.add(row.match_group);
+      const current = groupOf.get(row.analytical_uuid);
+      if (current !== undefined && current !== row.match_group) {
+        throw new Error('Checked matches for one sample name different groups; check one match per sample.');
       }
-    }
-    return selected.map(analyticalUuid => {
-      const best = closest.get(analyticalUuid);
-      if (!best) throw new Error('A selected observation has no finite non-self Euclidean match.');
-      if (best.groups.size !== 1) {
-        throw new Error('The closest Euclidean matches disagree; choose a destination manually.');
-      }
-      return { analyticalUuid, groupLabel: [...best.groups][0]! };
+      groupOf.set(row.analytical_uuid, row.match_group);
     });
+    return selected.map(analyticalUuid => ({ analyticalUuid, groupLabel: groupOf.get(analyticalUuid)! }));
   }
   throw new Error('This analysis result cannot recommend assignments.');
-}
-
-function safePath(path: string): boolean {
-  return !!path.trim() && !path.includes('\\') && !path.includes('\0') && !path.startsWith('/') &&
-    !/^[a-zA-Z]:/.test(path) && path.split('/').every(part => part !== '' && part !== '.' && part !== '..');
 }
 
 /** Turn explicit label-to-destination choices into an atomic batch transfer. */
 export function buildAutomaticAssignmentRequest(
   result: AnalysisResult,
-  selectedUuids: readonly string[],
+  selectedKeys: readonly string[],
   mappings: readonly AutomaticDestinationMapping[],
   candidates: readonly GroupCandidate[],
   cutK = 2,
   multiSource = false,
 ): BatchTransferUnitsRequest {
-  const recommendations = recommendedAssignments(result, selectedUuids, cutK);
+  const recommendations = recommendedAssignments(result, selectedKeys, cutK);
   const sourcePath = result.data.path;
   const sourceRevision = result.data.revision_id;
   if (!safePath(sourcePath) || !sourceRevision.trim()) throw new Error('The analysis result has no safe source path or revision.');
@@ -151,6 +146,8 @@ export function buildAutomaticAssignmentRequest(
     const candidate = candidates.find(item => item.path === mapping.destinationPath);
     if (mapping.newGroupName !== undefined) {
       if (!mapping.newGroupName.trim() || candidate) throw new Error('A new group needs a name and a path unused by every group candidate.');
+      const problem = newGroupProblem(mapping.newGroupName, mapping.destinationPath, candidates);
+      if (problem) throw new Error(problem);
       return {
         destination_path: mapping.destinationPath,
         destination_group_name: mapping.newGroupName.trim(),

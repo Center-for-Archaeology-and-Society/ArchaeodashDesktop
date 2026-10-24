@@ -48,24 +48,38 @@ test('membership requires a finite best score and usable group for every selecte
   } }, [a]), /eligible group/);
 });
 
-test('Euclidean recommendations select the nearest finite group and reject cross-group ties', () => {
+test('Euclidean recommendations use the checked match row of each sample', () => {
   const euclidean: AnalysisResult = { kind: 'euclidean', data: { path: 'source.parquet', revision_id: 'source-rev', rows: [
     { analytical_uuid: a, match_analytical_uuid: a, rowid: 'self', id: 'A', match_id: 'A', distance: 0, group: 'old', match_group: 'Self' },
     { analytical_uuid: a, match_analytical_uuid: b, rowid: '1', id: 'A', match_id: 'B', distance: null, group: 'old', match_group: 'Ignored' },
-    { analytical_uuid: a, match_analytical_uuid: b, rowid: '2', id: 'A', match_id: 'B', distance: 4, group: 'old', match_group: 'South' },
     { analytical_uuid: a, match_analytical_uuid: c, rowid: '3', id: 'A', match_id: 'C', distance: 2, group: 'old', match_group: 'North' },
+    { analytical_uuid: a, match_analytical_uuid: b, rowid: '2', id: 'A', match_id: 'B', distance: 4, group: 'old', match_group: 'South' },
+    { analytical_uuid: b, match_analytical_uuid: c, rowid: '4', id: 'B', match_id: 'C', distance: 1, group: 'old', match_group: 'North' },
   ] } };
-  assert.deepEqual(recommendedAssignments(euclidean, [a]), [{ analyticalUuid: a, groupLabel: 'North' }]);
-  assert.throws(() => recommendedAssignments({ ...euclidean, data: { ...euclidean.data, rows: [
-    ...euclidean.data.rows, { ...euclidean.data.rows[3]!, match_group: 'South' },
-  ] } }, [a]), error => error instanceof Error && /choose a destination manually/i.test(error.message) && !error.message.includes(a));
-  const malformedNearest: AnalysisResult = { ...euclidean, data: { ...euclidean.data, rows: [
-    { ...euclidean.data.rows[2]!, distance: 0, match_group: '' },
-    { ...euclidean.data.rows[3]!, distance: 1, match_group: 'North' },
-  ] } };
-  assert.throws(() => recommendedAssignments(malformedNearest, [a]), error =>
-    error instanceof Error && /incomplete identity or group/.test(error.message) && !error.message.includes(a));
-  assert.throws(() => recommendedAssignments(euclidean, [b]), /valid analytical units/);
+  // The nearest (rank 3) or a later match (rank 4) supplies the group.
+  assert.deepEqual(recommendedAssignments(euclidean, [`${a}#3`]), [{ analyticalUuid: a, groupLabel: 'North' }]);
+  assert.deepEqual(recommendedAssignments(euclidean, [`${a}#4`, `${b}#1`]), [
+    { analyticalUuid: a, groupLabel: 'South' }, { analyticalUuid: b, groupLabel: 'North' },
+  ]);
+  assert.throws(() => recommendedAssignments(euclidean, [`${a}#3`, `${a}#4`]),
+    error => error instanceof Error && /one match per sample/i.test(error.message) && !error.message.includes(a));
+  for (const unusable of [`${a}#1`, `${a}#2`]) {
+    assert.throws(() => recommendedAssignments(euclidean, [unusable]), error =>
+      error instanceof Error && /incomplete identity, distance, or group/.test(error.message) && !error.message.includes(a));
+  }
+  assert.throws(() => recommendedAssignments(euclidean, [a]), /valid analytical units/);
+  const request = buildAutomaticAssignmentRequest(euclidean, [`${a}#4`, `${b}#1`], [
+    { groupLabel: 'South', destinationPath: 'south.parquet', newGroupName: 'South' },
+    { groupLabel: 'North', destinationPath: 'north.parquet' },
+  ], candidates);
+  assert.deepEqual(request.targets.map(t => [t.destination_path, t.selected_uuids]), [['south.parquet', [a]], ['north.parquet', [b]]]);
+});
+
+test('new groups cannot reuse an existing group name', () => {
+  assert.throws(() => buildAutomaticAssignmentRequest(fit, [a, b], [
+    { groupLabel: 'Cluster 1', destinationPath: 'source.parquet' },
+    { groupLabel: 'Cluster 2', destinationPath: 'other.parquet', newGroupName: ' north ' },
+  ], candidates), /group named “North” already exists/);
 });
 
 test('batch requests require complete explicit mappings and capture destination revisions', () => {
