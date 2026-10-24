@@ -294,8 +294,9 @@ export function covTrob(
 
 /**
  * Data-ellipse outline (Section 9.4, levels 0.50–0.99) as ggplot2
- * `stat_ellipse(type = "t")` draws it: needs at least three points with
- * distinct x and y values, robust t centre/scatter, radius
+ * `stat_ellipse(type = "t")` draws it: needs at least four points (the
+ * legacy app keeps groups of three or more with distinct x and y values,
+ * then ggplot2 skips any with `n - 1 < 3`), robust t centre/scatter, radius
  * `sqrt(2·qf(level, 2, n - 1))`, and 52 closed-path points (51 segments).
  * Degenerate input yields no points.
  */
@@ -305,7 +306,7 @@ export function ellipsePoints(
   level: number,
 ): { px: number[]; py: number[] } {
   const n = Math.min(x.length, y.length);
-  if (n < 3 || new Set(x.slice(0, n)).size < 2 || new Set(y.slice(0, n)).size < 2) return { px: [], py: [] };
+  if (n < 4 || new Set(x.slice(0, n)).size < 2 || new Set(y.slice(0, n)).size < 2) return { px: [], py: [] };
   const fit = covTrob(x, y);
   if (!fit) return { px: [], py: [] };
   const [a, b, c] = fit.cov;

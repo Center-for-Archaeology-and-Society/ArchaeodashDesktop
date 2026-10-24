@@ -101,9 +101,12 @@ test('ellipse radius uses the F(2, n-1) quantile like stat_ellipse', () => {
   assert.ok(Math.abs(2 * fQuantile2(0.95, 1e7) - chiSquare2(0.95)) < 1e-4);
 });
 
-test('ellipse needs three points with distinct x and y', () => {
+test('ellipse needs four points with distinct x and y', () => {
   assert.deepEqual(ellipsePoints([1], [2], 0.95), { px: [], py: [] });
   assert.deepEqual(ellipsePoints([1, 2], [2, 3], 0.95), { px: [], py: [] });
+  // stat_ellipse: dfd = n - 1 < 3 is "Too few points to calculate an ellipse".
+  assert.deepEqual(ellipsePoints([0, 1, 0], [0, 0, 1], 0.9), { px: [], py: [] });
+  assert.equal(ellipsePoints([0, 1, 0, 1], [0, 0, 1, 1.5], 0.9).px.length, 52);
   assert.deepEqual(ellipsePoints([1, 1, 1], [1, 2, 3], 0.95), { px: [], py: [] });
   // Collinear points have a singular scatter.
   assert.deepEqual(ellipsePoints([1, 2, 3, 4], [2, 4, 6, 8], 0.9), { px: [], py: [] });
