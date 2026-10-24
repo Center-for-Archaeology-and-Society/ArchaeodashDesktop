@@ -305,7 +305,8 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     const sources = selectedEntries.map((entry) => entry.path);
     void runChange(async () => {
       const result = await transport.groups.mergeGroups({ sources, new_group_name: name });
-      return result.outputs.map((output) => output.path);
+      // Match the scanned paths' separators (backslashes on Windows).
+      return result.outputs.map((output) => pathLike(sources[0] ?? '', output.path));
     }, `Merged ${sources.length} files into ${name}.`, `Merging ${sources.length} groups into ${name}…`);
   };
 
@@ -429,7 +430,7 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
         destination_folder: destination,
         remove_sources: pending.move,
       });
-      return result.outputs.map((output) => output.path);
+      return result.outputs.map((output) => pathLike(targets[0]?.path ?? '', output.path));
     }, `${verb} ${plural(targets.length, 'group')} to ${quoted(destination)}.${destination === activeFolder ? '' : ' Click the folder’s circle to use it in analyses.'}`,
     `${pending.move ? 'Moving' : 'Copying'} ${plural(targets.length, 'group')} to ${quoted(destination)}…`);
   };
