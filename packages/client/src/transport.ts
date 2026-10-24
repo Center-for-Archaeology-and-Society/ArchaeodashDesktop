@@ -35,6 +35,8 @@ import type {
   ExportTableRequest,
   GroupFolder,
   RenameFolderRequest,
+  RenameGroupRequest,
+  AddDescriptiveColumnRequest,
   CopyGroupsRequest,
   ExportResult,
   ExportTransformedRequest,
@@ -116,6 +118,10 @@ export interface GroupsService {
   deleteFolder?(path: string): Promise<void>;
   /** Copies or moves whole groups into a folder. */
   copyGroups?(request: CopyGroupsRequest): Promise<TransactionResponse>;
+  /** Renames one group (profile name/id and file name). */
+  renameGroup?(request: RenameGroupRequest): Promise<TransactionResponse>;
+  /** Adds a descriptive column to every group in a folder. */
+  addColumn?(request: AddDescriptiveColumnRequest): Promise<TransactionResponse>;
 }
 
 export interface TransformationsService {

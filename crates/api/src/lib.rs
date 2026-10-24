@@ -162,9 +162,15 @@ async fn imports_preview(
 
 async fn imports_commit(
     State(state): State<AppState>,
-    Json(req): Json<ImportCommitRequest>,
+    Json(cmd): Json<archaeodash_contracts::ImportCommitCommand>,
 ) -> Result<Json<ImportCommitResponse>, (StatusCode, Json<ErrorEnvelope>)> {
-    state.import.commit(&req).map(Json).map_err(error_response)
+    // The optional choices travel flat next to the original request fields.
+    let req: &ImportCommitRequest = &cmd.request;
+    state
+        .import
+        .commit_with(req, &cmd.options)
+        .map(Json)
+        .map_err(error_response)
 }
 
 async fn groups_scan(
@@ -315,6 +321,31 @@ async fn groups_folder_delete(
         .groups
         .delete_folder(&req)
         .map(|()| StatusCode::NO_CONTENT)
+        .map_err(store_error_response)
+}
+
+/// `POST /api/v1/groups/rename`: rename one group (journaled).
+async fn groups_rename(
+    State(state): State<AppState>,
+    Json(req): Json<archaeodash_contracts::RenameGroupRequest>,
+) -> Result<Json<TransactionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .groups
+        .rename_group(&req)
+        .map(Json)
+        .map_err(store_error_response)
+}
+
+/// `POST /api/v1/groups/columns`: add a descriptive column to every group
+/// in a folder (journaled; an existing column needs `overwrite`).
+async fn groups_add_column(
+    State(state): State<AppState>,
+    Json(req): Json<archaeodash_contracts::AddDescriptiveColumnRequest>,
+) -> Result<Json<TransactionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .groups
+        .add_descriptive_column(&req)
+        .map(Json)
         .map_err(store_error_response)
 }
 
@@ -788,6 +819,8 @@ pub fn root_router(state: AppState) -> Router {
         )
         .route("/api/v1/groups/duplicate", post(groups_duplicate))
         .route("/api/v1/groups/copy", post(groups_copy))
+        .route("/api/v1/groups/rename", post(groups_rename))
+        .route("/api/v1/groups/columns", post(groups_add_column))
         .route(
             "/api/v1/groups/folders",
             get(groups_folders).post(groups_folder_create),
@@ -2874,6 +2907,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&ExportTransformedRequest {
+                            format: Default::default(),
                             path: path.clone(),
                             extra_paths: vec![],
                             definition,
@@ -2899,6 +2933,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&ExportPcaScoresRequest {
+                            format: Default::default(),
                             path: path.clone(),
                             extra_paths: vec![],
                             columns: vec!["as".into(), "fe".into()],
@@ -2925,6 +2960,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&ExportPcaScoresRequest {
+                            format: Default::default(),
                             path,
                             extra_paths: vec![],
                             columns: vec!["cu".into()],

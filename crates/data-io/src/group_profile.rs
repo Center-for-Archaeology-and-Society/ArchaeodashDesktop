@@ -219,17 +219,77 @@ pub fn write_group_file(
     source_sha256: Option<String>,
     existing_uuids: Option<&[Uuid]>,
 ) -> Result<GroupProfile, ImportError> {
+    let (roles, rows) = build_group_rows(
+        frame,
+        partition,
+        visible_id_col,
+        elemental,
+        None,
+        recipe,
+        existing_uuids,
+    )?;
+    let profile = GroupProfile {
+        profile_version: PROFILE_VERSION,
+        file_kind: "group".to_string(),
+        group_id: group_id.to_string(),
+        group_name: partition.group_name.clone(),
+        revision_id: revision_id.to_string(),
+        roles,
+        row_count: rows.len(),
+        source_path,
+        source_sha256,
+        import_recipe: recipe.clone(),
+        measured_elemental_checksum: String::new(),
+    };
+    write_group_rows(path, profile, &rows)
+}
+
+/// Builds the role columns and rows of one group from a partition of a
+/// loaded frame without writing anything. Elemental columns coerce through
+/// `parse_r_numeric` with the recipe; descriptive columns keep raw text (the
+/// recipe's blank label fills empty cells).
+///
+/// Descriptive columns are every frame column except `rowid`, the visible
+/// ID, and the elemental columns, in frame order; `descriptive` (when given)
+/// keeps only the listed ones, like the legacy loader's column choice.
+pub fn build_group_rows(
+    frame: &TextFrame,
+    partition: &Partition,
+    visible_id_col: &str,
+    elemental: &[String],
+    descriptive: Option<&[String]>,
+    recipe: &ImportRecipe,
+    existing_uuids: Option<&[Uuid]>,
+) -> Result<(ColumnRoles, Vec<GroupRow>), ImportError> {
     let n = partition.row_indices.len();
     if n == 0 {
         return Err(ImportError::Parse("cannot write an empty group".into()));
     }
-    let mut descriptive: Vec<String> = Vec::new();
-    for name in &frame.columns {
-        if name == "rowid" || elemental.contains(name) || *name == visible_id_col {
-            continue;
+    if let Some(existing) = existing_uuids {
+        if existing.len() != n {
+            return Err(ImportError::Parse(
+                "preserved identities do not match the partition rows".into(),
+            ));
         }
-        descriptive.push(name.clone());
     }
+    if let Some(keep) = descriptive {
+        if let Some(missing) = keep.iter().find(|name| frame.column_index(name).is_none()) {
+            return Err(ImportError::Parse(format!(
+                "descriptive column {missing} is not in the source"
+            )));
+        }
+    }
+    let descriptive_names: Vec<String> = frame
+        .columns
+        .iter()
+        .filter(|name| {
+            name.as_str() != "rowid"
+                && !elemental.contains(name)
+                && name.as_str() != visible_id_col
+                && descriptive.is_none_or(|keep| keep.contains(name))
+        })
+        .cloned()
+        .collect();
 
     let visible_idx = frame.column_index(visible_id_col);
     let rowid_idx = frame.column_index("rowid");
@@ -237,7 +297,7 @@ pub fn write_group_file(
         .iter()
         .map(|name| frame.column_index(name))
         .collect();
-    let descriptive_idx: Vec<Option<usize>> = descriptive
+    let descriptive_idx: Vec<Option<usize>> = descriptive_names
         .iter()
         .map(|name| frame.column_index(name))
         .collect();
@@ -283,27 +343,14 @@ pub fn write_group_file(
             elemental: elemental_values,
         });
     }
-
-    let profile = GroupProfile {
-        profile_version: PROFILE_VERSION,
-        file_kind: "group".to_string(),
-        group_id: group_id.to_string(),
-        group_name: partition.group_name.clone(),
-        revision_id: revision_id.to_string(),
-        roles: ColumnRoles {
-            identity: IDENTITY_COLUMN.to_string(),
-            visible_id: visible_id_col.to_string(),
-            legacy_rowid: LEGACY_ROWID_COLUMN.to_string(),
-            descriptive,
-            elemental: elemental.to_vec(),
-        },
-        row_count: n,
-        source_path,
-        source_sha256,
-        import_recipe: recipe.clone(),
-        measured_elemental_checksum: String::new(),
+    let roles = ColumnRoles {
+        identity: IDENTITY_COLUMN.to_string(),
+        visible_id: visible_id_col.to_string(),
+        legacy_rowid: LEGACY_ROWID_COLUMN.to_string(),
+        descriptive: descriptive_names,
+        elemental: elemental.to_vec(),
     };
-    write_group_rows(path, profile, &rows)
+    Ok((roles, rows))
 }
 
 /// Writes a successor group file from full row data (Section 6.7: every

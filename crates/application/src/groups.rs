@@ -6,10 +6,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use archaeodash_contracts::{
-    BatchTransferUnitsRequest, CopyGroupsRequest, CreateFolderRequest, DeleteFolderRequest,
-    DeleteGroupRequest, DuplicateGroupRequest, GroupCandidate, GroupFolder, GroupRowDto,
-    GroupRowsResponse, GroupSummary, MergeGroupsRequest, PatchDescriptiveValuesRequest,
-    RenameFolderRequest, TransactionResponse, TransferAction, TransferUnitsRequest,
+    AddDescriptiveColumnRequest, BatchTransferUnitsRequest, CopyGroupsRequest, CreateFolderRequest,
+    DeleteFolderRequest, DeleteGroupRequest, DuplicateGroupRequest, GroupCandidate, GroupFolder,
+    GroupRowDto, GroupRowsResponse, GroupSummary, MergeGroupsRequest,
+    PatchDescriptiveValuesRequest, RenameFolderRequest, RenameGroupRequest, TransactionResponse,
+    TransferAction, TransferUnitsRequest,
 };
 use archaeodash_data_io::{sanitize_group_name, GroupFileData, GroupProfile, GroupRow};
 use archaeodash_file_store_fs::FsGroupFileStore;
@@ -133,12 +134,15 @@ impl GroupService {
     }
 
     /// Runs a transaction after checking that no folder it writes would hold
-    /// the same sample (analytical UUID) twice. Descriptive edits and deletes
-    /// never add rows, so they skip the check.
+    /// the same sample (analytical UUID) twice. Descriptive edits, column
+    /// additions, renames, and deletes never add rows, so they skip the check.
     fn execute(&self, tx: &Transaction) -> Result<String, StoreError> {
         if !matches!(
             tx.action,
-            TransactionAction::PatchDescriptive | TransactionAction::DeleteGroup
+            TransactionAction::PatchDescriptive
+                | TransactionAction::DeleteGroup
+                | TransactionAction::RenameGroup
+                | TransactionAction::AddDescriptiveColumn
         ) {
             self.ensure_unique_samples_per_folder(tx)?;
         }
@@ -936,6 +940,14 @@ impl GroupService {
                     "duplicate_group uses duplicate_group, not transfer_units".to_string(),
                 ));
             }
+            TransactionAction::RenameGroup
+            | TransactionAction::AddDescriptiveColumn
+            | TransactionAction::ReplaceImport
+            | TransactionAction::AppendImport => {
+                return Err(StoreError::Invariant(format!(
+                    "{action:?} is not a unit transfer"
+                )));
+            }
         };
 
         if let Some(dest) = &dest_data {
@@ -1237,6 +1249,228 @@ impl GroupService {
             transaction_id,
             action: "duplicate_group".to_string(),
             outputs: vec![Self::summary_of_output(&out.path, &out)],
+            deleted_paths: Vec::new(),
+        })
+    }
+
+    /// Renames one group: its profile name and id, and its file name in the
+    /// same folder, through one journaled transaction (rows, identities,
+    /// and lineage are unchanged). Refused when the folder already has a
+    /// group of that name or a file of the new name.
+    pub fn rename_group(
+        &self,
+        req: &RenameGroupRequest,
+    ) -> Result<TransactionResponse, StoreError> {
+        let name = req.new_name.trim();
+        if name.is_empty() {
+            return Err(StoreError::Validation("group name is empty".to_string()));
+        }
+        let data = self.store.read_group(&req.path)?;
+        if data.profile.revision_id != req.expected_revision {
+            return Err(StoreError::RevisionConflict {
+                path: req.path.clone(),
+                expected: req.expected_revision.clone(),
+                found: data.profile.revision_id.clone(),
+            });
+        }
+        if data.profile.group_name == name {
+            return Err(StoreError::Validation(format!(
+                "the group is already named \u{201c}{name}\u{201d}"
+            )));
+        }
+        let from = req.path.replace('\\', "/");
+        let folder = folder_of(&from);
+        let candidates = self.scan_candidates()?;
+        let taken = candidates.iter().any(|c| {
+            let path = c.path.replace('\\', "/");
+            let group_name = c.group.as_ref().map(|g| g.group_name.as_str());
+            path != from
+                && folder_of(&path) == folder
+                && group_name.is_some_and(|n| n.eq_ignore_ascii_case(name))
+        });
+        if taken {
+            let shown = if folder.is_empty() { "/" } else { &folder };
+            return Err(StoreError::Validation(format!(
+                "folder \u{201c}{shown}\u{201d} already has a group named \u{201c}{name}\u{201d}"
+            )));
+        }
+        let group_id = sanitize_group_name(name);
+        let file = format!("{group_id}.parquet");
+        let candidate = if folder.is_empty() {
+            file.clone()
+        } else {
+            format!("{folder}/{file}")
+        };
+        // A new name that maps to the same file (or differs only in case,
+        // which case-insensitive file systems treat as the same file) keeps
+        // the current path.
+        let destination = if candidate.eq_ignore_ascii_case(&from) {
+            req.path.clone()
+        } else {
+            if self.store.resolve(&candidate)?.exists() {
+                return Err(StoreError::Validation(format!(
+                    "a group file named {file} already exists in that folder"
+                )));
+            }
+            candidate
+        };
+        let moved = destination != req.path;
+        let out = PlannedOutput {
+            path: destination,
+            group_id,
+            group_name: name.to_string(),
+            revision_id: Self::next_revision(&data.profile.revision_id),
+            rows: data.rows.clone(),
+            roles: data.profile.roles.clone(),
+            recipe: data.profile.import_recipe.clone(),
+            source_path: data.profile.source_path.clone(),
+            source_sha256: data.profile.source_sha256.clone(),
+        };
+        let deleted_paths = if moved {
+            vec![req.path.clone()]
+        } else {
+            Vec::new()
+        };
+        let tx = Transaction {
+            action: TransactionAction::RenameGroup,
+            inputs: vec![Self::input_of(&req.path, &data)],
+            outputs: vec![out.clone()],
+            delete_paths: deleted_paths.clone(),
+            selected_uuids: data.rows.iter().map(|r| r.uuid).collect(),
+        };
+        let transaction_id = self.execute(&tx)?;
+        Ok(TransactionResponse {
+            transaction_id,
+            action: "rename_group".to_string(),
+            outputs: vec![Self::summary_of_output(&out.path, &out)],
+            deleted_paths,
+        })
+    }
+
+    /// Adds a descriptive column with one value to every group file in a
+    /// folder through one journaled transaction (legacy "Add column",
+    /// `apply_new_column`). Measured, ID, and identity column names are
+    /// refused; a column that already exists is refused unless `overwrite`
+    /// is set, which replaces its values. Measured values never change.
+    pub fn add_descriptive_column(
+        &self,
+        req: &AddDescriptiveColumnRequest,
+    ) -> Result<TransactionResponse, StoreError> {
+        let column = req.column.trim();
+        if column.is_empty() {
+            return Err(StoreError::Validation("column name is empty".to_string()));
+        }
+        let folder = req.folder.replace('\\', "/").trim_matches('/').to_string();
+        let shown = if folder.is_empty() {
+            "the project root".to_string()
+        } else {
+            format!("\u{201c}{folder}\u{201d}")
+        };
+        let reserved = [
+            archaeodash_data_io::IDENTITY_COLUMN,
+            archaeodash_data_io::LEGACY_ROWID_COLUMN,
+            "rowid",
+        ];
+        if reserved.iter().any(|r| r.eq_ignore_ascii_case(column)) {
+            return Err(StoreError::Validation(format!(
+                "\u{201c}{column}\u{201d} is reserved for sample identity; choose another name"
+            )));
+        }
+        let paths: Vec<String> = self
+            .scan_candidates()?
+            .into_iter()
+            .filter(|c| c.ready && folder_of(&c.path) == folder)
+            .map(|c| c.path)
+            .collect();
+        if paths.is_empty() {
+            return Err(StoreError::Validation(format!(
+                "folder {shown} has no groups"
+            )));
+        }
+        let snapshot = self.store.read_groups_snapshot(&paths)?;
+        let mut groups = Vec::with_capacity(paths.len());
+        for (path, data) in paths.iter().zip(snapshot) {
+            let data = data.ok_or_else(|| {
+                StoreError::Validation(format!("group file {path} no longer exists"))
+            })?;
+            let roles = &data.profile.roles;
+            if roles.elemental.iter().any(|c| c == column) {
+                return Err(StoreError::Validation(format!(
+                    "\u{201c}{column}\u{201d} is a measured column in \u{201c}{}\u{201d}; \
+                     measured values cannot be replaced",
+                    data.profile.group_name
+                )));
+            }
+            if roles.visible_id == column {
+                return Err(StoreError::Validation(format!(
+                    "\u{201c}{column}\u{201d} is the ID column of \u{201c}{}\u{201d}",
+                    data.profile.group_name
+                )));
+            }
+            groups.push((path.clone(), data));
+        }
+        let existing = groups
+            .iter()
+            .filter(|(_, d)| d.profile.roles.descriptive.iter().any(|c| c == column))
+            .count();
+        if existing > 0 && !req.overwrite {
+            return Err(StoreError::Validation(format!(
+                "column \u{201c}{column}\u{201d} already exists in {existing} of {} groups in \
+                 folder {shown}; confirm to overwrite its values",
+                groups.len()
+            )));
+        }
+
+        let mut inputs = Vec::with_capacity(groups.len());
+        let mut outputs = Vec::with_capacity(groups.len());
+        for (path, data) in &groups {
+            let mut roles = data.profile.roles.clone();
+            let index = match roles.descriptive.iter().position(|c| c == column) {
+                Some(index) => index,
+                None => {
+                    roles.descriptive.push(column.to_string());
+                    roles.descriptive.len() - 1
+                }
+            };
+            let rows = data
+                .rows
+                .iter()
+                .cloned()
+                .map(|mut row| {
+                    row.descriptive.resize(roles.descriptive.len(), None);
+                    row.descriptive[index] = req.value.clone();
+                    row
+                })
+                .collect();
+            inputs.push(Self::input_of(path, data));
+            outputs.push(PlannedOutput {
+                path: path.clone(),
+                group_id: data.profile.group_id.clone(),
+                group_name: data.profile.group_name.clone(),
+                revision_id: Self::next_revision(&data.profile.revision_id),
+                rows,
+                roles,
+                recipe: data.profile.import_recipe.clone(),
+                source_path: data.profile.source_path.clone(),
+                source_sha256: data.profile.source_sha256.clone(),
+            });
+        }
+        let tx = Transaction {
+            action: TransactionAction::AddDescriptiveColumn,
+            inputs,
+            outputs,
+            delete_paths: Vec::new(),
+            selected_uuids: Vec::new(),
+        };
+        let transaction_id = self.execute(&tx)?;
+        Ok(TransactionResponse {
+            transaction_id,
+            action: "add_descriptive_column".to_string(),
+            outputs: tx
+                .outputs
+                .iter()
+                .map(|out| Self::summary_of_output(&out.path, out))
+                .collect(),
             deleted_paths: Vec::new(),
         })
     }
@@ -2012,5 +2246,152 @@ mod tests {
             })
             .unwrap_err();
         assert!(err.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn rename_group_moves_the_file_and_keeps_identities() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, paths) = commit_two_groups(dir.path());
+        let before = read_group_file(&dir.path().join(&paths[0])).expect("read");
+        let response = service
+            .rename_group(&RenameGroupRequest {
+                path: paths[0].clone(),
+                expected_revision: before.profile.revision_id.clone(),
+                new_name: "Baca Pueblo".into(),
+            })
+            .expect("rename");
+        assert_eq!(response.action, "rename_group");
+        assert_eq!(response.outputs[0].path, "groups/Baca_Pueblo.parquet");
+        assert_eq!(response.deleted_paths, vec![paths[0].clone()]);
+        assert!(!dir.path().join(&paths[0]).exists());
+        let after = read_group_file(&dir.path().join("groups/Baca_Pueblo.parquet")).expect("read");
+        assert_eq!(after.profile.group_name, "Baca Pueblo");
+        assert_eq!(after.profile.group_id, "Baca_Pueblo");
+        assert_eq!(after.profile.revision_id, "rev-2");
+        assert_eq!(after.rows, before.rows);
+        assert_eq!(after.profile.source_sha256, before.profile.source_sha256);
+
+        // A case-only rename keeps the file.
+        let response = service
+            .rename_group(&RenameGroupRequest {
+                path: "groups/Baca_Pueblo.parquet".into(),
+                expected_revision: "rev-2".into(),
+                new_name: "baca pueblo".into(),
+            })
+            .expect("case-only rename");
+        assert_eq!(response.outputs[0].path, "groups/Baca_Pueblo.parquet");
+        assert!(response.deleted_paths.is_empty());
+    }
+
+    #[test]
+    fn rename_group_refuses_clashes_blank_names_and_stale_revisions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, paths) = commit_two_groups(dir.path());
+        let request = |name: &str, revision: &str| RenameGroupRequest {
+            path: paths[0].clone(),
+            expected_revision: revision.into(),
+            new_name: name.into(),
+        };
+        let clash = service
+            .rename_group(&request("hooper", "rev-1"))
+            .expect_err("name in use");
+        assert!(clash.to_string().contains("already has a group named"));
+        assert!(service.rename_group(&request("  ", "rev-1")).is_err());
+        assert!(matches!(
+            service.rename_group(&request("Other", "rev-9")),
+            Err(StoreError::RevisionConflict { .. })
+        ));
+        // A different group whose file name the new name would take.
+        std::fs::copy(
+            dir.path().join(&paths[1]),
+            dir.path().join("groups/Other.parquet"),
+        )
+        .expect("copy file");
+        let taken = service
+            .rename_group(&request("Other", "rev-1"))
+            .expect_err("file name in use");
+        assert!(taken.to_string().contains("already"));
+        assert!(dir.path().join(&paths[0]).exists(), "unchanged");
+    }
+
+    #[test]
+    fn add_descriptive_column_writes_every_group_in_the_folder() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, paths) = commit_two_groups(dir.path());
+        let before = read_group_file(&dir.path().join(&paths[0])).expect("read");
+        let add = |column: &str, value: &str, overwrite: bool| {
+            service.add_descriptive_column(&AddDescriptiveColumnRequest {
+                folder: "groups".into(),
+                column: column.into(),
+                value: Some(value.into()),
+                overwrite,
+            })
+        };
+        let response = add("Phase", "Early", false).expect("add column");
+        assert_eq!(response.action, "add_descriptive_column");
+        assert_eq!(response.outputs.len(), 2);
+        for path in &paths {
+            let data = read_group_file(&dir.path().join(path)).expect("read");
+            assert_eq!(
+                data.profile.roles.descriptive.last().map(String::as_str),
+                Some("Phase")
+            );
+            assert!(data
+                .rows
+                .iter()
+                .all(|r| r.descriptive.last() == Some(&Some("Early".into()))));
+            assert_eq!(data.profile.revision_id, "rev-2");
+        }
+        let after = read_group_file(&dir.path().join(&paths[0])).expect("read");
+        assert_eq!(
+            after.profile.measured_elemental_checksum,
+            before.profile.measured_elemental_checksum
+        );
+
+        // An existing column needs the overwrite confirmation.
+        let exists = add("Phase", "Late", false).expect_err("exists");
+        assert!(exists.to_string().contains("confirm to overwrite"));
+        add("Phase", "Late", true).expect("overwrite");
+        let data = read_group_file(&dir.path().join(&paths[1])).expect("read");
+        let index = data
+            .profile
+            .roles
+            .descriptive
+            .iter()
+            .position(|c| c == "Phase")
+            .expect("column");
+        assert_eq!(data.rows[0].descriptive[index].as_deref(), Some("Late"));
+        assert_eq!(
+            data.profile.roles.descriptive.len(),
+            index + 1,
+            "not added twice"
+        );
+    }
+
+    #[test]
+    fn add_descriptive_column_refuses_measured_id_and_identity_names() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, paths) = commit_two_groups(dir.path());
+        let add = |folder: &str, column: &str| {
+            service.add_descriptive_column(&AddDescriptiveColumnRequest {
+                folder: folder.into(),
+                column: column.into(),
+                value: None,
+                overwrite: true,
+            })
+        };
+        for column in [
+            "fe",
+            "anid",
+            "analytical_uuid",
+            "legacy_rowid",
+            "rowid",
+            " ",
+        ] {
+            assert!(add("groups", column).is_err(), "{column} refused");
+        }
+        assert!(add("nowhere", "Phase").is_err(), "empty folder refused");
+        let data = read_group_file(&dir.path().join(&paths[0])).expect("read");
+        assert_eq!(data.profile.revision_id, "rev-1", "unchanged");
     }
 }

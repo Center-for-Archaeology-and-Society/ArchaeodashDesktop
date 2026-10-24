@@ -146,6 +146,23 @@ impl DesktopGroups {
         self.with_service(|svc| svc.delete_folder(&req))
     }
 
+    /// Desktop `rename_group` command body: journaled rename of one group.
+    pub fn rename_group(
+        &self,
+        req: archaeodash_contracts::RenameGroupRequest,
+    ) -> Result<TransactionResponse, String> {
+        self.with_service(|svc| svc.rename_group(&req))
+    }
+
+    /// Desktop `add_group_column` command body: add a descriptive column to
+    /// every group in a folder (journaled; overwrite needs confirmation).
+    pub fn add_descriptive_column(
+        &self,
+        req: archaeodash_contracts::AddDescriptiveColumnRequest,
+    ) -> Result<TransactionResponse, String> {
+        self.with_service(|svc| svc.add_descriptive_column(&req))
+    }
+
     /// Desktop `copy_groups` command body: copy or move whole groups into a
     /// folder; refused when the folder would hold a sample twice.
     pub fn copy_groups(
@@ -219,6 +236,15 @@ impl DesktopImport {
         req: ImportCommitRequest,
     ) -> Result<ImportCommitResponse, String> {
         self.with_service(|svc| svc.commit(&req))
+    }
+
+    /// `commit_group_import` with the optional choices (descriptive columns,
+    /// replace/append mode) sent flat next to the request fields.
+    pub fn commit_group_import_with(
+        &self,
+        cmd: archaeodash_contracts::ImportCommitCommand,
+    ) -> Result<ImportCommitResponse, String> {
+        self.with_service(|svc| svc.commit_with(&cmd.request, &cmd.options))
     }
 }
 

@@ -1533,6 +1533,9 @@ pub struct ExportTransformedRequest {
     /// `true` disables the Section 7.3 formula-injection guard.
     #[serde(default)]
     pub raw_text: bool,
+    /// Output format; CSV when omitted.
+    #[serde(default)]
+    pub format: ExportFormat,
 }
 
 /// `POST /exports/pca-scores` request: the computed PCA score frame as CSV.
@@ -1554,6 +1557,9 @@ pub struct ExportPcaScoresRequest {
     pub scale: bool,
     /// Optional transformation applied to the group matrix first.
     pub transformation: Option<TransformationDefinition>,
+    /// Output format; CSV when omitted.
+    #[serde(default)]
+    pub format: ExportFormat,
 }
 
 /// One ephemeral CSV export result returned to the caller (Section 7.3).
@@ -2375,6 +2381,7 @@ mod export_dto_tests {
             precompute: Vec::new(),
         };
         let transformed = ExportTransformedRequest {
+            format: Default::default(),
             path: "groups/Baca.parquet".into(),
             extra_paths: vec![],
             definition: definition.clone(),
@@ -2388,6 +2395,7 @@ mod export_dto_tests {
         );
 
         let pca = ExportPcaScoresRequest {
+            format: Default::default(),
             path: "groups/Baca.parquet".into(),
             extra_paths: vec![],
             columns: vec!["as".into(), "fe".into()],

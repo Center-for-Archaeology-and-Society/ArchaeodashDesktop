@@ -231,12 +231,12 @@ async fn commit_group_import(
     request: ImportCommitRequest,
     options: Option<archaeodash_contracts::ImportCommitOptions>,
 ) -> Result<archaeodash_contracts::ImportCommitResponse, String> {
+    let command = archaeodash_contracts::ImportCommitCommand {
+        request,
+        options: options.unwrap_or_default(),
+    };
     run_blocking("commit_group_import", &state, move |s| {
-        s.import
-            .commit_group_import_with(archaeodash_contracts::ImportCommitCommand {
-                request,
-                options: options.unwrap_or_default(),
-            })
+        s.import.commit_group_import_with(command)
     })
     .await
 }
@@ -860,6 +860,8 @@ pub fn run() {
             rename_group_folder,
             delete_group_folder,
             copy_groups,
+            rename_group,
+            add_group_column,
             preferences_get,
             preferences_set
         ])

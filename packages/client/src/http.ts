@@ -29,6 +29,8 @@ import type {
   ExportTableRequest,
   GroupFolder,
   RenameFolderRequest,
+  RenameGroupRequest,
+  AddDescriptiveColumnRequest,
   CopyGroupsRequest,
   ExportResult,
   ExportTransformedRequest,
@@ -268,6 +270,8 @@ export class HttpTransport implements Transport {
       renameFolder: (request: RenameFolderRequest) => this.request<GroupFolder>('POST', '/api/v1/groups/folders/rename', { body: request }),
       deleteFolder: async (path: string) => { await this.request('POST', '/api/v1/groups/folders/delete', { body: { path } }); },
       copyGroups: (request: CopyGroupsRequest) => this.request('POST', '/api/v1/groups/copy', { body: request }),
+      renameGroup: (request: RenameGroupRequest) => this.request('POST', '/api/v1/groups/rename', { body: request }),
+      addColumn: (request: AddDescriptiveColumnRequest) => this.request('POST', '/api/v1/groups/columns', { body: request }),
       deleteGroup: (request: DeleteGroupRequest) =>
         this.request('DELETE', `/api/v1/groups/${HttpTransport.pathSegment(request.path)}`, {
           query: { expected_revision: request.expected_revision, confirm_path: request.confirm_path },

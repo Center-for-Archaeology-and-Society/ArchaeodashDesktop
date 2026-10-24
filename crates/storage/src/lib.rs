@@ -101,6 +101,15 @@ pub enum TransactionAction {
     CopyGroups,
     /// Move whole groups into another folder; the sources are removed.
     MoveGroups,
+    /// Rename one group (profile name/id and file name); rows unchanged.
+    RenameGroup,
+    /// Add (or overwrite) one descriptive column in every group of a folder;
+    /// measured values are never touched.
+    AddDescriptiveColumn,
+    /// Re-import a source over the groups previously imported from it.
+    ReplaceImport,
+    /// Import rows into existing groups of a folder (new groups for the rest).
+    AppendImport,
 }
 
 /// Journal record for one multi-file transaction (Section 6.8). Serialized to

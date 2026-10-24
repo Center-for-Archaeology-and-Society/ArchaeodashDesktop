@@ -9,7 +9,8 @@ import type { ImportPreviewResponse, StagedFile } from '@archaeodash/contracts';
 import { ImportProgress, type ImportStep } from './ImportProgress.tsx';
 import { DEFAULT_VALUE_OPTIONS, ImportValueOptions, recipeFromOptions } from './ImportValueOptions.tsx';
 import type { DataManagerTransport } from './types.ts';
-import { idColumnChoices, measuredColumnChoices, visibleIdForCommit } from './import-request.ts';
+import { commitMode, commitRequestFor, descriptiveColumnChoices, freeFolderName, idColumnChoices, importConflicts, keptDescriptive, measuredColumnChoices, type DestinationChoice } from './import-request.ts';
+import { DescriptiveColumns, ImportDestination } from './ImportDestination.tsx';
 
 export type ImportCommitResult = Awaited<ReturnType<DataManagerTransport['imports']['commit']>>;
 
@@ -29,6 +30,11 @@ export function ImportWizard({ transport, onImported, onClose }: ImportWizardPro
   const [groupName, setGroupName] = useState('');
   const [idColumn, setIdColumn] = useState('');
   const [measured, setMeasured] = useState<string[]>([]);
+  /** Descriptive columns the user unchecked (all kept by default). */
+  const [dropped, setDropped] = useState<string[]>([]);
+  /** Typed destination folder; null follows the group column. */
+  const [folderInput, setFolderInput] = useState<string | null>(null);
+  const [choice, setChoice] = useState<DestinationChoice>('');
   const [valueOptions, setValueOptions] = useState(DEFAULT_VALUE_OPTIONS);
   const [step, setStep] = useState<ImportStep | null>(null);
   const [startedAt, setStartedAt] = useState(0);
@@ -65,6 +71,9 @@ export function ImportWizard({ transport, onImported, onClose }: ImportWizardPro
     setGroupName('');
     setIdColumn(next.id_column ?? '');
     setMeasured(next.elemental_columns.filter(column => column !== (next.id_column ?? '')));
+    setDropped([]);
+    setFolderInput(null);
+    setChoice('');
   };
   const previewStagedSource = async (staged: StagedFile, displayName: string) => {
     if (staged.parse_state === 'parse_failed') throw new Error(staged.parse_error || 'The uploaded file could not be parsed.');
@@ -103,28 +112,45 @@ export function ImportWizard({ transport, onImported, onClose }: ImportWizardPro
   };
 
   const previewGroups = async (column: string) => {
-    setGroupColumn(column); setGroupMode('column'); setMeasured(current => current.filter(item => item !== column)); setError(''); setMessage('');
+    setGroupColumn(column); setGroupMode('column'); setChoice(''); setMeasured(current => current.filter(item => item !== column)); setError(''); setMessage('');
     if (!column || !source) { clearPartitions(); return; }
     await run('grouping', async () => { setPreview(await transport.imports.preview({ source, group_column: column, ...sheetArg(sheet) })); });
   };
 
   const previewSingleGroup = async () => {
-    setGroupMode('single'); setError(''); setMessage('');
+    setGroupMode('single'); setChoice(''); setError(''); setMessage('');
     if (!source || !groupName.trim()) { setError('Enter a name for this group.'); return; }
     await run('grouping', async () => { setPreview(await transport.imports.preview({ source, group_name: groupName.trim(), ...sheetArg(sheet) })); });
   };
 
   // Imported groups go to a folder named after the group column (one
-  // grouping of the samples); a single named group goes to "groups".
-  const destinationFolder = groupMode === 'column' && groupColumn ? folderNameForColumn(groupColumn) : 'groups';
+  // grouping of the samples); a single named group goes to "groups". The
+  // user can type another folder.
+  const defaultFolder = groupMode === 'column' && groupColumn ? folderNameForColumn(groupColumn) : 'groups';
+  const destinationFolder = folderInput === null ? defaultFolder : folderNameForColumn(folderInput, '');
+  const conflicts = preview ? importConflicts(preview, destinationFolder) : null;
+  const mode = conflicts ? commitMode(conflicts, choice) : null;
+  const takenFolders = (preview?.existing_groups ?? []).map(group => group.folder);
+  const descriptiveChoices = preview ? descriptiveColumnChoices(preview.columns, idColumn, measured) : [];
+  const changeFolder = (folder: string) => { setFolderInput(folder); setChoice(''); };
 
   const commit = async () => {
-    if (done || !preview || !measured.length || (groupMode === 'column' && !groupColumn) || (groupMode === 'single' && !groupName.trim())) return;
+    if (done || !preview || !measured.length || !mode || !destinationFolder || (groupMode === 'column' && !groupColumn) || (groupMode === 'single' && !groupName.trim())) return;
     setMessage('');
+    const rows = preview.partitions.reduce((sum, item) => sum + item.row_count, 0);
     await run('importing', async () => {
-      const result = await transport.imports.commit({ source, group_column: groupMode === 'column' ? groupColumn : '', group_name: groupMode === 'single' ? groupName.trim() : null, visible_id_column: visibleIdForCommit(idColumn), elemental_columns: measured, recipe: recipeFromOptions(valueOptions), destination_dir: destinationFolder, ...sheetArg(sheet) });
+      const result = await transport.imports.commit(commitRequestFor({
+        source, sheet, groupMode, groupColumn, groupName, idColumn, measured,
+        descriptive: keptDescriptive(descriptiveChoices, dropped),
+        recipe: recipeFromOptions(valueOptions), folder: destinationFolder, mode,
+      }));
       setDone(result);
-      setMessage(`Imported ${result.groups.length} group${result.groups.length === 1 ? '' : 's'} (${result.groups.reduce((sum, item) => sum + item.row_count, 0)} rows).`);
+      const groups = `${result.groups.length} group${result.groups.length === 1 ? '' : 's'}`;
+      setMessage(mode === 'append'
+        ? `Added ${rows} rows to ${groups} in “${destinationFolder}”.`
+        : mode === 'replace_source'
+          ? `Replaced the groups from this file in “${destinationFolder}” with ${groups} (${rows} rows).`
+          : `Imported ${groups} (${rows} rows).`);
       await onImported?.(result);
     });
   };
@@ -157,14 +183,25 @@ export function ImportWizard({ transport, onImported, onClose }: ImportWizardPro
         {measuredColumnChoices(preview.columns, idColumn, groupMode === 'single' ? '' : groupColumn).map(column => <label key={column}>
           <input type="checkbox" checked={measured.includes(column)} disabled={locked} onChange={event => setMeasured(current => event.target.checked ? [...current, column] : current.filter(item => item !== column))} /> {column}
         </label>)}
-        <p>Unselected columns are stored as descriptive data. Choose at least one measured column.</p>
+        <p>Choose at least one measured column. The other columns can be kept as descriptive data below.</p>
       </fieldset>
+      <DescriptiveColumns choices={descriptiveChoices} dropped={dropped} disabled={locked} onChange={setDropped} />
       <ImportValueOptions value={valueOptions} onChange={setValueOptions} disabled={locked} />
       {((groupMode === 'column' && groupColumn) || (groupMode === 'single' && preview.partitions.length > 0)) && <>
         <h3>Import preview</h3>
-        <p className="import-wizard-folder">Group files are saved in the folder <strong>{destinationFolder}</strong>.</p>
+        {conflicts && <ImportDestination
+          folder={folderInput ?? defaultFolder}
+          conflicts={conflicts}
+          choice={choice}
+          freeFolder={freeFolderName(destinationFolder || defaultFolder, takenFolders)}
+          disabled={locked}
+          onFolderChange={changeFolder}
+          onChoice={setChoice}
+          onCancel={onClose}
+        />}
+        <p className="import-wizard-folder">Group files are saved in the folder <strong>{destinationFolder || '(choose a folder)'}</strong>.</p>
         {preview.partitions.length ? <ul>{preview.partitions.map((partition, index) => <li key={`${partition.group_name}-${index}`}>{partition.group_name}: {partition.row_count} rows</li>)}</ul> : <p>No groups found for this column.</p>}
-        {!done && <button type="button" disabled={locked || !preview.partitions.length || !measured.length} onClick={() => void commit()}>{groupMode === 'single' ? 'Import one group' : 'Import groups'}</button>}
+        {!done && <button type="button" disabled={locked || !preview.partitions.length || !measured.length || !mode || !destinationFolder} onClick={() => void commit()}>{mode === 'append' ? 'Add rows' : mode === 'replace_source' ? 'Replace groups' : groupMode === 'single' ? 'Import one group' : 'Import groups'}</button>}
       </>}
     </>}
     {step && <ImportProgress step={step} startedAt={startedAt} groups={preview?.partitions.length ?? 0} />}

@@ -35,6 +35,8 @@ import type {
   ExportTableRequest,
   GroupFolder,
   RenameFolderRequest,
+  RenameGroupRequest,
+  AddDescriptiveColumnRequest,
   CopyGroupsRequest,
   ExportResult,
   ExportTransformedRequest,
@@ -148,7 +150,12 @@ export class TauriTransport implements Transport {
   private makeImports(): ImportsService {
     return {
       preview: (request: ImportPreviewRequest) => this.call('open_import_preview', { request }),
-      commit: (request: ImportCommitRequest) => this.call('commit_group_import', { request }),
+      // The desktop command takes the optional choices as a separate argument.
+      commit: (request: ImportCommitRequest) => {
+        const { descriptive_columns, mode, ...base } = request;
+        if (descriptive_columns == null && mode == null) return this.call('commit_group_import', { request: base });
+        return this.call('commit_group_import', { request: base, options: { descriptive_columns: descriptive_columns ?? null, mode: mode ?? null } });
+      },
     };
   }
 
@@ -181,6 +188,8 @@ export class TauriTransport implements Transport {
       renameFolder: (request: RenameFolderRequest) => this.call<GroupFolder>('rename_group_folder', { request }),
       deleteFolder: (path: string) => this.call<void>('delete_group_folder', { request: { path } }),
       copyGroups: (request: CopyGroupsRequest) => this.call('copy_groups', { request }),
+      renameGroup: (request: RenameGroupRequest) => this.call('rename_group', { request }),
+      addColumn: (request: AddDescriptiveColumnRequest) => this.call('add_group_column', { request }),
       deleteGroup: (request: DeleteGroupRequest) => this.call('delete_group', { request }),
     };
   }

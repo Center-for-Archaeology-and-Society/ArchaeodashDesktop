@@ -74,7 +74,27 @@ export interface ImportPreviewResponse {
   sheet?: string | null;
   /** Every worksheet in an XLSX source, in workbook order; empty for CSV/TSV. */
   sheets?: string[];
+  /** SHA-256 of the source bytes (matches GroupSummary.source_sha256 of earlier imports). */
+  source_sha256?: string | null;
+  /** Every ready group file in the project (for name clashes and earlier imports of this source). */
+  existing_groups?: ExistingImportGroup[];
 }
+
+export interface ExistingImportGroup {
+  path: string;
+  folder: string;
+  group_name: string;
+  revision_id: string;
+  /** Imported from a source with the same SHA-256 as the previewed one. */
+  same_source: boolean;
+}
+
+/**
+ * What a commit does about groups already in its destination folder:
+ * new files only (refused on clashes), replace the groups imported from this
+ * source, or add the rows to the groups of the same name.
+ */
+export type ImportMode = 'new_groups' | 'replace_source' | 'append';
 
 export interface ImportRecipeDto {
   zero_as_na: boolean;
@@ -95,6 +115,10 @@ export interface ImportCommitRequest {
   destination_dir?: string | null;
   /** Worksheet to read from an XLSX source; default the first non-empty sheet. */
   sheet?: string | null;
+  /** Non-elemental columns kept as descriptive data (default: all). */
+  descriptive_columns?: string[] | null;
+  /** Omitted: legacy behavior (clashing file names get _2 suffixes). */
+  mode?: ImportMode | null;
 }
 
 export interface CommittedGroup {
@@ -229,6 +253,22 @@ export interface CopyGroupsRequest {
   sources: GroupRevisionRef[];
   destination_folder: string;
   remove_sources?: boolean;
+}
+
+/** Rename one group (profile name/id and file name), journaled. */
+export interface RenameGroupRequest {
+  path: string;
+  expected_revision: string;
+  new_name: string;
+}
+
+/** Add a descriptive column with one value to every group in a folder. */
+export interface AddDescriptiveColumnRequest {
+  folder: string;
+  column: string;
+  value?: string | null;
+  /** Replace the values of an existing column (otherwise refused). */
+  overwrite?: boolean;
 }
 
 export interface DuplicateGroupRequest {
@@ -662,10 +702,14 @@ export interface ExportTransformedRequest {
   extra_paths?: string[];
   definition: TransformationDefinition;
   raw_text?: boolean;
+  /** Output format (default CSV). */
+  format?: ExportFormat;
 }
 
 export interface ExportPcaScoresRequest extends OrdinationRequestBase {
   scale?: boolean;
+  /** Output format (default CSV). */
+  format?: ExportFormat;
 }
 
 export interface ExportResult {

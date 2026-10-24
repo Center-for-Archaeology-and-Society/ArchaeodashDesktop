@@ -122,6 +122,28 @@ export function registerTransportContractTests(
     assert.equal(h.calls[0]?.label, labels.groupsScan);
   });
 
+  test('groups.renameGroup and groups.addColumn reach their routes', async () => {
+    const h = makeHarness();
+    const tx = { transaction_id: 't1', action: 'rename_group', outputs: [], deleted_paths: [] };
+    h.respond(tx);
+    assert.deepEqual(await h.transport.groups.renameGroup?.({ path: 'groups/A.parquet', expected_revision: 'rev-1', new_name: 'B' }), tx);
+    assert.match(h.calls[0]?.label ?? '', /groups\/rename$|invoke rename_group$/);
+    h.respond({ ...tx, action: 'add_descriptive_column' });
+    await h.transport.groups.addColumn?.({ folder: 'groups', column: 'Phase', value: 'Early', overwrite: false });
+    assert.match(h.calls[1]?.label ?? '', /groups\/columns$|invoke add_group_column$/);
+    assert.match(JSON.stringify(h.calls[1]?.payload), /"column":"Phase"/);
+  });
+
+  test('imports.commit carries the optional column choice and mode', async () => {
+    const h = makeHarness();
+    h.respond({ source: 's.csv', groups: [] });
+    await h.transport.imports.commit({ source: 's.csv', group_column: 'Site', descriptive_columns: ['Site'], mode: 'append' });
+    const payload = JSON.stringify(h.calls[0]?.payload);
+    assert.match(payload, /"descriptive_columns":\["Site"\]/);
+    assert.match(payload, /"mode":"append"/);
+    assert.match(payload, /"group_column":"Site"/);
+  });
+
   test('preferences round-trip: get entries, put one key (void)', async () => {
     const h = makeHarness();
     const prefs: GetPreferencesResponse = {

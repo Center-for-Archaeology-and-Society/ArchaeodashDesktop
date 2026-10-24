@@ -242,6 +242,25 @@ export const demoFetch: FetchLike = async (url, init) => {
     createdFolders.add(folder);
     return json({ transaction_id: `demo-tx-${Date.now()}`, action: move ? 'move_groups' : 'copy_groups', outputs, deleted_paths: move ? sources.map((x) => x.path) : [] }, 500);
   }
+  if (p === '/api/v1/groups/rename') {
+    const from = String(body.path);
+    const name = String(body.new_name ?? '').trim();
+    const folder = folderOfPath(from);
+    const dest = `${folder ? `${folder}/` : ''}${name.replace(/[^\p{L}\p{N}._-]/gu, '_')}.parquet`;
+    if (!name || [...files].some(([path, group]) => path !== from && folderOfPath(path) === folder && group.toLowerCase() === name.toLowerCase())) {
+      return json({ code: 'validation', message: `validation error: folder “${folder}” already has a group named “${name}”` }, 100, 400);
+    }
+    const rows = rowsByGroup.get(from) ?? [];
+    files.delete(from); rowsByGroup.delete(from);
+    files.set(dest, name); rowsByGroup.set(dest, rows);
+    return json({ transaction_id: `demo-tx-${Date.now()}`, action: 'rename_group', outputs: [summaryAt(dest)], deleted_paths: dest === from ? [] : [from] }, 200);
+  }
+  if (p === '/api/v1/groups/columns') {
+    // Demo rows keep their fixed columns; the change is acknowledged only.
+    const folder = String(body.folder ?? '');
+    const outputs = [...files.keys()].filter((path) => folderOfPath(path) === folder).map((path) => summaryAt(path));
+    return json({ transaction_id: `demo-tx-${Date.now()}`, action: 'add_descriptive_column', outputs, deleted_paths: [] }, 200);
+  }
   if (p === '/api/v1/groups/rows') {
     const path = parsed.searchParams.get('path') ?? '';
     return json({

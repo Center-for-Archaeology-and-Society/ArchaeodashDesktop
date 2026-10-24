@@ -2,19 +2,26 @@
 //! Phase 2 local form): preview a source spreadsheet and commit one validated
 //! group Parquet file per group value, all paths contained in the project.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use archaeodash_contracts::{
-    CommittedGroup, ImportCommitRequest, ImportCommitResponse, ImportPreviewRequest,
-    ImportPreviewResponse, PartitionPreview,
+    CommittedGroup, ExistingImportGroup, ImportCommitOptions, ImportCommitRequest,
+    ImportCommitResponse, ImportMode, ImportPreviewRequest, ImportPreviewResponse,
+    PartitionPreview,
 };
 use archaeodash_data_io::{
-    default_chem_columns_for_frame, default_id_column, load_source, partition_by_group,
-    sanitize_group_name, write_group_file, ImportError, ImportRecipe, LoadedSource, Partition,
-    ScanCandidate, SourceFormat,
+    build_group_rows, default_chem_columns_for_frame, default_id_column, load_source,
+    parse_r_numeric, partition_by_group, sanitize_group_name, write_group_rows, CandidateStatus,
+    ColumnRoles, GroupFileData, GroupProfile, GroupRow, ImportError, ImportRecipe, LoadedSource,
+    Partition, ScanCandidate, SourceFormat, TextFrame, PROFILE_VERSION,
 };
 use archaeodash_file_store_fs::FsGroupFileStore;
+use archaeodash_storage::{
+    FileInput, GroupFileStore, PlannedOutput, StoreError, Transaction, TransactionAction,
+};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 /// Default project-relative destination for first-import group files.
 const DEFAULT_DESTINATION_DIR: &str = "groups";
@@ -72,6 +79,226 @@ fn resolve_visible_id(requested: Option<&str>, frame: &archaeodash_data_io::Text
             Some(column) => column,
             None => "anid".to_string(),
         },
+    }
+}
+
+fn store_err(e: StoreError) -> ImportError {
+    match e {
+        StoreError::Io(message) => ImportError::Io(message),
+        other => ImportError::Parse(other.to_string()),
+    }
+}
+
+/// SHA-256 hex digest of a file's bytes.
+fn sha256_file(path: &Path) -> Result<String, ImportError> {
+    let bytes = std::fs::read(path).map_err(io_err)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// A destination folder as a `/`-separated relative path without outer
+/// slashes or blanks.
+fn normalize_folder(folder: &str) -> String {
+    folder
+        .replace('\\', "/")
+        .split('/')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// The folder of a project-relative `/` path (`""` for the project root).
+fn folder_of(path: &str) -> String {
+    path.rsplit_once('/')
+        .map(|(dir, _)| dir.to_string())
+        .unwrap_or_default()
+}
+
+fn file_name_of(path: &str) -> String {
+    path.rsplit('/').next().unwrap_or(path).to_string()
+}
+
+fn plural(count: usize, noun: &str) -> String {
+    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
+}
+
+/// `rev-N` bumps to `rev-(N+1)`; any other format gets a fresh UUIDv7.
+fn next_revision(current: &str) -> String {
+    current
+        .strip_prefix("rev-")
+        .and_then(|n| n.parse::<u64>().ok())
+        .map(|n| format!("rev-{}", n + 1))
+        .unwrap_or_else(|| Uuid::now_v7().simple().to_string())
+}
+
+fn input_of(path: &str, data: &GroupFileData) -> FileInput {
+    FileInput {
+        path: path.to_string(),
+        revision_id: data.profile.revision_id.clone(),
+        measured_elemental_checksum: data.profile.measured_elemental_checksum.clone(),
+    }
+}
+
+/// Reorders each row's descriptive cells from `from` column order to `to`
+/// (a superset); columns the row lacks become empty, like `bind_rows`.
+fn align_rows(rows: Vec<GroupRow>, from: &[String], to: &[String]) -> Vec<GroupRow> {
+    if from == to {
+        return rows;
+    }
+    let index: Vec<Option<usize>> = to
+        .iter()
+        .map(|column| from.iter().position(|c| c == column))
+        .collect();
+    rows.into_iter()
+        .map(|mut row| {
+            row.descriptive = index
+                .iter()
+                .map(|i| i.and_then(|i| row.descriptive[i].clone()))
+                .collect();
+            row
+        })
+        .collect()
+}
+
+/// Everything one commit decided about the source, shared by the modes.
+struct ImportPlan<'a> {
+    frame: &'a TextFrame,
+    partitions: Vec<Partition>,
+    visible_id_column: String,
+    elemental_columns: Vec<String>,
+    descriptive_columns: Option<Vec<String>>,
+    recipe: ImportRecipe,
+    destination_dir: String,
+    source: String,
+    source_sha256: String,
+}
+
+impl ImportPlan<'_> {
+    fn is_same_source(&self, profile: &GroupProfile) -> bool {
+        profile.source_sha256.as_deref() == Some(self.source_sha256.as_str())
+    }
+
+    /// `folder/id.parquet`, or `folder/id_N.parquet` for `n > 1`.
+    fn path_for(&self, group_id: &str, n: usize) -> String {
+        let file = if n > 1 {
+            format!("{group_id}_{n}.parquet")
+        } else {
+            format!("{group_id}.parquet")
+        };
+        if self.destination_dir.is_empty() {
+            file
+        } else {
+            format!("{}/{file}", self.destination_dir)
+        }
+    }
+
+    fn build(
+        &self,
+        partition: &Partition,
+        elemental: &[String],
+    ) -> Result<(ColumnRoles, Vec<GroupRow>), ImportError> {
+        build_group_rows(
+            self.frame,
+            partition,
+            &self.visible_id_column,
+            elemental,
+            self.descriptive_columns.as_deref(),
+            &self.recipe,
+            None,
+        )
+    }
+
+    fn profile(
+        &self,
+        group_id: &str,
+        group_name: &str,
+        revision: &str,
+        roles: ColumnRoles,
+    ) -> GroupProfile {
+        GroupProfile {
+            profile_version: PROFILE_VERSION,
+            file_kind: "group".to_string(),
+            group_id: group_id.to_string(),
+            group_name: group_name.to_string(),
+            revision_id: revision.to_string(),
+            roles,
+            row_count: 0,
+            source_path: Some(self.source.clone()),
+            source_sha256: Some(self.source_sha256.clone()),
+            import_recipe: self.recipe.clone(),
+            measured_elemental_checksum: String::new(),
+        }
+    }
+
+    fn output(
+        &self,
+        path: String,
+        group_id: &str,
+        group_name: &str,
+        revision: String,
+        roles: ColumnRoles,
+        rows: Vec<GroupRow>,
+    ) -> PlannedOutput {
+        PlannedOutput {
+            path,
+            group_id: group_id.to_string(),
+            group_name: group_name.to_string(),
+            revision_id: revision,
+            rows,
+            roles,
+            recipe: self.recipe.clone(),
+            source_path: Some(self.source.clone()),
+            source_sha256: Some(self.source_sha256.clone()),
+        }
+    }
+
+    /// The measured columns for rows added to an existing group: exactly the
+    /// group's own (in its order). A column the group measures but the user
+    /// left unchecked is taken as measured when its values are numeric
+    /// (the legacy type harmonization); anything else is refused.
+    fn harmonized_elemental(
+        &self,
+        partition: &Partition,
+        target: &GroupFileData,
+    ) -> Result<Vec<String>, ImportError> {
+        let wanted = &target.profile.roles.elemental;
+        let name = &target.profile.group_name;
+        let extra: Vec<&str> = self
+            .elemental_columns
+            .iter()
+            .filter(|c| !wanted.contains(c))
+            .map(String::as_str)
+            .collect();
+        if !extra.is_empty() {
+            return Err(ImportError::Parse(format!(
+                "\u{201c}{name}\u{201d} does not measure {}; add these rows as new groups \
+                 in another folder, or leave those columns unchecked",
+                extra.join(", ")
+            )));
+        }
+        for column in wanted {
+            if self.elemental_columns.contains(column) {
+                continue;
+            }
+            let Some(index) = self.frame.column_index(column) else {
+                return Err(ImportError::Parse(format!(
+                    "\u{201c}{name}\u{201d} measures {column}, which this file does not have"
+                )));
+            };
+            let numeric = partition.row_indices.iter().all(|&row| {
+                let cell = self.frame.rows[row][index].as_deref().unwrap_or("").trim();
+                cell.is_empty() || parse_r_numeric(cell).is_some_and(|v| !v.is_nan())
+            });
+            if !numeric || column == &self.visible_id_column {
+                return Err(ImportError::Parse(format!(
+                    "\u{201c}{name}\u{201d} measures {column}, but this file's {column} values \
+                     are not all numbers"
+                )));
+            }
+        }
+        Ok(wanted.clone())
     }
 }
 
@@ -135,6 +362,18 @@ impl ImportService {
             group_name: partition.group_name,
         })
         .collect();
+        let source_sha256 = sha256_file(&self.resolve(&req.source)?)?;
+        let existing_groups = self
+            .ready_groups()?
+            .into_iter()
+            .map(|(path, profile)| ExistingImportGroup {
+                folder: folder_of(&path),
+                same_source: profile.source_sha256.as_deref() == Some(source_sha256.as_str()),
+                path,
+                group_name: profile.group_name,
+                revision_id: profile.revision_id,
+            })
+            .collect();
         Ok(ImportPreviewResponse {
             source: req.source.clone(),
             row_count: frame.n_rows() as u64,
@@ -144,6 +383,8 @@ impl ImportService {
             partitions,
             sheet: loaded.sheet,
             sheets: loaded.sheets,
+            source_sha256: Some(source_sha256),
+            existing_groups,
         })
     }
 
@@ -163,6 +404,17 @@ impl ImportService {
     /// Duplicate sanitized names get deterministic `_2`, `_3`, ... suffixes in
     /// partition order. Every published file passes full validation.
     pub fn commit(&self, req: &ImportCommitRequest) -> Result<ImportCommitResponse, ImportError> {
+        self.commit_with(req, &ImportCommitOptions::default())
+    }
+
+    /// `commit` with the optional choices: which non-elemental columns stay
+    /// descriptive, and what to do about groups already in the destination
+    /// folder (see [`ImportMode`]; no mode keeps the `_2` suffix behavior).
+    pub fn commit_with(
+        &self,
+        req: &ImportCommitRequest,
+        options: &ImportCommitOptions,
+    ) -> Result<ImportCommitResponse, ImportError> {
         let source_path = self.resolve(&req.source)?;
         let frame = self.load(&req.source, req.sheet.as_deref())?.frame;
 
@@ -183,9 +435,10 @@ impl ImportService {
         let destination_dir = req
             .destination_dir
             .as_deref()
-            .unwrap_or(DEFAULT_DESTINATION_DIR);
+            .map(normalize_folder)
+            .unwrap_or_else(|| DEFAULT_DESTINATION_DIR.to_string());
         // Path-containment check without touching the filesystem.
-        self.resolve(destination_dir)?;
+        self.resolve(&destination_dir)?;
         // Validate partitioning before any filesystem side effects: a commit
         // rejected for blank group values must not create directories.
         let partitions = import_partitions(
@@ -194,62 +447,430 @@ impl ImportService {
             req.group_name.as_deref(),
             true,
         )?;
-
-        let source_sha256 = {
-            let bytes = std::fs::read(&source_path).map_err(io_err)?;
-            let mut hasher = Sha256::new();
-            hasher.update(&bytes);
-            format!("{:x}", hasher.finalize())
+        if options.mode.is_some() && elemental_columns.is_empty() {
+            return Err(ImportError::Parse(
+                "choose at least one measured column".into(),
+            ));
+        }
+        let source_sha256 = sha256_file(&source_path)?;
+        let plan = ImportPlan {
+            frame: &frame,
+            partitions,
+            visible_id_column,
+            elemental_columns,
+            descriptive_columns: options.descriptive_columns.clone(),
+            recipe,
+            destination_dir,
+            source: req.source.clone(),
+            source_sha256,
         };
-        let source_path_string = Some(req.source.clone());
+        let groups = match options.mode {
+            None => self.publish_new(&plan, true)?,
+            Some(ImportMode::NewGroups) => {
+                self.refuse_existing(&plan)?;
+                self.publish_new(&plan, false)?
+            }
+            Some(ImportMode::ReplaceSource) => self.replace_source(&plan)?,
+            Some(ImportMode::Append) => self.append_rows(&plan)?,
+        };
+        Ok(ImportCommitResponse {
+            source: req.source.clone(),
+            groups,
+        })
+    }
 
+    /// Ready group files in the project with project-relative `/` paths.
+    fn ready_groups(&self) -> Result<Vec<(String, GroupProfile)>, ImportError> {
+        let base = self.store.resolve("").map_err(store_err)?;
+        let mut out = Vec::new();
+        for candidate in self.scan()? {
+            if let CandidateStatus::ReadyToAdd(profile) = candidate.status {
+                let rel = candidate
+                    .path
+                    .strip_prefix(&base)
+                    .or_else(|_| candidate.path.strip_prefix(&self.root))
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .map_err(|_| {
+                        ImportError::Io(format!(
+                            "group file {} is outside the project",
+                            candidate.path.display()
+                        ))
+                    })?;
+                out.push((rel, *profile));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Ready groups directly in one folder.
+    fn groups_in_folder(&self, folder: &str) -> Result<Vec<(String, GroupProfile)>, ImportError> {
+        Ok(self
+            .ready_groups()?
+            .into_iter()
+            .filter(|(path, _)| folder_of(path) == folder)
+            .collect())
+    }
+
+    /// `NewGroups` refuses a folder that already has the planned file names
+    /// or groups imported from the same source (re-importing would hold the
+    /// same samples twice under new identities).
+    fn refuse_existing(&self, plan: &ImportPlan<'_>) -> Result<(), ImportError> {
+        let existing = self.groups_in_folder(&plan.destination_dir)?;
+        let same_source: Vec<&str> = existing
+            .iter()
+            .filter(|(_, profile)| plan.is_same_source(profile))
+            .map(|(_, profile)| profile.group_name.as_str())
+            .collect();
+        if !same_source.is_empty() {
+            return Err(ImportError::Parse(format!(
+                "folder \u{201c}{}\u{201d} already holds {} imported from this file ({}). \
+                 Replace them, add the rows to them, or import into another folder",
+                plan.destination_dir,
+                plural(same_source.len(), "group"),
+                same_source.join(", ")
+            )));
+        }
+        let names: HashSet<String> = existing.iter().map(|(p, _)| file_name_of(p)).collect();
+        let clashes: Vec<String> = plan
+            .partitions
+            .iter()
+            .map(|p| format!("{}.parquet", sanitize_group_name(&p.group_name)))
+            .filter(|name| names.contains(name))
+            .collect();
+        if !clashes.is_empty() {
+            return Err(ImportError::Parse(format!(
+                "folder \u{201c}{}\u{201d} already has group files named {}. \
+                 Import into another folder, or add the rows to those groups",
+                plan.destination_dir,
+                clashes.join(", ")
+            )));
+        }
+        Ok(())
+    }
+
+    /// Writes one new group file per partition (the original first-import
+    /// path). `suffix_existing` keeps the legacy `_2` naming for files that
+    /// already exist; otherwise an existing file is refused. Names repeated
+    /// within this import always get suffixes.
+    fn publish_new(
+        &self,
+        plan: &ImportPlan<'_>,
+        suffix_existing: bool,
+    ) -> Result<Vec<CommittedGroup>, ImportError> {
+        // Build every group before taking the lock or creating directories,
+        // so a bad column choice publishes nothing.
+        let mut built = Vec::with_capacity(plan.partitions.len());
+        for partition in &plan.partitions {
+            built.push(plan.build(partition, &plan.elemental_columns)?);
+        }
         // Coordinate destination probing and every publication with store
         // transactions and readers for this project.
         let _project_lock = self
             .store
             .lock_exclusive()
             .map_err(|e| ImportError::Io(e.to_string()))?;
-
+        let mut planned: HashSet<String> = HashSet::new();
         let mut groups = Vec::new();
-        for partition in partitions {
+        for (partition, (roles, rows)) in plan.partitions.iter().zip(built) {
             let group_id = sanitize_group_name(&partition.group_name);
-            let mut rel = format!("{destination_dir}/{group_id}.parquet");
+            let mut rel = plan.path_for(&group_id, 1);
             let mut suffix = 2usize;
-            while self.resolve(&rel)?.exists() {
-                rel = format!("{destination_dir}/{group_id}_{suffix}.parquet");
+            loop {
+                let taken = planned.contains(&rel);
+                if !taken && self.resolve(&rel)?.exists() && !suffix_existing {
+                    return Err(ImportError::Parse(format!(
+                        "folder \u{201c}{}\u{201d} already has a group file named {}",
+                        plan.destination_dir,
+                        file_name_of(&rel)
+                    )));
+                }
+                if !taken && !self.resolve(&rel)?.exists() {
+                    break;
+                }
+                rel = plan.path_for(&group_id, suffix);
                 suffix += 1;
             }
-            let dest_abs = self.resolve(&rel)?;
-            if let Some(parent) = dest_abs.parent() {
-                std::fs::create_dir_all(parent).map_err(io_err)?;
-            }
-            let profile = write_group_file(
-                &self.resolve(&rel)?,
-                &group_id,
-                INITIAL_REVISION,
-                &visible_id_column,
-                &elemental_columns,
-                &recipe,
-                &frame,
-                &partition,
-                source_path_string.clone(),
-                Some(source_sha256.clone()),
-                None,
-            )?;
+            planned.insert(rel.clone());
+            let profile = plan.profile(&group_id, &partition.group_name, INITIAL_REVISION, roles);
+            let profile = write_group_rows(&self.resolve(&rel)?, profile, &rows)?;
             archaeodash_data_io::validate_group_file(&self.resolve(&rel)?)?;
             groups.push(CommittedGroup {
                 group_id,
-                group_name: partition.group_name,
+                group_name: partition.group_name.clone(),
                 row_count: profile.row_count as u64,
                 path: rel,
                 revision_id: profile.revision_id,
                 measured_elemental_checksum: profile.measured_elemental_checksum,
             });
         }
-        Ok(ImportCommitResponse {
-            source: req.source.clone(),
-            groups,
-        })
+        Ok(groups)
+    }
+
+    /// Replaces the destination folder's groups imported from this source
+    /// (same SHA-256) in one journaled transaction. Rows keep their hidden
+    /// identities (matched by source row number), so copies of these samples
+    /// in other folders still refer to the same samples.
+    fn replace_source(&self, plan: &ImportPlan<'_>) -> Result<Vec<CommittedGroup>, ImportError> {
+        let in_folder = self.groups_in_folder(&plan.destination_dir)?;
+        let (replaced, others): (Vec<_>, Vec<_>) = in_folder
+            .into_iter()
+            .partition(|(_, profile)| plan.is_same_source(profile));
+        if replaced.is_empty() {
+            return Err(ImportError::Parse(format!(
+                "folder \u{201c}{}\u{201d} has no groups imported from this file; \
+                 import new groups instead",
+                plan.destination_dir
+            )));
+        }
+        let replaced_paths: Vec<String> = replaced.iter().map(|(p, _)| p.clone()).collect();
+        let other_paths: Vec<String> = others.iter().map(|(p, _)| p.clone()).collect();
+        let old = self.read_snapshot(&replaced_paths)?;
+        let other_data = self.read_snapshot(&other_paths)?;
+
+        // Same source bytes, so the same row numbers are the same samples.
+        let mut identity: HashMap<String, Uuid> = HashMap::new();
+        let mut repeated: HashSet<String> = HashSet::new();
+        for (_, data) in &old {
+            for row in &data.rows {
+                if let Some(rowid) = &row.legacy_rowid {
+                    if identity.insert(rowid.clone(), row.uuid).is_some() {
+                        repeated.insert(rowid.clone());
+                    }
+                }
+            }
+        }
+        for rowid in &repeated {
+            identity.remove(rowid);
+        }
+        let elsewhere: HashMap<Uuid, &str> = other_data
+            .iter()
+            .flat_map(|(_, data)| {
+                data.rows
+                    .iter()
+                    .map(|row| (row.uuid, data.profile.group_name.as_str()))
+            })
+            .collect();
+
+        let replaced_set: HashSet<&str> = replaced_paths.iter().map(String::as_str).collect();
+        let old_by_path: HashMap<&str, &GroupFileData> =
+            old.iter().map(|(p, d)| (p.as_str(), d)).collect();
+        let mut planned: HashSet<String> = HashSet::new();
+        let mut outputs = Vec::new();
+        for partition in &plan.partitions {
+            let (roles, mut rows) = plan.build(partition, &plan.elemental_columns)?;
+            for row in &mut rows {
+                let kept = row.legacy_rowid.as_ref().and_then(|r| identity.remove(r));
+                if let Some(uuid) = kept {
+                    if let Some(group) = elsewhere.get(&uuid) {
+                        return Err(ImportError::Parse(format!(
+                            "a sample from this file is now in \u{201c}{group}\u{201d}, which was \
+                             not imported from it; move it back or import into another folder"
+                        )));
+                    }
+                    row.uuid = uuid;
+                }
+            }
+            let group_id = sanitize_group_name(&partition.group_name);
+            let mut rel = plan.path_for(&group_id, 1);
+            let mut suffix = 2usize;
+            loop {
+                if planned.contains(&rel) {
+                    rel = plan.path_for(&group_id, suffix);
+                    suffix += 1;
+                    continue;
+                }
+                if !replaced_set.contains(rel.as_str()) && self.resolve(&rel)?.exists() {
+                    return Err(ImportError::Parse(format!(
+                        "folder \u{201c}{}\u{201d} has a group file named {} that was not \
+                         imported from this file",
+                        plan.destination_dir,
+                        file_name_of(&rel)
+                    )));
+                }
+                break;
+            }
+            planned.insert(rel.clone());
+            let revision = match old_by_path.get(rel.as_str()) {
+                Some(data) => next_revision(&data.profile.revision_id),
+                None => INITIAL_REVISION.to_string(),
+            };
+            let name = partition.group_name.clone();
+            outputs.push(plan.output(rel, &group_id, &name, revision, roles, rows));
+        }
+        let delete_paths: Vec<String> = replaced_paths
+            .iter()
+            .filter(|p| !planned.contains(*p))
+            .cloned()
+            .collect();
+        let inputs = old.iter().map(|(p, d)| input_of(p, d)).collect();
+        self.run_transaction(
+            TransactionAction::ReplaceImport,
+            inputs,
+            outputs,
+            delete_paths,
+        )
+    }
+
+    /// Adds the rows to the destination folder's groups of the same name (new
+    /// groups for the rest) in one journaled transaction, like the legacy
+    /// "Add rows to existing workspace data" (`merge_loaded_data`): the
+    /// folder's descriptive columns become the union of old and new ones,
+    /// measured columns must match each existing group (a numeric column the
+    /// group measures is taken as measured), and new rows get new identities.
+    fn append_rows(&self, plan: &ImportPlan<'_>) -> Result<Vec<CommittedGroup>, ImportError> {
+        let in_folder = self.groups_in_folder(&plan.destination_dir)?;
+        if let Some((_, profile)) = in_folder.iter().find(|(_, p)| plan.is_same_source(p)) {
+            return Err(ImportError::Parse(format!(
+                "rows from this file are already in folder \u{201c}{}\u{201d} \
+                 (\u{201c}{}\u{201d}); replace them instead of adding them again",
+                plan.destination_dir, profile.group_name
+            )));
+        }
+        let paths: Vec<String> = in_folder.iter().map(|(p, _)| p.clone()).collect();
+        let existing = self.read_snapshot(&paths)?;
+        let by_name: HashMap<&str, usize> = existing
+            .iter()
+            .enumerate()
+            .map(|(i, (_, data))| (data.profile.group_name.as_str(), i))
+            .collect();
+
+        // Build the incoming rows of every partition with its target's
+        // measured columns.
+        let mut incoming = Vec::with_capacity(plan.partitions.len());
+        for partition in &plan.partitions {
+            let target = by_name.get(partition.group_name.as_str()).copied();
+            let elemental = match target {
+                Some(index) => plan.harmonized_elemental(partition, &existing[index].1)?,
+                None => plan.elemental_columns.clone(),
+            };
+            let (roles, rows) = plan.build(partition, &elemental)?;
+            incoming.push((target, roles, rows));
+        }
+
+        // Union of descriptive columns over the folder and the new rows.
+        let mut union: Vec<String> = Vec::new();
+        let existing_columns = existing
+            .iter()
+            .flat_map(|(_, data)| data.profile.roles.descriptive.iter());
+        let incoming_columns = incoming
+            .iter()
+            .flat_map(|(_, roles, _)| roles.descriptive.iter());
+        for column in existing_columns.chain(incoming_columns) {
+            if !union.contains(column) {
+                union.push(column.clone());
+            }
+        }
+
+        let mut appended: HashMap<usize, Vec<GroupRow>> = HashMap::new();
+        let mut new_groups = Vec::new();
+        for (partition, (target, roles, rows)) in plan.partitions.iter().zip(incoming) {
+            let rows = align_rows(rows, &roles.descriptive, &union);
+            match target {
+                Some(index) => appended.entry(index).or_default().extend(rows),
+                None => new_groups.push((partition, roles, rows)),
+            }
+        }
+
+        let mut inputs = Vec::new();
+        let mut outputs = Vec::new();
+        let mut reported = Vec::new();
+        for (index, (path, data)) in existing.iter().enumerate() {
+            let added = appended.remove(&index);
+            if added.is_none() && data.profile.roles.descriptive == union {
+                continue;
+            }
+            if added.is_some() {
+                reported.push(path.clone());
+            }
+            let mut rows = align_rows(data.rows.clone(), &data.profile.roles.descriptive, &union);
+            rows.extend(added.unwrap_or_default());
+            let mut roles = data.profile.roles.clone();
+            roles.descriptive = union.clone();
+            inputs.push(input_of(path, data));
+            outputs.push(PlannedOutput {
+                path: path.clone(),
+                group_id: data.profile.group_id.clone(),
+                group_name: data.profile.group_name.clone(),
+                revision_id: next_revision(&data.profile.revision_id),
+                rows,
+                roles,
+                recipe: data.profile.import_recipe.clone(),
+                source_path: data.profile.source_path.clone(),
+                source_sha256: data.profile.source_sha256.clone(),
+            });
+        }
+        let mut planned: HashSet<String> = HashSet::new();
+        for (partition, mut roles, rows) in new_groups {
+            roles.descriptive = union.clone();
+            let group_id = sanitize_group_name(&partition.group_name);
+            let mut rel = plan.path_for(&group_id, 1);
+            let mut suffix = 2usize;
+            while planned.contains(&rel) || self.resolve(&rel)?.exists() {
+                rel = plan.path_for(&group_id, suffix);
+                suffix += 1;
+            }
+            planned.insert(rel.clone());
+            reported.push(rel.clone());
+            let name = partition.group_name.clone();
+            let revision = INITIAL_REVISION.to_string();
+            outputs.push(plan.output(rel, &group_id, &name, revision, roles, rows));
+        }
+        let all =
+            self.run_transaction(TransactionAction::AppendImport, inputs, outputs, Vec::new())?;
+        // Report the groups that received rows, not realigned siblings.
+        Ok(reported
+            .iter()
+            .filter_map(|path| all.iter().find(|g| &g.path == path).cloned())
+            .collect())
+    }
+
+    fn read_snapshot(&self, paths: &[String]) -> Result<Vec<(String, GroupFileData)>, ImportError> {
+        let snapshot = self.store.read_groups_snapshot(paths).map_err(store_err)?;
+        paths
+            .iter()
+            .zip(snapshot)
+            .map(|(path, data)| match data {
+                Some(data) => Ok((path.clone(), data)),
+                None => Err(ImportError::NotFound(format!(
+                    "group file {path} disappeared"
+                ))),
+            })
+            .collect()
+    }
+
+    /// Executes one journaled import transaction and reports every output.
+    fn run_transaction(
+        &self,
+        action: TransactionAction,
+        inputs: Vec<FileInput>,
+        outputs: Vec<PlannedOutput>,
+        delete_paths: Vec<String>,
+    ) -> Result<Vec<CommittedGroup>, ImportError> {
+        let tx = Transaction {
+            action,
+            selected_uuids: outputs
+                .iter()
+                .flat_map(|o| o.rows.iter().map(|r| r.uuid))
+                .collect(),
+            inputs,
+            outputs,
+            delete_paths,
+        };
+        self.store.execute(&tx).map_err(store_err)?;
+        tx.outputs
+            .iter()
+            .map(|out| {
+                let profile = archaeodash_data_io::validate_group_file(&self.resolve(&out.path)?)?;
+                Ok(CommittedGroup {
+                    group_id: out.group_id.clone(),
+                    group_name: out.group_name.clone(),
+                    path: out.path.clone(),
+                    row_count: profile.row_count as u64,
+                    revision_id: profile.revision_id,
+                    measured_elemental_checksum: profile.measured_elemental_checksum,
+                })
+            })
+            .collect()
     }
 
     /// Manifest-free discovery of published group files with their readiness
@@ -269,7 +890,6 @@ mod tests {
     use super::*;
     use archaeodash_contracts::ImportRecipeDto;
     use archaeodash_data_io::read_group_file;
-    use archaeodash_data_io::CandidateStatus;
 
     const MINI_CSV: &str = "anid,Site,Sub-region,as,fe\n\
                             A1,Baca,Central,1.5,3\n\
@@ -719,5 +1339,293 @@ A2,Zuni,2,11
             .expect("commit");
         assert_eq!(resp.groups[0].path, "groups/A_B.parquet");
         assert_eq!(resp.groups[1].path, "groups/A_B_2.parquet");
+    }
+
+    fn site_request(source: &str, folder: &str) -> ImportCommitRequest {
+        ImportCommitRequest {
+            sheet: None,
+            source: source.into(),
+            group_column: "Site".into(),
+            group_name: None,
+            visible_id_column: Some("anid".into()),
+            elemental_columns: Some(vec!["as".into(), "fe".into()]),
+            recipe: None,
+            destination_dir: Some(folder.into()),
+        }
+    }
+
+    fn put(dir: &tempdir::TempDir, name: &str, body: &str) {
+        std::fs::write(dir.path().join(name), body).expect("write source");
+    }
+
+    fn with_mode(mode: ImportMode) -> ImportCommitOptions {
+        ImportCommitOptions {
+            descriptive_columns: None,
+            mode: Some(mode),
+        }
+    }
+
+    #[test]
+    fn descriptive_column_choice_drops_unchecked_columns() {
+        let (service, dir, source) = service_with_source();
+        let committed = service
+            .commit_with(
+                &site_request(&source, "Site"),
+                &ImportCommitOptions {
+                    descriptive_columns: Some(vec!["Site".into()]),
+                    mode: Some(ImportMode::NewGroups),
+                },
+            )
+            .expect("commit with column choice");
+        let data = read_group_file(&dir.path().join(&committed.groups[0].path)).expect("read");
+        assert_eq!(data.profile.roles.descriptive, vec!["Site"]);
+        assert_eq!(data.rows[0].descriptive.len(), 1);
+
+        let unknown = service
+            .commit_with(
+                &site_request(&source, "Other"),
+                &ImportCommitOptions {
+                    descriptive_columns: Some(vec!["Nope".into()]),
+                    mode: Some(ImportMode::NewGroups),
+                },
+            )
+            .expect_err("unknown descriptive column refused");
+        assert!(unknown.to_string().contains("Nope"));
+        assert!(!dir.path().join("Other").exists());
+    }
+
+    #[test]
+    fn preview_reports_existing_groups_and_same_source() {
+        let (service, _dir, source) = service_with_source();
+        service
+            .commit(&site_request(&source, "Site"))
+            .expect("first import");
+        let preview = service
+            .preview(&ImportPreviewRequest {
+                sheet: None,
+                source: source.clone(),
+                group_column: Some("Site".into()),
+                group_name: None,
+            })
+            .expect("preview");
+        assert!(preview.source_sha256.is_some());
+        let paths: Vec<&str> = preview
+            .existing_groups
+            .iter()
+            .map(|g| g.path.as_str())
+            .collect();
+        assert_eq!(paths, vec!["Site/Baca.parquet", "Site/Hooper.parquet"]);
+        assert!(preview.existing_groups.iter().all(|g| g.same_source));
+        assert!(preview.existing_groups.iter().all(|g| g.folder == "Site"));
+    }
+
+    #[test]
+    fn new_groups_mode_refuses_reimport_and_name_clashes() {
+        let (service, dir, source) = service_with_source();
+        let options = with_mode(ImportMode::NewGroups);
+        service
+            .commit_with(&site_request(&source, "Site"), &options)
+            .expect("first import");
+        let again = service
+            .commit_with(&site_request(&source, "Site"), &options)
+            .expect_err("same source refused");
+        assert!(again.to_string().contains("imported from this file"));
+        // Another file with the same group names clashes by file name.
+        put(&dir, "other.csv", "anid,Site,as,fe\nB1,Baca,1,2\n");
+        let clash = service
+            .commit_with(&site_request("other.csv", "Site"), &options)
+            .expect_err("name clash refused");
+        assert!(clash.to_string().contains("Baca.parquet"));
+        // Nothing was suffixed or duplicated.
+        assert!(!dir.path().join("Site/Baca_2.parquet").exists());
+        // A new folder works.
+        service
+            .commit_with(&site_request("other.csv", "Site 2"), &options)
+            .expect("new folder");
+    }
+
+    #[test]
+    fn replace_source_is_journaled_and_keeps_sample_identities() {
+        let (service, dir, source) = service_with_source();
+        let first = service
+            .commit(&site_request(&source, "Site"))
+            .expect("first import");
+        let before = read_group_file(&dir.path().join(&first.groups[0].path)).expect("read");
+
+        // Replace with a different measured choice.
+        let mut request = site_request(&source, "Site");
+        request.elemental_columns = Some(vec!["fe".into()]);
+        let replaced = service
+            .commit_with(&request, &with_mode(ImportMode::ReplaceSource))
+            .expect("replace");
+        assert_eq!(replaced.groups.len(), 2);
+        assert_eq!(replaced.groups[0].revision_id, "rev-2");
+        let after = read_group_file(&dir.path().join(&replaced.groups[0].path)).expect("read");
+        assert_eq!(after.profile.roles.elemental, vec!["fe"]);
+        let ids = |data: &GroupFileData| data.rows.iter().map(|r| r.uuid).collect::<Vec<_>>();
+        assert_eq!(
+            ids(&after),
+            ids(&before),
+            "identities preserved by row number"
+        );
+        // Journaled: the transaction directory is cleaned up after commit and
+        // the replaced original is archived in the history.
+        let transactions = dir.path().join(".archaeodash/transactions");
+        let leftover = std::fs::read_dir(&transactions)
+            .map(|entries| entries.count())
+            .unwrap_or(0);
+        assert_eq!(leftover, 0);
+
+        // Regrouped into one named group: the old files that are no longer
+        // written are deleted in the same transaction.
+        let single = ImportCommitRequest {
+            group_column: String::new(),
+            group_name: Some("Everything".into()),
+            ..site_request(&source, "Site")
+        };
+        let response = service
+            .commit_with(&single, &with_mode(ImportMode::ReplaceSource))
+            .expect("replace with one group");
+        assert_eq!(response.groups.len(), 1);
+        assert!(!dir.path().join("Site/Baca.parquet").exists());
+        assert!(!dir.path().join("Site/Hooper.parquet").exists());
+        let everything =
+            read_group_file(&dir.path().join("Site/Everything.parquet")).expect("read");
+        assert_eq!(everything.rows.len(), 3);
+    }
+
+    #[test]
+    fn replace_source_refuses_folders_without_that_source() {
+        let (service, dir, source) = service_with_source();
+        service
+            .commit(&site_request(&source, "Site"))
+            .expect("first import");
+        put(&dir, "other.csv", "anid,Site,as,fe\nB1,Zuni,1,2\n");
+        let err = service
+            .commit_with(
+                &site_request("other.csv", "Site"),
+                &with_mode(ImportMode::ReplaceSource),
+            )
+            .expect_err("nothing to replace");
+        let message = err.to_string();
+        assert!(message.contains("no groups imported from this file"));
+        // A file of the same name from another source is never replaced.
+        service
+            .commit(&site_request("other.csv", "Site"))
+            .expect("other import");
+        let single = ImportCommitRequest {
+            group_column: String::new(),
+            group_name: Some("Zuni".into()),
+            ..site_request(&source, "Site")
+        };
+        let err = service
+            .commit_with(&single, &with_mode(ImportMode::ReplaceSource))
+            .expect_err("other source not replaced");
+        assert!(err.to_string().contains("was not"));
+        let zuni = read_group_file(&dir.path().join("Site/Zuni.parquet")).expect("read");
+        assert_eq!(zuni.rows[0].visible.as_deref(), Some("B1"));
+        assert!(dir.path().join("Site/Baca.parquet").exists());
+    }
+
+    #[test]
+    fn append_adds_rows_by_group_name_and_aligns_descriptive_columns() {
+        let (service, dir, source) = service_with_source();
+        service
+            .commit(&site_request(&source, "Site"))
+            .expect("first import");
+        let baca_before = read_group_file(&dir.path().join("Site/Baca.parquet")).expect("read");
+        // New rows: one more Baca sample, a new Zuni group, a new descriptive
+        // column "Ware", and no Sub-region column.
+        put(
+            &dir,
+            "more.csv",
+            "anid,Site,Ware,as,fe\nM1,Baca,Red,1,2\nM2,Zuni,Buff,3,\n",
+        );
+        let mut request = site_request("more.csv", "Site");
+        request.elemental_columns = Some(vec!["as".into(), "fe".into()]);
+        let response = service
+            .commit_with(&request, &with_mode(ImportMode::Append))
+            .expect("append");
+        let names: Vec<&str> = response
+            .groups
+            .iter()
+            .map(|g| g.group_name.as_str())
+            .collect();
+        assert_eq!(names, vec!["Baca", "Zuni"]);
+
+        let baca = read_group_file(&dir.path().join("Site/Baca.parquet")).expect("read");
+        assert_eq!(baca.rows.len(), 3);
+        assert_eq!(baca.profile.revision_id, "rev-2");
+        assert_eq!(
+            baca.profile.roles.descriptive,
+            vec!["Site", "Sub_region", "Ware"]
+        );
+        // Old rows keep identities and measured values; new rows are new.
+        assert_eq!(baca.rows[0].uuid, baca_before.rows[0].uuid);
+        assert_eq!(baca.rows[0].elemental, baca_before.rows[0].elemental);
+        assert_eq!(baca.rows[0].descriptive[2], None);
+        assert_eq!(baca.rows[2].visible.as_deref(), Some("M1"));
+        assert_eq!(baca.rows[2].descriptive[1], None);
+        assert_eq!(baca.rows[2].descriptive[2].as_deref(), Some("Red"));
+        // Siblings that got no rows are realigned to the same columns.
+        let hooper = read_group_file(&dir.path().join("Site/Hooper.parquet")).expect("read");
+        assert_eq!(
+            hooper.profile.roles.descriptive,
+            baca.profile.roles.descriptive
+        );
+        let zuni = read_group_file(&dir.path().join("Site/Zuni.parquet")).expect("read");
+        assert_eq!(
+            zuni.profile.roles.descriptive,
+            baca.profile.roles.descriptive
+        );
+
+        // "fe" left unchecked but numeric: taken as measured for Hooper, like
+        // the legacy type harmonization.
+        put(&dir, "fe.csv", "anid,Site,as,fe\nF1,Hooper,1,2.5\n");
+        let mut request = site_request("fe.csv", "Site");
+        request.elemental_columns = Some(vec!["as".into()]);
+        service
+            .commit_with(&request, &with_mode(ImportMode::Append))
+            .expect("harmonized append");
+        let hooper = read_group_file(&dir.path().join("Site/Hooper.parquet")).expect("read");
+        assert_eq!(
+            hooper.rows.last().expect("row").elemental,
+            vec![Some(1.0), Some(2.5)]
+        );
+    }
+
+    #[test]
+    fn append_refuses_measured_mismatches_and_repeated_sources() {
+        let (service, dir, source) = service_with_source();
+        service
+            .commit(&site_request(&source, "Site"))
+            .expect("first import");
+        let again = service
+            .commit_with(
+                &site_request(&source, "Site"),
+                &with_mode(ImportMode::Append),
+            )
+            .expect_err("same file appended twice");
+        assert!(again.to_string().contains("already in folder"));
+
+        put(&dir, "extra.csv", "anid,Site,as,fe,na\nX1,Baca,1,2,3\n");
+        let mut request = site_request("extra.csv", "Site");
+        request.elemental_columns = Some(vec!["as".into(), "fe".into(), "na".into()]);
+        let err = service
+            .commit_with(&request, &with_mode(ImportMode::Append))
+            .expect_err("extra measured column refused");
+        assert!(err.to_string().contains("does not measure na"));
+
+        put(&dir, "text.csv", "anid,Site,as,fe\nT1,Baca,1,high\n");
+        let mut request = site_request("text.csv", "Site");
+        request.elemental_columns = Some(vec!["as".into()]);
+        let err = service
+            .commit_with(&request, &with_mode(ImportMode::Append))
+            .expect_err("non-numeric measured column refused");
+        assert!(err.to_string().contains("not all numbers"));
+        // Refusals leave the group untouched.
+        let baca = read_group_file(&dir.path().join("Site/Baca.parquet")).expect("read");
+        assert_eq!(baca.profile.revision_id, "rev-1");
+        assert_eq!(baca.rows.len(), 2);
     }
 }
