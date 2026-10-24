@@ -51,6 +51,11 @@ test('conflicts report clashes, the same source, and append targets per folder',
   assert.equal(commitMode(other, 'replace'), null);
   assert.equal(commitMode(other, 'new'), null, 'Zuni.parquet clashes');
 
+  const cased = importConflicts(preview, 'site');
+  assert.equal(cased.sameSource.length, 1, 'folder names match case-insensitively');
+  assert.deepEqual(cased.clashes, ['Baca.parquet']);
+  assert.deepEqual(cased.sameSourceElsewhere, ['Old']);
+
   const empty = importConflicts(preview, 'Fresh');
   assert.equal(commitMode(empty, ''), 'new_groups');
   assert.equal(freeFolderName('Site', ['Site', 'site 2', 'Other']), 'Site 3');

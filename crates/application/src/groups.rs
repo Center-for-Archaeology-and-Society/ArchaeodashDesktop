@@ -3,7 +3,7 @@
 //! journaled transfer/merge operations over the transactional group store.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use archaeodash_contracts::{
     AddDescriptiveColumnRequest, BatchTransferUnitsRequest, CopyGroupsRequest, CreateFolderRequest,
@@ -43,6 +43,41 @@ fn file_name_of(path: &str) -> String {
         .rsplit_once('/')
         .map(|(_, name)| name.to_string())
         .unwrap_or(normalized)
+}
+
+/// A `/`-separated project-relative folder spelled as it already exists on
+/// disk. On a case-insensitive file system (Windows, macOS) "Groups" names an
+/// existing "groups" folder; folder checks compare listed paths exactly, so
+/// they must see the on-disk spelling. Components that do not exist yet keep
+/// the requested spelling.
+pub(crate) fn on_disk_folder(root: &Path, folder: &str) -> String {
+    let mut dir = root.to_path_buf();
+    let mut parts: Vec<String> = Vec::new();
+    let mut existing = true;
+    for part in folder.split('/').filter(|part| !part.is_empty()) {
+        let mut name = part.to_string();
+        existing = existing && dir.join(part).is_dir();
+        if existing {
+            let names: Vec<String> = std::fs::read_dir(&dir)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|entry| entry.path().is_dir())
+                        .map(|entry| entry.file_name().to_string_lossy().to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !names.iter().any(|n| n == part) {
+                let lower = part.to_lowercase();
+                if let Some(found) = names.iter().find(|n| n.to_lowercase() == lower) {
+                    name = found.clone();
+                }
+            }
+        }
+        dir.push(&name);
+        parts.push(name);
+    }
+    parts.join("/")
 }
 
 /// Checks a new folder name: one path component, portable on Windows,
@@ -368,6 +403,7 @@ impl GroupService {
         for part in folder.split('/') {
             validate_folder_name(part)?;
         }
+        let folder = on_disk_folder(&self.root, &folder);
         let paths: Vec<String> = req.sources.iter().map(|s| s.path.clone()).collect();
         let sources = self.store.read_groups_snapshot(&paths)?;
         let mut inputs = Vec::new();

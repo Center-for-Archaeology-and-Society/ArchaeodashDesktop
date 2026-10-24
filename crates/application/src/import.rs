@@ -82,6 +82,15 @@ fn resolve_visible_id(requested: Option<&str>, frame: &archaeodash_data_io::Text
     }
 }
 
+/// An ID column as the wizard names it.
+fn id_column_label(column: &str) -> String {
+    if column == AUTOMATIC_ID_COLUMN {
+        "automatic IDs (row numbers)".to_string()
+    } else {
+        column.to_string()
+    }
+}
+
 fn store_err(e: StoreError) -> ImportError {
     match e {
         StoreError::Io(message) => ImportError::Io(message),
@@ -177,12 +186,13 @@ fn is_workbook(path: &str) -> bool {
 }
 
 /// The worksheet recorded in a lineage label (`None` for text sources and
-/// for labels written before worksheets were recorded).
+/// for labels written before worksheets were recorded). The sheet follows
+/// the first `.xlsx#`, so a worksheet name may itself contain `#`.
 fn sheet_of_label(label: &str) -> Option<&str> {
-    label
-        .rsplit_once('#')
-        .filter(|(path, _)| is_workbook(path))
-        .map(|(_, sheet)| sheet)
+    const MARK: &str = ".xlsx#";
+    // ASCII lowercasing keeps byte offsets, so `at` indexes `label` too.
+    let at = label.to_ascii_lowercase().find(MARK)?;
+    Some(&label[at + MARK.len()..])
 }
 
 /// Whether a group was imported from the same source as `sha256`/`sheet`:
@@ -290,6 +300,74 @@ impl ImportPlan<'_> {
             source_path: Some(self.source.clone()),
             source_sha256: Some(self.source_sha256.clone()),
         }
+    }
+
+    /// How many rows of an existing group cannot have come from this source.
+    /// The bytes are the same, so a row of this source is the frame row at
+    /// its `legacy_rowid` and rebuilds, with the group's own ID column,
+    /// measured columns, and recipe, to the same visible ID and measured
+    /// values. Rows appended from another file or moved in from another
+    /// group fail that test.
+    fn foreign_rows(&self, data: &GroupFileData) -> usize {
+        let rowid = self.frame.column_index(AUTOMATIC_ID_COLUMN);
+        let mut candidates: Vec<(usize, usize)> = Vec::new();
+        for (index, row) in data.rows.iter().enumerate() {
+            let Some(label) = row.legacy_rowid.as_deref() else {
+                continue;
+            };
+            let in_frame = |at: usize| {
+                at < self.frame.n_rows()
+                    && rowid.and_then(|c| self.frame.rows[at][c].as_deref()) == Some(label)
+            };
+            let at = label
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .and_then(|n| n.checked_sub(1))
+                .filter(|&at| in_frame(at));
+            if let Some(at) = at {
+                candidates.push((index, at));
+            }
+        }
+        if candidates.is_empty() {
+            return data.rows.len();
+        }
+        let roles = &data.profile.roles;
+        let partition = Partition {
+            group_name: data.profile.group_name.clone(),
+            row_indices: candidates.iter().map(|&(_, at)| at).collect(),
+        };
+        let Ok((_, rebuilt)) = build_group_rows(
+            self.frame,
+            &partition,
+            &roles.visible_id,
+            &roles.elemental,
+            Some(&[]),
+            &data.profile.import_recipe,
+            None,
+        ) else {
+            return data.rows.len();
+        };
+        let same_value = |a: &Option<f64>, b: &Option<f64>| match (a, b) {
+            (Some(a), Some(b)) => a == b || (a.is_nan() && b.is_nan()),
+            (None, None) => true,
+            _ => false,
+        };
+        let own = candidates
+            .iter()
+            .zip(&rebuilt)
+            .filter(|((index, _), new)| {
+                let old = &data.rows[*index];
+                old.visible == new.visible
+                    && old.elemental.len() == new.elemental.len()
+                    && old
+                        .elemental
+                        .iter()
+                        .zip(&new.elemental)
+                        .all(|(a, b)| same_value(a, b))
+            })
+            .count();
+        data.rows.len() - own
     }
 
     /// The measured columns for rows added to an existing group: exactly the
@@ -479,6 +557,9 @@ impl ImportService {
             .unwrap_or_else(|| DEFAULT_DESTINATION_DIR.to_string());
         // Path-containment check without touching the filesystem.
         self.resolve(&destination_dir)?;
+        // An existing folder keeps its on-disk spelling, so the folder's
+        // groups are found on case-insensitive file systems.
+        let destination_dir = crate::groups::on_disk_folder(&self.root, &destination_dir);
         // Validate partitioning before any filesystem side effects: a commit
         // rejected for blank group values must not create directories.
         let partitions = import_partitions(
@@ -667,6 +748,24 @@ impl ImportService {
         let other_paths: Vec<String> = others.iter().map(|(p, _)| p.clone()).collect();
         let old = self.read_snapshot(&replaced_paths)?;
         let other_data = self.read_snapshot(&other_paths)?;
+        // The replacement holds only this source's rows, so rows added to
+        // these groups later (appended from another file, or moved in from
+        // another group) would be dropped or take a source row's identity.
+        for (_, data) in &old {
+            let foreign = plan.foreign_rows(data);
+            if foreign > 0 {
+                return Err(ImportError::Parse(format!(
+                    "\u{201c}{}\u{201d} holds {} that {} not imported from this file, and \
+                     replacing it would drop {}; move {} to another group first, or import \
+                     into another folder",
+                    data.profile.group_name,
+                    plural(foreign, "row"),
+                    if foreign == 1 { "was" } else { "were" },
+                    if foreign == 1 { "it" } else { "them" },
+                    if foreign == 1 { "it" } else { "them" },
+                )));
+            }
+        }
 
         // Same source bytes, so the same row number with the same visible ID
         // is the same sample.
@@ -780,6 +879,20 @@ impl ImportService {
         let mut incoming = Vec::with_capacity(plan.partitions.len());
         for partition in &plan.partitions {
             let target = by_name.get(partition.group_name.as_str()).copied();
+            if let Some(index) = target {
+                // Rows of one group share one ID column; otherwise the new
+                // IDs would land under the group's ID heading (and the
+                // group's ID column would be added again as descriptive).
+                let profile = &existing[index].1.profile;
+                if profile.roles.visible_id != plan.visible_id_column {
+                    return Err(ImportError::Parse(format!(
+                        "\u{201c}{}\u{201d} uses {} as its ID column; choose the same ID \
+                         column to add rows to it",
+                        profile.group_name,
+                        id_column_label(&profile.roles.visible_id)
+                    )));
+                }
+            }
             let elemental = match target {
                 Some(index) => plan.harmonized_elemental(partition, &existing[index].1)?,
                 None => plan.elemental_columns.clone(),
@@ -799,6 +912,35 @@ impl ImportService {
         for column in existing_columns.chain(incoming_columns) {
             if !union.contains(column) {
                 union.push(column.clone());
+            }
+        }
+        // Every written group gets the union as its descriptive columns, so
+        // none of them may use one of those names as a measured, ID, or
+        // identity column (a file would hold two columns of one name).
+        let written_roles = existing
+            .iter()
+            .map(|(_, data)| (data.profile.group_name.as_str(), &data.profile.roles))
+            .chain(
+                plan.partitions
+                    .iter()
+                    .zip(&incoming)
+                    .filter(|(_, (target, _, _))| target.is_none())
+                    .map(|(partition, (_, roles, _))| (partition.group_name.as_str(), roles)),
+            );
+        for (name, roles) in written_roles {
+            let clash = union.iter().find(|column| {
+                roles.elemental.contains(column)
+                    || **column == roles.visible_id
+                    || **column == roles.legacy_rowid
+                    || **column == roles.identity
+            });
+            if let Some(column) = clash {
+                return Err(ImportError::Parse(format!(
+                    "{column} is descriptive in some groups of folder \u{201c}{}\u{201d} but \
+                     measured or the ID column in \u{201c}{name}\u{201d}; use the same column \
+                     roles, or import into another folder",
+                    plan.destination_dir
+                )));
             }
         }
 
@@ -1712,5 +1854,140 @@ A2,Zuni,2,11
             .commit_with(&request("A"), &with_mode(ImportMode::NewGroups))
             .expect_err("sheet A again");
         assert!(again.to_string().contains("imported from this file"));
+    }
+
+    #[test]
+    fn worksheet_names_with_hash_are_told_apart() {
+        let dir = tempdir::tempdir().expect("tempdir");
+        let mut book = rust_xlsxwriter::Workbook::new();
+        for (sheet, site) in [("Data#1", "Baca"), ("Data#2", "Zuni")] {
+            let data = book.add_worksheet();
+            data.set_name(sheet).expect("name");
+            for (col, name) in ["anid", "Site", "as", "fe"].iter().enumerate() {
+                data.write_string(0, col as u16, *name).expect("w");
+            }
+            data.write_string(1, 0, format!("{sheet}-1")).expect("w");
+            data.write_string(1, 1, site).expect("w");
+            data.write_number(1, 2, 1.0).expect("w");
+            data.write_number(1, 3, 2.0).expect("w");
+        }
+        book.save(dir.path().join("book.xlsx")).expect("save");
+        let service = ImportService::new(dir.path()).expect("service");
+        let request = |sheet: &str| ImportCommitRequest {
+            sheet: Some(sheet.into()),
+            ..site_request("book.xlsx", "Site")
+        };
+        service
+            .commit_with(&request("Data#1"), &with_mode(ImportMode::NewGroups))
+            .expect("first sheet");
+        // The other worksheet is another source: nothing of it to replace.
+        let err = service
+            .commit_with(&request("Data#2"), &with_mode(ImportMode::ReplaceSource))
+            .expect_err("another worksheet is not this source");
+        assert!(err
+            .to_string()
+            .contains("no groups imported from this file"));
+        let baca = read_group_file(&dir.path().join("Site/Baca.parquet")).expect("read");
+        assert_eq!(baca.rows[0].visible.as_deref(), Some("Data#1-1"));
+        assert!(!dir.path().join("Site/Zuni.parquet").exists());
+    }
+
+    #[test]
+    fn replace_refuses_groups_holding_rows_from_other_files() {
+        let (service, dir, source) = service_with_source();
+        service
+            .commit(&site_request(&source, "Site"))
+            .expect("first import");
+        put(&dir, "more.csv", "anid,Site,as,fe\nM1,Baca,7,8\n");
+        service
+            .commit_with(
+                &site_request("more.csv", "Site"),
+                &with_mode(ImportMode::Append),
+            )
+            .expect("append");
+        let err = service
+            .commit_with(
+                &site_request(&source, "Site"),
+                &with_mode(ImportMode::ReplaceSource),
+            )
+            .expect_err("the appended row would be dropped");
+        assert!(err.to_string().contains("not imported from this file"));
+        let baca = read_group_file(&dir.path().join("Site/Baca.parquet")).expect("read");
+        assert_eq!(baca.rows.len(), 3);
+        assert_eq!(baca.profile.revision_id, "rev-2");
+
+        // Automatic IDs: the appended row has the same row number and ID as a
+        // source row, so only its values tell it apart.
+        let automatic = |source: &str| ImportCommitRequest {
+            visible_id_column: Some(AUTOMATIC_ID_COLUMN.into()),
+            ..site_request(source, "Auto")
+        };
+        service
+            .commit_with(&automatic(&source), &with_mode(ImportMode::NewGroups))
+            .expect("automatic import");
+        service
+            .commit_with(&automatic("more.csv"), &with_mode(ImportMode::Append))
+            .expect("automatic append");
+        let err = service
+            .commit_with(&automatic(&source), &with_mode(ImportMode::ReplaceSource))
+            .expect_err("the appended row would be dropped");
+        assert!(err.to_string().contains("not imported from this file"));
+        let baca = read_group_file(&dir.path().join("Auto/Baca.parquet")).expect("read");
+        assert_eq!(baca.rows.len(), 3);
+    }
+
+    #[test]
+    fn append_refuses_other_id_columns_and_role_clashes() {
+        let (service, dir, source) = service_with_source();
+        service
+            .commit(&site_request(&source, "Site"))
+            .expect("first import");
+        put(&dir, "more.csv", "anid,Site,as,fe\nM1,Baca,1,2\n");
+        let mut request = site_request("more.csv", "Site");
+        request.visible_id_column = Some(AUTOMATIC_ID_COLUMN.into());
+        let err = service
+            .commit_with(&request, &with_mode(ImportMode::Append))
+            .expect_err("another ID column refused");
+        assert!(err.to_string().contains("as its ID column"));
+
+        // A new group whose unchecked numeric column the folder measures:
+        // the column cannot be descriptive in one group and measured in
+        // another of the same folder.
+        put(&dir, "zuni.csv", "anid,Site,as,fe\nZ1,Zuni,1,2\n");
+        let mut request = site_request("zuni.csv", "Site");
+        request.elemental_columns = Some(vec!["as".into()]);
+        let err = service
+            .commit_with(&request, &with_mode(ImportMode::Append))
+            .expect_err("role clash refused");
+        assert!(err.to_string().contains("fe is descriptive"));
+
+        let baca = read_group_file(&dir.path().join("Site/Baca.parquet")).expect("read");
+        assert_eq!(baca.profile.revision_id, "rev-1");
+        assert_eq!(baca.rows.len(), 2);
+        assert!(!dir.path().join("Site/Zuni.parquet").exists());
+    }
+
+    #[test]
+    fn import_finds_an_existing_folder_spelled_in_another_case() {
+        let (service, dir, source) = service_with_source();
+        service
+            .commit(&site_request(&source, "Site"))
+            .expect("first import");
+        let single = ImportCommitRequest {
+            group_column: String::new(),
+            group_name: Some("Everything".into()),
+            ..site_request(&source, "SITE")
+        };
+        let result = service.commit_with(&single, &with_mode(ImportMode::NewGroups));
+        if dir.path().join("SITE").join("Baca.parquet").exists() {
+            // Case-insensitive file system: "SITE" is the "Site" folder, which
+            // already holds this file's samples.
+            let err = result.expect_err("same samples twice in one folder");
+            assert!(err.to_string().contains("imported from this file"));
+            assert!(!dir.path().join("Site/Everything.parquet").exists());
+        } else {
+            let response = result.expect("another folder");
+            assert_eq!(response.groups[0].path, "SITE/Everything.parquet");
+        }
     }
 }

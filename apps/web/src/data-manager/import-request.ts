@@ -61,14 +61,17 @@ export interface ImportConflicts {
 /** What the destination folder already holds, from the preview's project listing. */
 export function importConflicts(preview: Pick<ImportPreviewResponse, 'partitions' | 'existing_groups'>, folder: string): ImportConflicts {
   const existing = preview.existing_groups ?? [];
-  const inFolder = existing.filter((group) => group.folder === folder);
+  // Folder names match case-insensitively: on Windows and macOS "site" and
+  // "Site" are one folder, and the backend writes into the existing one.
+  const sameFolder = (other: string) => other.toLowerCase() === folder.toLowerCase();
+  const inFolder = existing.filter((group) => sameFolder(group.folder));
   const names = new Set(inFolder.map((group) => fileNameOf(group.path)));
   const groupNames = new Set(inFolder.map((group) => group.group_name));
   return {
     inFolder,
     clashes: preview.partitions.map((p) => fileNameOf(p.suggested_path)).filter((name) => names.has(name)),
     sameSource: inFolder.filter((group) => group.same_source),
-    sameSourceElsewhere: [...new Set(existing.filter((g) => g.same_source && g.folder !== folder).map((g) => g.folder))].sort(),
+    sameSourceElsewhere: [...new Set(existing.filter((g) => g.same_source && !sameFolder(g.folder)).map((g) => g.folder))].sort(),
     matchingNames: preview.partitions.map((p) => p.group_name).filter((name) => groupNames.has(name)),
   };
 }
