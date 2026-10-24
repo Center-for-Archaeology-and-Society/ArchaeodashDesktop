@@ -88,7 +88,7 @@ A histogram of any element with 2–100 equal-width bins (default 30).
 
 ### Crosstabs
 
-Counts of one field against another, or the mean, median, and standard deviation of a numeric second field for each value of the first. Any column can be the first field.
+Counts of one field against another, or the mean, median, or standard deviation (choose one under *Summary*) of a numeric second field for each value of the first. Any column can be the first field.
 
 ### Compositional profile plot
 
@@ -99,7 +99,7 @@ One line per sample across the selected elements, colored by group.
 - **Axes** — plot elements (or ratios), PCA scores (labelled with their variance), UMAP dimensions, or linear discriminants (LDA needs three or more groups). X and Y must differ.
 - **Filter** — show only rows whose metadata field has the chosen values; blank cells appear as `(Missing)`. *Clear filter* shows everything again.
 - **Colors** — viridis or the default (Dark 3) palette.
-- **Data ellipse** — on by default at 0.90; the slider sets 0.50–0.99. These are data ellipses, not confidence ellipses: at 0.95 an ellipse encloses roughly 95% of a group's points. They are drawn like R's `stat_ellipse()` (robust multivariate-t fit) for groups with at least three points.
+- **Data ellipse** — on by default at 0.90; the slider sets 0.50–0.99. These are data ellipses, not confidence ellipses: at 0.95 an ellipse encloses roughly 95% of a group's points. They are drawn like R's `stat_ellipse()` (robust multivariate-t fit) for groups with at least four points.
 - **Symbols** — marker shapes by a metadata field (the group column by default); shapes repeat after ten values.
 - **Point labels** — label points by any column (the sample ID by default). Hover shows the group, ID, label, symbol field, and coordinates.
 - **Selecting and assigning** — drag a lasso or box around points; double-click clears. Changing the filter keeps only the selected points that are still shown. Choose an existing group or **New group…** and click **Assign** to move the selected samples. A new group name that matches an existing group is refused — pick that group instead.
@@ -128,13 +128,13 @@ Linear discriminant scores by group and the discriminant (vector) plot of each e
 
 ## Cluster
 
-Choose the analysis source (elements/ratios, PCA scores, UMAP dimensions, or linear discriminants) and a method:
+Choose the analysis source (elements/ratios, PCA scores, UMAP dimensions, or linear discriminants), then run diagnostics or fit a method:
 
-- **Diagnostics** — within-cluster sum of squares (elbow) and average silhouette width for k-means or k-medoids, for 1 up to the *Diagnostic maximum k* (default 10).
+- **Run cluster diagnostics** — within-cluster sum of squares (elbow) and average silhouette width for k-means or k-medoids, for 1 up to the *Diagnostic maximum k* (default 10).
 - **Hierarchical** clustering with Euclidean, Manhattan, Minkowski, or maximum distance and average (default), complete, Ward.D, or Ward.D2 linkage, shown as a dendrogram cut into the chosen number of clusters.
 - **Divisive (DIANA)**, **k-means** (cluster count, random starts, iterations, seed), and **k-medoids (PAM)**.
 
-Result tables can be sorted and filtered; *Columns* hides columns and *Compact* tightens the rows (both remembered). Tick rows to record clusters as group assignments: each cluster is mapped to an existing or new group and the moves are applied together after you review them.
+Result tables can be sorted and filtered; *Columns* hides columns and *Compact table* tightens the rows (both remembered). Tick rows to assign them: move them all to one existing or new group, or choose *Use analysis groups* to map each cluster to an existing or new group; the moves are applied together after you review them.
 
 ## Probabilities and Distances
 
