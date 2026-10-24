@@ -65,6 +65,28 @@ fn default_ratio_name(numerator: &str, denominator: &str) -> String {
     sanitize_group_name(&format!("{numerator}_{denominator}"))
 }
 
+/// The named columns of `matrix`, in the given order.
+fn select_columns(
+    matrix: &ColumnMatrix,
+    names: &[String],
+    context: &str,
+) -> Result<ColumnMatrix, DomainError> {
+    let mut cols = Vec::with_capacity(names.len());
+    for name in names {
+        let col = matrix.column(name).ok_or_else(|| {
+            validation(
+                "missing_elemental_column",
+                format!("{context}: column {name:?} is absent after apply"),
+            )
+        })?;
+        cols.push(col.clone());
+    }
+    Ok(ColumnMatrix {
+        names: names.to_vec(),
+        cols,
+    })
+}
+
 /// Application-level transformation-definition store and apply use cases,
 /// rooted at one local project directory.
 pub struct TransformService {
@@ -333,8 +355,10 @@ impl TransformService {
     }
 
     /// Builds the transformed matrix for one definition against
-    /// already-loaded group data: validation, base transform, then ratios
-    /// (`only` mode selects just the ratio outputs). Shared by `apply` and
+    /// already-loaded group data: validation, imputation of the selected
+    /// elements, ratios from the imputed raw values, then the transform of
+    /// the final columns — the selected elements plus ratio outputs
+    /// (`append`) or just the ratio outputs (`only`). Shared by `apply` and
     /// the ordination service; calculated values stay ephemeral (Section 5).
     /// Returns the matrix and the non-finite-to-zero warning count.
     pub(crate) fn apply_definition(
@@ -351,12 +375,15 @@ impl TransformService {
                 }
             }
         }
-        let matrix = Self::matrix_from_group(data, &required, context)?;
-        // Section 8.1 order: impute the base predictors, then transform,
-        // then build ratios. mice methods pass the golden-5 distribution
-        // tests (tests/parity/tests/golden_05_imputation.rs).
-        let matrix = match (definition.imputation_method, definition.imputation_seed) {
-            (ImputationMethod::None, _) => matrix,
+        let mut matrix = Self::matrix_from_group(data, &required, context)?;
+        // Section 8.1 order (legacy datainputTab.R): impute the base
+        // predictors only, build ratios from the imputed raw values, resolve
+        // the final predictors, then transform that final matrix. mice
+        // methods pass the golden-5 distribution tests
+        // (tests/parity/tests/golden_05_imputation.rs).
+        match (definition.imputation_method, definition.imputation_seed) {
+            (ImputationMethod::None, _) => {}
+            (_, _) if definition.elemental_columns.is_empty() => {}
             (method, Some(seed)) => {
                 let method = match method {
                     ImputationMethod::Pmm => ImputeMethod::Pmm,
@@ -364,9 +391,15 @@ impl TransformService {
                     ImputationMethod::Rf => ImputeMethod::Rf,
                     ImputationMethod::None => unreachable!("handled above"),
                 };
-                impute(&matrix, method, seed, MICE_MAXIT)
+                let base = select_columns(&matrix, &definition.elemental_columns, context)?;
+                let imputed = impute(&base, method, seed, MICE_MAXIT)
                     .map_err(|e| validation("imputation_failed", format!("{context}: {e}")))?
-                    .matrix
+                    .matrix;
+                for (name, col) in imputed.names.into_iter().zip(imputed.cols) {
+                    if let Some(idx) = matrix.names.iter().position(|n| n == &name) {
+                        matrix.cols[idx] = col;
+                    }
+                }
             }
             (_, None) => {
                 return Err(validation(
@@ -374,19 +407,7 @@ impl TransformService {
                     "imputation requires a visible, replayable seed (Section 8.3)",
                 ))
             }
-        };
-        let (mut matrix, non_finite_to_zero) = match definition.transform_method {
-            TransformMethod::None => (matrix, 0u64),
-            TransformMethod::Log => {
-                let r = log_transform(&matrix, LogBase::Natural)?;
-                (r.matrix, r.non_finite_to_zero)
-            }
-            TransformMethod::Log10 => {
-                let r = log_transform(&matrix, LogBase::Base10)?;
-                (r.matrix, r.non_finite_to_zero)
-            }
-            TransformMethod::ZScore => (z_score(&matrix)?, 0),
-        };
+        }
         let specs: Vec<RatioSpec> = definition
             .ratios
             .iter()
@@ -401,32 +422,53 @@ impl TransformService {
             .collect();
         if !specs.is_empty() {
             matrix = apply_ratios(&matrix, &specs)?;
-            if definition.ratio_mode == RatioMode::Only {
-                let mut keep = Vec::with_capacity(specs.len());
-                for s in &specs {
-                    let idx = matrix
-                        .names
-                        .iter()
-                        .position(|n| n == &s.output_name)
-                        .ok_or_else(|| {
-                            validation(
-                                "ratio_output_missing",
-                                format!("ratio output {:?} is absent after apply", s.output_name),
-                            )
-                        })?;
-                    keep.push(idx);
-                }
-                let names = keep.iter().map(|&i| matrix.names[i].clone()).collect();
-                let cols = keep.into_iter().map(|i| matrix.cols[i].clone()).collect();
-                matrix = ColumnMatrix { names, cols };
+        }
+        // Final predictors (legacy `resolve_final_chem`): selected elements
+        // plus ratio outputs for `append`, only the ratio outputs for `only`
+        // (falling back to the elements when no ratios exist). Ratio source
+        // columns that were not selected never reach the analysis.
+        let ratios_only = definition.ratio_mode == RatioMode::Only && !specs.is_empty();
+        let mut final_names: Vec<String> = Vec::new();
+        if !ratios_only {
+            final_names.extend(definition.elemental_columns.iter().cloned());
+        }
+        for s in &specs {
+            if !final_names.contains(&s.output_name) {
+                final_names.push(s.output_name.clone());
             }
         }
+        let matrix = select_columns(&matrix, &final_names, context)?;
+        // The transform runs on the final matrix, ratios included; like the
+        // legacy pipeline every non-finite result becomes 0.
+        let (matrix, non_finite_to_zero) = match definition.transform_method {
+            TransformMethod::None => (matrix, 0u64),
+            TransformMethod::Log => {
+                let r = log_transform(&matrix, LogBase::Natural)?;
+                (r.matrix, r.non_finite_to_zero)
+            }
+            TransformMethod::Log10 => {
+                let r = log_transform(&matrix, LogBase::Base10)?;
+                (r.matrix, r.non_finite_to_zero)
+            }
+            TransformMethod::ZScore => {
+                let mut z = z_score(&matrix)?;
+                let mut zeroed = 0u64;
+                for v in z.cols.iter_mut().flatten() {
+                    if !v.is_finite() {
+                        *v = 0.0;
+                        zeroed += 1;
+                    }
+                }
+                (z, zeroed)
+            }
+        };
         Ok((matrix, non_finite_to_zero))
     }
 
-    /// Applies one definition to a group file: base transform, then ratios
-    /// (`append` keeps the transformed elemental columns, `only` returns just
-    /// the ratio outputs). The result is ephemeral — nothing is written.
+    /// Applies one definition to a group file: imputation, ratios, then the
+    /// transform (`append` keeps the selected elemental columns, `only`
+    /// returns just the ratio outputs). The result is ephemeral — nothing is
+    /// written.
     pub fn apply(
         &self,
         req: &ApplyTransformationRequest,
@@ -724,6 +766,96 @@ mod tests {
         );
         // The seed makes the imputation replayable.
         assert_eq!(service.apply(&request).expect("again").rows, applied.rows);
+
+        // Ratios are built from the imputed values (Section 8.1 steps 5-6).
+        let mut with_ratio = request.clone();
+        with_ratio.definition.ratios = vec![RatioSpecDto {
+            output_name: None,
+            numerator: "as".into(),
+            denominator: "fe".into(),
+        }];
+        let ratioed = service.apply(&with_ratio).expect("apply ratios");
+        assert_eq!(ratioed.columns, vec!["as", "fe", "as_fe"]);
+        assert_eq!(ratioed.rows[1][1], Some(fe));
+        assert_eq!(ratioed.rows[1][2], Some(2.0 / fe));
+    }
+
+    #[test]
+    fn ratios_use_raw_values_and_are_transformed_with_the_elements() {
+        let (service, _dir, path) = service_with_group();
+        let ratio = |numerator: &str, denominator: &str| RatioSpecDto {
+            output_name: None,
+            numerator: numerator.into(),
+            denominator: denominator.into(),
+        };
+        let apply = |def: TransformationDefinition| {
+            service
+                .apply(&ApplyTransformationRequest {
+                    extra_paths: vec![],
+                    path: path.clone(),
+                    definition: def,
+                })
+                .expect("apply")
+        };
+
+        // log10 of the raw ratio 1.5/3, not a ratio of logged values.
+        let mut def = definition("log", TransformMethod::Log10);
+        def.ratios = vec![ratio("as", "fe")];
+        let applied = apply(def.clone());
+        assert_eq!(applied.columns, vec!["as", "fe", "as_fe"]);
+        assert_eq!(applied.rows[0], vec![Some(0.176), Some(0.477), Some(-0.301)]);
+
+        // Ratio-only mode transforms the ratios too.
+        def.ratio_mode = RatioMode::Only;
+        def.ratios = vec![ratio("fe", "as")];
+        let applied = apply(def);
+        assert_eq!(applied.columns, vec!["fe_as"]);
+        assert_eq!(applied.rows[0], vec![Some(0.301)]);
+
+        // zScore sees the final matrix: row proportions include the ratio.
+        let mut def = definition("z", TransformMethod::ZScore);
+        def.ratios = vec![ratio("as", "fe")];
+        let applied = apply(def);
+        let expected = z_score(&ColumnMatrix {
+            names: vec!["as".into(), "fe".into(), "as_fe".into()],
+            cols: vec![vec![1.5, 2.0], vec![3.0, 4.0], vec![0.5, 0.5]],
+        })
+        .expect("oracle");
+        assert_eq!(applied.columns, expected.names);
+        for (j, col) in expected.cols.iter().enumerate() {
+            for (i, v) in col.iter().enumerate() {
+                assert_eq!(applied.rows[i][j], Some(*v), "z[{i}][{j}]");
+            }
+        }
+
+        // Non-finite zScore results (here a single, constant 100% column)
+        // become 0 like the legacy pipeline, and are counted.
+        let mut def = definition("z0", TransformMethod::ZScore);
+        def.elemental_columns = vec!["as".into()];
+        let applied = apply(def);
+        assert_eq!(applied.rows, vec![vec![Some(0.0)], vec![Some(0.0)]]);
+        assert_eq!(applied.non_finite_to_zero, 2);
+    }
+
+    #[test]
+    fn append_mode_keeps_unselected_ratio_sources_out_of_the_analysis() {
+        let (service, _dir, path) = service_with_group();
+        let mut def = definition("append", TransformMethod::None);
+        def.elemental_columns = vec!["as".into()];
+        def.ratios = vec![RatioSpecDto {
+            output_name: Some("fe_over_as".into()),
+            numerator: "fe".into(),
+            denominator: "as".into(),
+        }];
+        let applied = service
+            .apply(&ApplyTransformationRequest {
+                extra_paths: vec![],
+                path,
+                definition: def,
+            })
+            .expect("apply");
+        assert_eq!(applied.columns, vec!["as", "fe_over_as"]);
+        assert_eq!(applied.rows[0], vec![Some(1.5), Some(2.0)]);
     }
 
     #[test]
