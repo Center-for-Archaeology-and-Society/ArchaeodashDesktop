@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { GroupCandidate, GroupSummary } from '@archaeodash/contracts';
-import { DataManager, GroupDetails, GroupFileTree, loadGroupFiles, type DataManagerTransport, type GroupFileEntry } from './DataManager.tsx';
+import { DataManager, GroupDetails, GroupFileTree, folderNodes, loadGroupFiles, type DataManagerTransport, type GroupFileEntry } from './DataManager.tsx';
 import { ImportWizard } from './ImportWizard.tsx';
 import { DEFAULT_VALUE_OPTIONS, ImportValueOptions, recipeFromOptions } from './ImportValueOptions.tsx';
 import { ImportProgress, elapsedLabel, importStepLabel } from './ImportProgress.tsx';
@@ -59,12 +59,14 @@ test('file manager sidebar renders the header, toolbar and groups folder', () =>
   const html = renderToStaticMarkup(<DataManager transport={transport} projectName="Sample" />);
   assert.match(html, /Sample/);
   assert.match(html, /role="toolbar"/);
-  for (const label of ['Import…', 'Duplicate', 'Merge', 'Delete']) assert.ok(html.includes(label), `missing ${label}`);
+  for (const label of ['Import…', 'Merge', 'Delete']) assert.ok(html.includes(label), `missing ${label}`);
+  // Duplicating inside a folder would repeat samples; Copy to… replaces it.
+  assert.doesNotMatch(html, />Duplicate</);
   assert.match(html, /aria-label="Refresh"/);
   assert.match(html, /role="tree"/);
   assert.match(html, /aria-multiselectable="true"/);
   // Nothing selected yet: selection actions are disabled.
-  assert.match(html, /<button type="button" class="fm-tool" disabled="" aria-pressed="false">Duplicate<\/button>/);
+  assert.match(html, /<button type="button" class="fm-tool" disabled="" aria-pressed="false">Merge<\/button>/);
   assert.match(html, /Select a file to see its details/);
   assert.doesNotMatch(html, /role="dialog"/, 'import dialog is closed initially');
   // No export service in this transport: no Export button.
@@ -259,4 +261,30 @@ test('import value handling defaults match the original ArchaeoDash loader', () 
     blank_non_element_label: '[blank]',
   });
   assert.equal(recipeFromOptions({ ...DEFAULT_VALUE_OPTIONS, blankNonElement: false }).blank_non_element_label, null);
+});
+
+test('file manager shows folder actions when the transport supports folders', () => {
+  const transport = {
+    kind: 'tauri',
+    groups: { scan: async () => [], folders: async () => [], createFolder: async () => ({ path: 'x', name: 'x', group_count: 0 }), renameFolder: async () => ({ path: 'x', name: 'x', group_count: 0 }), deleteFolder: async () => {}, copyGroups: async () => { throw new Error('unused'); } },
+  } as unknown as DataManagerTransport;
+  const html = renderToStaticMarkup(<DataManager transport={transport} projectName="Sample" />);
+  for (const label of ['New folder…', 'Rename…', 'Copy to…', 'Move to…']) assert.ok(html.includes(label), `missing ${label}`);
+});
+
+test('the tree shows one row per folder with its groups, and the analysis-folder switch', () => {
+  const many: GroupFileEntry[] = [
+    { path: 'Site/A.parquet', name: 'A', summary: summary('A', 3), revision: 'r', error: '' },
+    { path: String.raw`Clusters\K1.parquet`, name: 'K1', summary: summary('K1', 2), revision: 'r', error: '' },
+  ];
+  const folders = folderNodes(many, [{ path: 'Empty', name: 'Empty', group_count: 0 }]);
+  assert.deepEqual(folders.map((f) => [f.path, f.entries.map((e) => e.name)]), [['Clusters', ['K1']], ['Empty', []], ['Site', ['A']]]);
+  const html = renderToStaticMarkup(<GroupFileTree entries={many} folders={folders} selected={[]} activeFolder="Site" included={new Set(['Site/A.parquet'])} />);
+  assert.equal(html.match(/aria-level="1"/g)?.length, 3);
+  assert.match(html, /aria-label="Site, 1 file, used in analyses"/);
+  assert.match(html, /In analyses/);
+  assert.match(html, /Empty folder/);
+  // A group in another folder is not counted as included.
+  assert.equal(html.match(/fm-include is-on/g)?.length, 1);
+  assert.match(html, /fm-include is-other-folder/);
 });

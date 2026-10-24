@@ -10,6 +10,7 @@ import { ORDINATION_LABELS, planPrecompute, precomputeStatusText, type Precomput
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
 import { DEFAULT_IMPUTATION_SEED, IMPUTATION_CHOICES, TRANSFORM_CHOICES, newSetup, setupSummary } from '../analysis-setup/setup.ts';
 import { useGroupInclusion } from '../datasets/GroupInclusion.tsx';
+import { activeFolderAmong, folderOf } from '../datasets/folders.ts';
 import { ImportDialog } from './ImportDialog.tsx';
 import { BusyLabel, Spinner } from '../ui/Busy.tsx';
 
@@ -28,8 +29,8 @@ export function AnalysisSetupPanel({ elements, groups, ordination, dataKey = '' 
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState('');
   // Precompute the groups the pages analyze, so their requests hit the cache.
-  const excluded = useGroupInclusion()?.excluded;
-  const precompute = usePrecompute(setup, groups, ordination, dataKey, excluded);
+  const inclusion = useGroupInclusion();
+  const precompute = usePrecompute(setup, groups, ordination, dataKey, inclusion?.excluded, inclusion?.activeFolder);
   const headingId = useId();
   if (!save) return null;
   return (
@@ -78,6 +79,7 @@ function usePrecompute(
   ordination: OrdinationService | undefined,
   dataKey: string,
   excluded: ReadonlySet<string> | undefined,
+  activeFolder: string | null | undefined,
 ): [OrdinationKind, PrecomputeState][] {
   const [states, setStates] = useState<[OrdinationKind, PrecomputeState][]>([]);
   useEffect(() => {
@@ -90,7 +92,10 @@ function usePrecompute(
       if (!cancelled) setStates((current) => current.map(([k, s]) => [k, k === kind ? state : s]));
     };
     void (async () => {
-      const candidates = (await groups.scan()).filter((c) => !excluded?.has(c.path));
+      const scanned = (await groups.scan()).filter((c) => c.ready && c.group);
+      // Same groups the pages analyze: the active folder, minus exclusions.
+      const folder = activeFolderAmong(scanned.map((c) => c.path), activeFolder);
+      const candidates = scanned.filter((c) => (folder === null || folderOf(c.path) === folder) && !excluded?.has(c.path));
       const plan = planPrecompute(setup, candidates);
       if (cancelled) return;
       setStates([
@@ -109,7 +114,7 @@ function usePrecompute(
       }
     })().catch(() => { if (!cancelled) setStates([]); });
     return () => { cancelled = true; };
-  }, [setup, groups, ordination, dataKey, excluded]);
+  }, [setup, groups, ordination, dataKey, excluded, activeFolder]);
   return states;
 }
 

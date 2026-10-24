@@ -117,6 +117,44 @@ impl DesktopGroups {
         self.with_service(|svc| svc.patch_descriptive_values(&req))
     }
 
+    /// Desktop `list_group_folders` command body.
+    pub fn list_folders(&self) -> Result<Vec<archaeodash_contracts::GroupFolder>, String> {
+        self.with_service(|svc| svc.list_folders())
+    }
+
+    /// Desktop `create_group_folder` command body.
+    pub fn create_folder(
+        &self,
+        req: archaeodash_contracts::CreateFolderRequest,
+    ) -> Result<archaeodash_contracts::GroupFolder, String> {
+        self.with_service(|svc| svc.create_folder(&req))
+    }
+
+    /// Desktop `rename_group_folder` command body.
+    pub fn rename_folder(
+        &self,
+        req: archaeodash_contracts::RenameFolderRequest,
+    ) -> Result<archaeodash_contracts::GroupFolder, String> {
+        self.with_service(|svc| svc.rename_folder(&req))
+    }
+
+    /// Desktop `delete_group_folder` command body (empty folders only).
+    pub fn delete_folder(
+        &self,
+        req: archaeodash_contracts::DeleteFolderRequest,
+    ) -> Result<(), String> {
+        self.with_service(|svc| svc.delete_folder(&req))
+    }
+
+    /// Desktop `copy_groups` command body: copy or move whole groups into a
+    /// folder; refused when the folder would hold a sample twice.
+    pub fn copy_groups(
+        &self,
+        req: archaeodash_contracts::CopyGroupsRequest,
+    ) -> Result<TransactionResponse, String> {
+        self.with_service(|svc| svc.copy_groups(&req))
+    }
+
     /// Desktop `duplicate_group` command body: duplicate one whole group,
     /// preserving analytical UUIDs and lineage by default.
     pub fn duplicate_group(

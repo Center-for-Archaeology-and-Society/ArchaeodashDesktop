@@ -23,7 +23,7 @@ function rng(seed: number): () => number {
 const ELEMENTS = ['Na', 'K', 'Fe', 'Sc', 'Cr', 'Co', 'La', 'Th'];
 const GROUPS = ['Baca', 'Chaco', 'Hooper', 'Pueblo Alto'];
 const ROWS_PER_GROUP = 60;
-const pathOf = (group: string) => `groups/${group.replace(/\s+/g, '_')}.parquet`;
+const pathOf = (group: string) => `Site/${group.replace(/\s+/g, '_')}.parquet`;
 const uuid = (g: number, i: number) => `0197${String(g).padStart(4, '0')}-0000-7000-8000-${String(i).padStart(12, '0')}`;
 
 interface Row {
@@ -49,6 +49,21 @@ const rowsByGroup = new Map<string, Row[]>(
     })),
   ]),
 );
+
+/** Group file path → group name (copies share their rows' identities). */
+const files = new Map<string, string>(GROUPS.map((g) => [pathOf(g), g]));
+const createdFolders = new Set<string>();
+const folderOfPath = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '');
+const baseOf = (path: string) => path.slice(path.lastIndexOf('/') + 1);
+
+function folderList() {
+  const counts = new Map<string, number>();
+  for (const f of createdFolders) counts.set(f, 0);
+  for (const path of files.keys()) counts.set(folderOfPath(path), (counts.get(folderOfPath(path)) ?? 0) + 1);
+  return [...counts].sort(([a], [b]) => a.localeCompare(b)).map(([path, group_count]) => ({ path, name: path, group_count }));
+}
+
+const summaryAt = (path: string) => ({ ...summary(files.get(path) ?? GROUPS[0]!), path, row_count: rowsByGroup.get(path)?.length ?? 0 });
 
 const summary = (group: string) => ({
   path: pathOf(group),
@@ -169,12 +184,63 @@ export const demoFetch: FetchLike = async (url, init) => {
   if (p === '/api/v1/auth/session') return json({ authenticated: false }, 10);
   if (p === '/api/v1/preferences') return json(method === 'GET' ? { preferences: [] } : {}, 10);
   if (p === '/api/v1/groups' && method === 'GET') {
-    return json(GROUPS.map((g) => ({ path: pathOf(g), ready: true, group: summary(g) })), 200);
+    return json([...files.keys()].sort().map((path) => ({ path, ready: true, group: summaryAt(path) })), 200);
   }
   if (p === '/api/v1/groups/validate') {
     const path = String(JSON.parse(String(init?.body ?? '""')));
-    const group = GROUPS.find((g) => pathOf(g) === path) ?? GROUPS[0]!;
-    return json(summary(group), 80);
+    return json(summaryAt(path), 80);
+  }
+  if (p === '/api/v1/groups/folders' && method === 'GET') return json(folderList(), 40);
+  if (p === '/api/v1/groups/folders' && method === 'POST') {
+    const name = String(body.name ?? '').trim();
+    if (!name || folderList().some((f) => f.path === name)) return json({ code: 'validation', message: `a folder named “${name}” already exists` }, 100, 400);
+    createdFolders.add(name);
+    return json({ path: name, name, group_count: 0 }, 150);
+  }
+  if (p === '/api/v1/groups/folders/rename') {
+    const from = String(body.path);
+    const to = String(body.new_name).trim();
+    if (folderList().some((f) => f.path === to)) return json({ code: 'validation', message: `a folder named “${to}” already exists` }, 100, 400);
+    for (const [path, group] of [...files]) {
+      if (folderOfPath(path) !== from) continue;
+      const next = `${to}/${baseOf(path)}`;
+      files.delete(path);
+      files.set(next, group);
+      rowsByGroup.set(next, rowsByGroup.get(path) ?? []);
+      rowsByGroup.delete(path);
+    }
+    if (createdFolders.delete(from)) createdFolders.add(to);
+    return json({ path: to, name: to, group_count: [...files.keys()].filter((k) => folderOfPath(k) === to).length }, 200);
+  }
+  if (p === '/api/v1/groups/folders/delete') {
+    createdFolders.delete(String(body.path));
+    return new Promise<Response>((resolve) => setTimeout(() => resolve(new Response(null, { status: 204 })), 100));
+  }
+  if (p === '/api/v1/groups/copy') {
+    const folder = String(body.destination_folder);
+    const sources = (body.sources as { path: string }[]) ?? [];
+    const move = Boolean(body.remove_sources);
+    const taken = new Map<string, string>();
+    for (const [path, group] of files) {
+      if (folderOfPath(path) === folder && !(move && sources.some((s) => s.path === path))) {
+        for (const row of rowsByGroup.get(path) ?? []) taken.set(row.analytical_uuid, group);
+      }
+    }
+    for (const source of sources) {
+      const clash = (rowsByGroup.get(source.path) ?? []).filter((r) => taken.has(r.analytical_uuid));
+      if (clash.length) {
+        return json({ code: 'validation', message: `validation error: folder “${folder}” would hold the same samples twice: ${clash.length} rows of “${files.get(source.path)}” are already in “${taken.get(clash[0]!.analytical_uuid)}”. A folder holds each sample once; copy the group into another folder instead` }, 300, 400);
+      }
+    }
+    const outputs = sources.map((source) => {
+      const dest = `${folder}/${baseOf(source.path)}`;
+      files.set(dest, files.get(source.path) ?? '');
+      rowsByGroup.set(dest, rowsByGroup.get(source.path) ?? []);
+      if (move) { files.delete(source.path); rowsByGroup.delete(source.path); }
+      return summaryAt(dest);
+    });
+    createdFolders.add(folder);
+    return json({ transaction_id: `demo-tx-${Date.now()}`, action: move ? 'move_groups' : 'copy_groups', outputs, deleted_paths: move ? sources.map((x) => x.path) : [] }, 500);
   }
   if (p === '/api/v1/groups/rows') {
     const path = parsed.searchParams.get('path') ?? '';

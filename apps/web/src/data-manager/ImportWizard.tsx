@@ -3,6 +3,7 @@
  * ID column → measured columns → import). Launched from the Data Manager sidebar inside
  * a modal dialog; the caller refreshes the file tree via `onImported`.
  */
+import { folderNameForColumn } from '../datasets/folders.ts';
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import type { ImportPreviewResponse, StagedFile } from '@archaeodash/contracts';
 import { ImportProgress, type ImportStep } from './ImportProgress.tsx';
@@ -112,11 +113,15 @@ export function ImportWizard({ transport, onImported, onClose }: ImportWizardPro
     await run('grouping', async () => { setPreview(await transport.imports.preview({ source, group_name: groupName.trim(), ...sheetArg(sheet) })); });
   };
 
+  // Imported groups go to a folder named after the group column (one
+  // grouping of the samples); a single named group goes to "groups".
+  const destinationFolder = groupMode === 'column' && groupColumn ? folderNameForColumn(groupColumn) : 'groups';
+
   const commit = async () => {
     if (done || !preview || !measured.length || (groupMode === 'column' && !groupColumn) || (groupMode === 'single' && !groupName.trim())) return;
     setMessage('');
     await run('importing', async () => {
-      const result = await transport.imports.commit({ source, group_column: groupMode === 'column' ? groupColumn : '', group_name: groupMode === 'single' ? groupName.trim() : null, visible_id_column: idColumn || null, elemental_columns: measured, recipe: recipeFromOptions(valueOptions), ...sheetArg(sheet) });
+      const result = await transport.imports.commit({ source, group_column: groupMode === 'column' ? groupColumn : '', group_name: groupMode === 'single' ? groupName.trim() : null, visible_id_column: idColumn || null, elemental_columns: measured, recipe: recipeFromOptions(valueOptions), destination_dir: destinationFolder, ...sheetArg(sheet) });
       setDone(result);
       setMessage(`Imported ${result.groups.length} group${result.groups.length === 1 ? '' : 's'} (${result.groups.reduce((sum, item) => sum + item.row_count, 0)} rows).`);
       await onImported?.(result);
@@ -156,6 +161,7 @@ export function ImportWizard({ transport, onImported, onClose }: ImportWizardPro
       <ImportValueOptions value={valueOptions} onChange={setValueOptions} disabled={locked} />
       {((groupMode === 'column' && groupColumn) || (groupMode === 'single' && preview.partitions.length > 0)) && <>
         <h3>Import preview</h3>
+        <p className="import-wizard-folder">Group files are saved in the folder <strong>{destinationFolder}</strong>.</p>
         {preview.partitions.length ? <ul>{preview.partitions.map((partition, index) => <li key={`${partition.group_name}-${index}`}>{partition.group_name}: {partition.row_count} rows</li>)}</ul> : <p>No groups found for this column.</p>}
         {!done && <button type="button" disabled={locked || !preview.partitions.length || !measured.length} onClick={() => void commit()}>{groupMode === 'single' ? 'Import one group' : 'Import groups'}</button>}
       </>}

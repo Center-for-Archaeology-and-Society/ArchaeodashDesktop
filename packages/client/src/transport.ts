@@ -33,6 +33,9 @@ import type {
   ExportMeasuredDataRequest,
   ExportPcaScoresRequest,
   ExportTableRequest,
+  GroupFolder,
+  RenameFolderRequest,
+  CopyGroupsRequest,
   ExportResult,
   ExportTransformedRequest,
   FileDownload,
@@ -105,6 +108,14 @@ export interface GroupsService {
   patchDescriptiveValues(request: PatchDescriptiveValuesRequest): Promise<TransactionResponse>;
   duplicateGroup(request: DuplicateGroupRequest): Promise<TransactionResponse>;
   deleteGroup(request: DeleteGroupRequest): Promise<TransactionResponse>;
+  /** Group folders, including empty ones (optional for older adapters). */
+  folders?(): Promise<GroupFolder[]>;
+  createFolder?(name: string): Promise<GroupFolder>;
+  renameFolder?(request: RenameFolderRequest): Promise<GroupFolder>;
+  /** Removes an empty folder. */
+  deleteFolder?(path: string): Promise<void>;
+  /** Copies or moves whole groups into a folder. */
+  copyGroups?(request: CopyGroupsRequest): Promise<TransactionResponse>;
 }
 
 export interface TransformationsService {

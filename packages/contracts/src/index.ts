@@ -206,6 +206,31 @@ export interface PatchDescriptiveValuesRequest {
   edits: DescriptiveEdit[];
 }
 
+/** A folder of group files: one grouping of the samples (each sample once). */
+export interface GroupFolder {
+  /** Project-relative folder path ('/'-separated; '' is the project root). */
+  path: string;
+  name: string;
+  group_count: number;
+}
+
+export interface RenameFolderRequest {
+  path: string;
+  new_name: string;
+}
+
+export interface GroupRevisionRef {
+  path: string;
+  expected_revision: string;
+}
+
+/** Copy (or move) whole groups into a folder; refused when the folder would hold a sample twice. */
+export interface CopyGroupsRequest {
+  sources: GroupRevisionRef[];
+  destination_folder: string;
+  remove_sources?: boolean;
+}
+
 export interface DuplicateGroupRequest {
   source_path: string;
   expected_revision: string;

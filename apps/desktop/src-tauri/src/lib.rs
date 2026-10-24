@@ -511,6 +511,46 @@ async fn preferences_set(
     run_blocking(&state, move |s| s.preferences.preferences_set(request)).await
 }
 
+#[tauri::command]
+async fn list_group_folders(
+    state: tauri::State<'_, SharedState>,
+) -> Result<Vec<archaeodash_contracts::GroupFolder>, String> {
+    run_blocking(&state, move |s| s.groups.list_folders()).await
+}
+
+#[tauri::command]
+async fn create_group_folder(
+    state: tauri::State<'_, SharedState>,
+    request: archaeodash_contracts::CreateFolderRequest,
+) -> Result<archaeodash_contracts::GroupFolder, String> {
+    run_blocking(&state, move |s| s.groups.create_folder(request)).await
+}
+
+#[tauri::command]
+async fn rename_group_folder(
+    state: tauri::State<'_, SharedState>,
+    request: archaeodash_contracts::RenameFolderRequest,
+) -> Result<archaeodash_contracts::GroupFolder, String> {
+    run_blocking(&state, move |s| s.groups.rename_folder(request)).await
+}
+
+#[tauri::command]
+async fn delete_group_folder(
+    state: tauri::State<'_, SharedState>,
+    request: archaeodash_contracts::DeleteFolderRequest,
+) -> Result<(), String> {
+    run_blocking(&state, move |s| s.groups.delete_folder(request)).await
+}
+
+/// Copy or move whole groups into a folder (`copy_groups`).
+#[tauri::command]
+async fn copy_groups(
+    state: tauri::State<'_, SharedState>,
+    request: archaeodash_contracts::CopyGroupsRequest,
+) -> Result<archaeodash_contracts::TransactionResponse, String> {
+    run_blocking(&state, move |s| s.groups.copy_groups(request)).await
+}
+
 /// `export_table`: any result table as CSV or XLSX (no project access).
 #[tauri::command]
 async fn export_table(
@@ -608,6 +648,11 @@ pub fn run() {
             export_files::save_export_file,
             export_table,
             projects::reveal_project,
+            list_group_folders,
+            create_group_folder,
+            rename_group_folder,
+            delete_group_folder,
+            copy_groups,
             preferences_get,
             preferences_set
         ])

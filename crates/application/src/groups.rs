@@ -2,12 +2,14 @@
 //! Phase 2 local form): candidate discovery, full validation-on-add, and the
 //! journaled transfer/merge operations over the transactional group store.
 
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use archaeodash_contracts::{
-    BatchTransferUnitsRequest, DeleteGroupRequest, DuplicateGroupRequest, GroupCandidate,
-    GroupRowDto, GroupRowsResponse, GroupSummary, MergeGroupsRequest,
-    PatchDescriptiveValuesRequest, TransactionResponse, TransferAction, TransferUnitsRequest,
+    BatchTransferUnitsRequest, CopyGroupsRequest, CreateFolderRequest, DeleteFolderRequest,
+    DeleteGroupRequest, DuplicateGroupRequest, GroupCandidate, GroupFolder, GroupRowDto,
+    GroupRowsResponse, GroupSummary, MergeGroupsRequest, PatchDescriptiveValuesRequest,
+    RenameFolderRequest, TransactionResponse, TransferAction, TransferUnitsRequest,
 };
 use archaeodash_data_io::{sanitize_group_name, GroupFileData, GroupProfile, GroupRow};
 use archaeodash_file_store_fs::FsGroupFileStore;
@@ -16,6 +18,67 @@ use archaeodash_storage::{
     Transaction, TransactionAction,
 };
 use uuid::Uuid;
+
+/// Marker file that keeps an empty group folder listed.
+pub const FOLDER_MARKER: &str = ".archaeodash-folder";
+
+/// Top-level directories that are never group folders.
+const RESERVED_FOLDERS: &[&str] = &["sources"];
+
+/// The folder of a project-relative group path (`/`-separated; `""` for a
+/// file in the project root).
+pub fn folder_of(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    match normalized.rsplit_once('/') {
+        Some((dir, _)) => dir.to_string(),
+        None => String::new(),
+    }
+}
+
+/// The file name of a project-relative path.
+fn file_name_of(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    normalized
+        .rsplit_once('/')
+        .map(|(_, name)| name.to_string())
+        .unwrap_or(normalized)
+}
+
+/// Checks a new folder name: one path component, portable on Windows,
+/// macOS, and Linux, not hidden or reserved. Returns the trimmed name.
+pub fn validate_folder_name(name: &str) -> Result<String, StoreError> {
+    let name = name.trim().trim_end_matches(['.', ' ']).to_string();
+    let invalid = |why: &str| StoreError::Validation(format!("folder name {name:?} {why}"));
+    if name.is_empty() {
+        return Err(StoreError::Validation("folder name is empty".to_string()));
+    }
+    if name.chars().count() > 100 {
+        return Err(invalid("is longer than 100 characters"));
+    }
+    if name.starts_with('.') {
+        return Err(invalid("cannot start with a dot"));
+    }
+    if name
+        .chars()
+        .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
+    {
+        return Err(invalid("cannot contain < > : \" / \\ | ? *"));
+    }
+    let upper = name.to_ascii_uppercase();
+    let stem = upper.split('.').next().unwrap_or("");
+    let windows_reserved = matches!(stem, "CON" | "PRN" | "AUX" | "NUL")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit());
+    if windows_reserved
+        || RESERVED_FOLDERS
+            .iter()
+            .any(|r| r.eq_ignore_ascii_case(&name))
+    {
+        return Err(invalid("is reserved"));
+    }
+    Ok(name)
+}
 
 /// Group operations rooted at one local project directory. Construction runs
 /// the Section 6.8 startup recovery before any other use case.
@@ -67,6 +130,333 @@ impl GroupService {
             out.push(GroupCandidate { path, ready, group });
         }
         Ok(out)
+    }
+
+    /// Runs a transaction after checking that no folder it writes would hold
+    /// the same sample (analytical UUID) twice. Descriptive edits and deletes
+    /// never add rows, so they skip the check.
+    fn execute(&self, tx: &Transaction) -> Result<String, StoreError> {
+        if !matches!(
+            tx.action,
+            TransactionAction::PatchDescriptive | TransactionAction::DeleteGroup
+        ) {
+            self.ensure_unique_samples_per_folder(tx)?;
+        }
+        self.store.execute(tx)
+    }
+
+    /// A folder is one grouping of the samples, so it may hold each sample at
+    /// most once. Only rows the transaction writes are checked (existing
+    /// overlaps between untouched files do not block unrelated work).
+    fn ensure_unique_samples_per_folder(&self, tx: &Transaction) -> Result<(), StoreError> {
+        let replaced: HashSet<String> = tx
+            .outputs
+            .iter()
+            .map(|o| o.path.replace('\\', "/"))
+            .chain(tx.delete_paths.iter().map(|p| p.replace('\\', "/")))
+            .collect();
+        let mut by_folder: BTreeMap<String, Vec<&PlannedOutput>> = BTreeMap::new();
+        for out in &tx.outputs {
+            by_folder.entry(folder_of(&out.path)).or_default().push(out);
+        }
+        if by_folder.is_empty() {
+            return Ok(());
+        }
+        let candidates = self.scan_candidates()?;
+        for (folder, outputs) in by_folder {
+            let others: Vec<String> = candidates
+                .iter()
+                .filter(|c| c.ready && folder_of(&c.path) == folder)
+                .map(|c| c.path.clone())
+                .filter(|p| !replaced.contains(&p.replace('\\', "/")))
+                .collect();
+            let mut owner: HashMap<Uuid, String> = HashMap::new();
+            for data in self
+                .store
+                .read_groups_snapshot(&others)?
+                .into_iter()
+                .flatten()
+            {
+                for row in &data.rows {
+                    owner
+                        .entry(row.uuid)
+                        .or_insert_with(|| data.profile.group_name.clone());
+                }
+            }
+            for out in outputs {
+                let mut clashes: BTreeMap<String, usize> = BTreeMap::new();
+                for row in &out.rows {
+                    match owner.get(&row.uuid) {
+                        Some(other) => *clashes.entry(other.clone()).or_default() += 1,
+                        None => {
+                            owner.insert(row.uuid, out.group_name.clone());
+                        }
+                    }
+                }
+                if let Some((other, count)) = clashes.into_iter().next() {
+                    let shown = if folder.is_empty() {
+                        "the project root"
+                    } else {
+                        &folder
+                    };
+                    return Err(StoreError::Validation(format!(
+                        "folder \u{201c}{shown}\u{201d} would hold the same samples twice: \
+                         {count} row{} of \u{201c}{}\u{201d} {} already in \u{201c}{other}\u{201d}. \
+                         A folder holds each sample once; copy the group into another folder instead",
+                        if count == 1 { "" } else { "s" },
+                        out.group_name,
+                        if count == 1 { "is" } else { "are" },
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Group folders: directories holding group files, plus empty folders
+    /// created here (kept by a marker file). Sorted by path.
+    pub fn list_folders(&self) -> Result<Vec<GroupFolder>, StoreError> {
+        let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+        for candidate in self.scan_candidates()? {
+            if candidate.ready {
+                *counts.entry(folder_of(&candidate.path)).or_default() += 1;
+            }
+        }
+        let root = self.store.resolve("")?;
+        if let Ok(entries) = std::fs::read_dir(&root) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !name.starts_with('.') && entry.path().join(FOLDER_MARKER).is_file() {
+                    counts.entry(name).or_default();
+                }
+            }
+        }
+        Ok(counts
+            .into_iter()
+            .map(|(path, group_count)| GroupFolder {
+                name: path.rsplit('/').next().unwrap_or(&path).to_string(),
+                path,
+                group_count,
+            })
+            .collect())
+    }
+
+    /// Creates an empty top-level group folder.
+    pub fn create_folder(&self, req: &CreateFolderRequest) -> Result<GroupFolder, StoreError> {
+        let name = validate_folder_name(&req.name)?;
+        let dir = self.store.resolve(&name)?;
+        if dir.exists() {
+            return Err(StoreError::Validation(format!(
+                "a folder named \u{201c}{name}\u{201d} already exists"
+            )));
+        }
+        let _lock = self.store.lock_exclusive()?;
+        std::fs::create_dir_all(&dir).map_err(|e| StoreError::Io(e.to_string()))?;
+        std::fs::write(dir.join(FOLDER_MARKER), b"").map_err(|e| StoreError::Io(e.to_string()))?;
+        Ok(GroupFolder {
+            path: name.clone(),
+            name,
+            group_count: 0,
+        })
+    }
+
+    /// Renames a group folder (same parent). Group files keep their contents
+    /// and identities; only their paths change.
+    pub fn rename_folder(&self, req: &RenameFolderRequest) -> Result<GroupFolder, StoreError> {
+        let from = req.path.replace('\\', "/");
+        if from.is_empty() || from.split('/').any(|part| part.starts_with('.')) {
+            return Err(StoreError::Validation(
+                "choose a group folder to rename".to_string(),
+            ));
+        }
+        let name = validate_folder_name(&req.new_name)?;
+        let parent = folder_of(&from);
+        let to = if parent.is_empty() {
+            name.clone()
+        } else {
+            format!("{parent}/{name}")
+        };
+        if to == from {
+            return self.folder_summary(&to);
+        }
+        let from_abs = self.store.resolve(&from)?;
+        let to_abs = self.store.resolve(&to)?;
+        if !from_abs.is_dir() {
+            return Err(StoreError::Validation(format!(
+                "folder \u{201c}{from}\u{201d} does not exist"
+            )));
+        }
+        // A case-only rename is allowed on case-insensitive file systems.
+        if to_abs.exists() && !from.eq_ignore_ascii_case(&to) {
+            return Err(StoreError::Validation(format!(
+                "a folder named \u{201c}{name}\u{201d} already exists"
+            )));
+        }
+        {
+            let _lock = self.store.lock_exclusive()?;
+            std::fs::rename(&from_abs, &to_abs).map_err(|e| {
+                StoreError::Io(format!(
+                    "could not rename the folder (is a file in it open?): {e}"
+                ))
+            })?;
+        }
+        self.folder_summary(&to)
+    }
+
+    /// Deletes an empty group folder (no group files inside).
+    pub fn delete_folder(&self, req: &DeleteFolderRequest) -> Result<(), StoreError> {
+        let path = req.path.replace('\\', "/");
+        if path.is_empty() || path.split('/').any(|part| part.starts_with('.')) {
+            return Err(StoreError::Validation(
+                "choose a group folder to delete".to_string(),
+            ));
+        }
+        let groups = self
+            .scan_candidates()?
+            .into_iter()
+            .filter(|c| {
+                folder_of(&c.path) == path
+                    || c.path.replace('\\', "/").starts_with(&format!("{path}/"))
+            })
+            .count();
+        if groups > 0 {
+            return Err(StoreError::Validation(format!(
+                "folder \u{201c}{path}\u{201d} still holds {groups} group file{}; delete or move them first",
+                if groups == 1 { "" } else { "s" }
+            )));
+        }
+        let dir = self.store.resolve(&path)?;
+        let _lock = self.store.lock_exclusive()?;
+        let marker = dir.join(FOLDER_MARKER);
+        if marker.exists() {
+            std::fs::remove_file(&marker).map_err(|e| StoreError::Io(e.to_string()))?;
+        }
+        std::fs::remove_dir(&dir).map_err(|e| {
+            StoreError::Validation(format!(
+                "folder \u{201c}{path}\u{201d} is not empty (it holds other files): {e}"
+            ))
+        })
+    }
+
+    fn folder_summary(&self, path: &str) -> Result<GroupFolder, StoreError> {
+        Ok(self
+            .list_folders()?
+            .into_iter()
+            .find(|f| f.path == path)
+            .unwrap_or_else(|| GroupFolder {
+                path: path.to_string(),
+                name: path.rsplit('/').next().unwrap_or(path).to_string(),
+                group_count: 0,
+            }))
+    }
+
+    /// Copies (or moves) whole groups into a folder in one transaction,
+    /// keeping file names, group names, sample identities, and lineage.
+    /// Refused when the folder would hold any sample twice.
+    pub fn copy_groups(&self, req: &CopyGroupsRequest) -> Result<TransactionResponse, StoreError> {
+        if req.sources.is_empty() {
+            return Err(StoreError::Validation(
+                "choose at least one group to copy".to_string(),
+            ));
+        }
+        let folder = req.destination_folder.replace('\\', "/");
+        let folder = folder.trim_matches('/').to_string();
+        for part in folder.split('/') {
+            validate_folder_name(part)?;
+        }
+        let paths: Vec<String> = req.sources.iter().map(|s| s.path.clone()).collect();
+        let sources = self.store.read_groups_snapshot(&paths)?;
+        let mut inputs = Vec::new();
+        let mut outputs = Vec::new();
+        let mut selected = Vec::new();
+        let mut destinations = HashSet::new();
+        for (source, data) in req.sources.iter().zip(sources) {
+            let data = data.ok_or_else(|| {
+                StoreError::Validation(format!("group file {} no longer exists", source.path))
+            })?;
+            if data.profile.revision_id != source.expected_revision {
+                return Err(StoreError::RevisionConflict {
+                    path: source.path.clone(),
+                    expected: source.expected_revision.clone(),
+                    found: data.profile.revision_id.clone(),
+                });
+            }
+            if req.remove_sources && folder_of(&source.path) == folder {
+                return Err(StoreError::Validation(format!(
+                    "\u{201c}{}\u{201d} is already in folder \u{201c}{folder}\u{201d}",
+                    data.profile.group_name
+                )));
+            }
+            let destination = format!("{folder}/{}", file_name_of(&source.path));
+            if self.store.resolve(&destination)?.exists()
+                || !destinations.insert(destination.clone())
+            {
+                return Err(StoreError::Validation(format!(
+                    "folder \u{201c}{folder}\u{201d} already has a group file named {}",
+                    file_name_of(&source.path)
+                )));
+            }
+            selected.extend(data.rows.iter().map(|r| r.uuid));
+            inputs.push(Self::input_of(&source.path, &data));
+            outputs.push(PlannedOutput {
+                path: destination,
+                group_id: data.profile.group_id.clone(),
+                group_name: data.profile.group_name.clone(),
+                revision_id: "rev-1".to_string(),
+                rows: data.rows.clone(),
+                roles: data.profile.roles.clone(),
+                recipe: data.profile.import_recipe.clone(),
+                source_path: data.profile.source_path.clone(),
+                source_sha256: data.profile.source_sha256.clone(),
+            });
+        }
+        let dir = self.store.resolve(&folder)?;
+        let created_dir = !dir.exists();
+        if created_dir {
+            std::fs::create_dir_all(&dir).map_err(|e| StoreError::Io(e.to_string()))?;
+            std::fs::write(dir.join(FOLDER_MARKER), b"")
+                .map_err(|e| StoreError::Io(e.to_string()))?;
+        }
+        let tx = Transaction {
+            action: if req.remove_sources {
+                TransactionAction::MoveGroups
+            } else {
+                TransactionAction::CopyGroups
+            },
+            inputs,
+            outputs: outputs.clone(),
+            delete_paths: if req.remove_sources {
+                paths.clone()
+            } else {
+                Vec::new()
+            },
+            selected_uuids: selected,
+        };
+        let result = self.execute(&tx);
+        if result.is_err() && created_dir {
+            // Leave no empty folder behind when the copy is refused.
+            let _ = std::fs::remove_file(dir.join(FOLDER_MARKER));
+            let _ = std::fs::remove_dir(&dir);
+        }
+        let transaction_id = result?;
+        Ok(TransactionResponse {
+            transaction_id,
+            action: if req.remove_sources {
+                "move_groups"
+            } else {
+                "copy_groups"
+            }
+            .to_string(),
+            outputs: outputs
+                .iter()
+                .map(|out| Self::summary_of_output(&out.path, out))
+                .collect(),
+            deleted_paths: if req.remove_sources {
+                paths
+            } else {
+                Vec::new()
+            },
+        })
     }
 
     /// Full validation-on-add: profile, schema, identities, checksum.
@@ -417,7 +807,7 @@ impl GroupService {
             delete_paths,
             selected_uuids: selected_all,
         };
-        let transaction_id = self.store.execute(&tx)?;
+        let transaction_id = self.execute(&tx)?;
         Ok(TransactionResponse {
             transaction_id,
             action: "move_units".into(),
@@ -525,6 +915,11 @@ impl GroupService {
                     "merge_groups uses merge_groups, not transfer_units".to_string(),
                 ));
             }
+            TransactionAction::CopyGroups | TransactionAction::MoveGroups => {
+                return Err(StoreError::Invariant(
+                    "copy_groups uses copy_groups, not transfer_units".to_string(),
+                ));
+            }
             TransactionAction::DeleteGroup => {
                 return Err(StoreError::Invariant(
                     "delete_group uses delete_group, not transfer_units".to_string(),
@@ -555,7 +950,7 @@ impl GroupService {
             delete_paths,
             selected_uuids: selected,
         };
-        let transaction_id = self.store.execute(&tx)?;
+        let transaction_id = self.execute(&tx)?;
         Ok(TransactionResponse {
             transaction_id,
             action: match req.action {
@@ -607,7 +1002,7 @@ impl GroupService {
             delete_paths,
             selected_uuids: out.rows.iter().map(|r| r.uuid).collect(),
         };
-        let transaction_id = self.store.execute(&tx)?;
+        let transaction_id = self.execute(&tx)?;
         Ok(TransactionResponse {
             transaction_id,
             action: "merge_groups".to_string(),
@@ -645,7 +1040,7 @@ impl GroupService {
             delete_paths: vec![req.path.clone()],
             selected_uuids: Vec::new(),
         };
-        let transaction_id = self.store.execute(&tx)?;
+        let transaction_id = self.execute(&tx)?;
         Ok(TransactionResponse {
             transaction_id,
             action: "delete_group".to_string(),
@@ -747,7 +1142,7 @@ impl GroupService {
             delete_paths: Vec::new(),
             selected_uuids: edited_uuids,
         };
-        let transaction_id = self.store.execute(&tx)?;
+        let transaction_id = self.execute(&tx)?;
         let updated = self.store.read_group(&req.path)?;
         Ok(TransactionResponse {
             transaction_id,
@@ -781,7 +1176,14 @@ impl GroupService {
         }
         let destination_path = match &req.destination_path {
             Some(path) => path.clone(),
-            None => format!("groups/{group_id}.parquet"),
+            None => {
+                let folder = folder_of(&req.source_path);
+                if folder.is_empty() {
+                    format!("{group_id}.parquet")
+                } else {
+                    format!("{folder}/{group_id}.parquet")
+                }
+            }
         };
         if destination_path == req.source_path {
             return Err(StoreError::Invariant(
@@ -830,7 +1232,7 @@ impl GroupService {
             delete_paths: Vec::new(),
             selected_uuids: source.rows.iter().map(|r| r.uuid).collect(),
         };
-        let transaction_id = self.store.execute(&tx)?;
+        let transaction_id = self.execute(&tx)?;
         Ok(TransactionResponse {
             transaction_id,
             action: "duplicate_group".to_string(),
@@ -847,8 +1249,9 @@ mod tests {
     use super::*;
     use crate::import::ImportService;
     use archaeodash_contracts::{
-        BatchTransferTarget, BatchTransferUnitsRequest, DescriptiveEdit, DuplicateGroupRequest,
-        ImportCommitRequest, PatchDescriptiveValuesRequest,
+        BatchTransferTarget, BatchTransferUnitsRequest, CopyGroupsRequest, CreateFolderRequest,
+        DeleteFolderRequest, DescriptiveEdit, DuplicateGroupRequest, ImportCommitRequest,
+        PatchDescriptiveValuesRequest, RenameFolderRequest,
     };
     use archaeodash_data_io::{read_group_file, write_group_rows};
 
@@ -1186,9 +1589,19 @@ mod tests {
                 selected_uuids: vec![uuid.clone()],
                 expected_source_revision: baca.profile.revision_id.clone(),
             })
-            .expect("copy");
+            .expect_err("copying units within one folder repeats samples");
+        service
+            .transfer_units(&TransferUnitsRequest {
+                action: TransferAction::Copy,
+                source_path: paths[0].clone(),
+                destination_path: "subsets/copy-target.parquet".into(),
+                destination_group_name: Some("Copy Target".into()),
+                selected_uuids: vec![uuid.clone()],
+                expected_source_revision: baca.profile.revision_id.clone(),
+            })
+            .expect("copy into another folder");
         let dst =
-            read_group_file(&dir.path().join("groups/copy-target.parquet")).expect("new group");
+            read_group_file(&dir.path().join("subsets/copy-target.parquet")).expect("new group");
         assert_eq!(dst.profile.group_id, "Copy_Target");
         assert_eq!(dst.rows.len(), 1);
         assert_eq!(dst.rows[0].uuid.to_string(), uuid);
@@ -1384,6 +1797,152 @@ mod tests {
     }
 
     #[test]
+    fn folders_create_rename_copy_move_and_refuse_repeated_samples() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, paths) = commit_two_groups(dir.path());
+        let rev = |p: &str| {
+            read_group_file(&dir.path().join(p))
+                .expect("read")
+                .profile
+                .revision_id
+        };
+        let refs = |ps: &[String]| -> Vec<archaeodash_contracts::GroupRevisionRef> {
+            ps.iter()
+                .map(|p| archaeodash_contracts::GroupRevisionRef {
+                    path: p.clone(),
+                    expected_revision: rev(p),
+                })
+                .collect()
+        };
+
+        // Names are checked; an empty folder is listed through its marker.
+        assert!(service
+            .create_folder(&CreateFolderRequest { name: "a/b".into() })
+            .is_err());
+        assert!(service
+            .create_folder(&CreateFolderRequest {
+                name: "sources".into()
+            })
+            .is_err());
+        assert!(service
+            .create_folder(&CreateFolderRequest {
+                name: ".hidden".into()
+            })
+            .is_err());
+        let made = service
+            .create_folder(&CreateFolderRequest {
+                name: " Clusters ".into(),
+            })
+            .expect("create");
+        assert_eq!(made.path, "Clusters");
+        assert!(service
+            .create_folder(&CreateFolderRequest {
+                name: "Clusters".into()
+            })
+            .is_err());
+        let folders = service.list_folders().expect("list");
+        assert_eq!(
+            folders
+                .iter()
+                .map(|f| (f.path.as_str(), f.group_count))
+                .collect::<Vec<_>>(),
+            [("Clusters", 0), ("groups", 2)]
+        );
+
+        // Copying into the same folder would repeat every sample: refused.
+        let err = service
+            .copy_groups(&CopyGroupsRequest {
+                sources: refs(&paths[..1]),
+                destination_folder: "groups".into(),
+                remove_sources: false,
+            })
+            .expect_err("same folder");
+        assert!(
+            err.to_string().contains("already has a group file")
+                || err.to_string().contains("same samples twice"),
+            "{err}"
+        );
+
+        // Copy both groups out; identities are kept.
+        let copied = service
+            .copy_groups(&CopyGroupsRequest {
+                sources: refs(&paths),
+                destination_folder: "Clusters".into(),
+                remove_sources: false,
+            })
+            .expect("copy");
+        assert_eq!(copied.action, "copy_groups");
+        assert_eq!(copied.outputs.len(), 2);
+        let original = read_group_file(&dir.path().join(&paths[0])).expect("original");
+        let copy = read_group_file(&dir.path().join(&copied.outputs[0].path)).expect("copy");
+        assert_eq!(
+            original.rows.iter().map(|r| r.uuid).collect::<Vec<_>>(),
+            copy.rows.iter().map(|r| r.uuid).collect::<Vec<_>>()
+        );
+
+        // Copying a group back into a folder that already has its samples is
+        // refused even under a different file name.
+        std::fs::create_dir_all(dir.path().join("other")).expect("dir");
+        std::fs::copy(
+            dir.path().join(&paths[0]),
+            dir.path().join("other/Renamed.parquet"),
+        )
+        .expect("copy file");
+        let err = service
+            .copy_groups(&CopyGroupsRequest {
+                sources: refs(&["other/Renamed.parquet".to_string()]),
+                destination_folder: "Clusters".into(),
+                remove_sources: false,
+            })
+            .expect_err("repeated samples");
+        assert!(err.to_string().contains("same samples twice"), "{err}");
+
+        // Moving a group into a new folder removes it from the old one.
+        let moved = service
+            .copy_groups(&CopyGroupsRequest {
+                sources: refs(&["other/Renamed.parquet".to_string()]),
+                destination_folder: "Moved".into(),
+                remove_sources: true,
+            })
+            .expect("move");
+        assert_eq!(moved.deleted_paths, ["other/Renamed.parquet"]);
+        assert!(dir.path().join("Moved/Renamed.parquet").exists());
+
+        // Rename keeps the group files; the old name is gone.
+        let renamed = service
+            .rename_folder(&RenameFolderRequest {
+                path: "Clusters".into(),
+                new_name: "k-means 3".into(),
+            })
+            .expect("rename");
+        assert_eq!(renamed.path, "k-means 3");
+        assert_eq!(renamed.group_count, 2);
+        assert!(!dir.path().join("Clusters").exists());
+        assert!(service
+            .rename_folder(&RenameFolderRequest {
+                path: "k-means 3".into(),
+                new_name: "groups".into()
+            })
+            .is_err());
+
+        // Only empty folders can be deleted.
+        assert!(service
+            .delete_folder(&DeleteFolderRequest {
+                path: "k-means 3".into()
+            })
+            .is_err());
+        let empty = service
+            .create_folder(&CreateFolderRequest {
+                name: "Empty".into(),
+            })
+            .expect("create");
+        service
+            .delete_folder(&DeleteFolderRequest { path: empty.path })
+            .expect("delete empty");
+        assert!(!dir.path().join("Empty").exists());
+    }
+
+    #[test]
     fn duplicate_group_preserves_uuids_and_lineage() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (service, paths) = commit_two_groups(dir.path());
@@ -1397,16 +1956,39 @@ mod tests {
                 destination_path: None,
                 preserve_uuids: true,
             })
-            .expect("duplicate");
+            .expect_err("same-folder duplicate repeats samples");
+        assert!(resp.to_string().contains("same samples twice"), "{resp}");
+
+        let resp = service
+            .duplicate_group(&DuplicateGroupRequest {
+                source_path: paths[0].clone(),
+                expected_revision: source.profile.revision_id.clone(),
+                new_group_name: "Baca Copy".into(),
+                destination_path: Some("groups/Baca_Copy.parquet".into()),
+                preserve_uuids: false,
+            })
+            .expect("duplicate with fresh identities");
+        assert_eq!(resp.outputs[0].path, "groups/Baca_Copy.parquet");
+        std::fs::remove_file(dir.path().join("groups/Baca_Copy.parquet")).expect("cleanup");
+
+        let resp = service
+            .duplicate_group(&DuplicateGroupRequest {
+                source_path: paths[0].clone(),
+                expected_revision: source.profile.revision_id.clone(),
+                new_group_name: "Baca Copy".into(),
+                destination_path: Some("copies/Baca_Copy.parquet".into()),
+                preserve_uuids: true,
+            })
+            .expect("duplicate into another folder");
         assert_eq!(resp.action, "duplicate_group");
         assert_eq!(resp.deleted_paths, Vec::<String>::new());
         assert_eq!(resp.outputs.len(), 1);
-        assert_eq!(resp.outputs[0].path, "groups/Baca_Copy.parquet");
+        assert_eq!(resp.outputs[0].path, "copies/Baca_Copy.parquet");
         assert_eq!(resp.outputs[0].group_name, "Baca Copy");
         assert_eq!(resp.outputs[0].revision_id, "rev-1");
 
         let copy =
-            read_group_file(&dir.path().join("groups/Baca_Copy.parquet")).expect("read duplicate");
+            read_group_file(&dir.path().join("copies/Baca_Copy.parquet")).expect("read duplicate");
         assert_eq!(copy.rows.len(), source.rows.len());
         let source_uuids: Vec<_> = source.rows.iter().map(|r| r.uuid).collect();
         let copy_uuids: Vec<_> = copy.rows.iter().map(|r| r.uuid).collect();
@@ -1426,7 +2008,7 @@ mod tests {
                 expected_revision: source.profile.revision_id.clone(),
                 new_group_name: "Hooper".into(),
                 destination_path: None,
-                preserve_uuids: true,
+                preserve_uuids: false,
             })
             .unwrap_err();
         assert!(err.to_string().contains("already exists"));

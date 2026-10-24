@@ -726,3 +726,66 @@
   width: 28px;
   padding: 0;
 }
+
+/* Folders: the selected folder, the analysis-folder switch, hints. */
+.fm-item-folder.is-selected > .fm-row {
+  background: var(--primary-soft);
+  color: var(--primary-soft-fg);
+}
+
+.fm-radio {
+  flex: 0 0 auto;
+  width: 0.95rem;
+  height: 0.95rem;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-strong);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.fm-radio:hover {
+  border-color: var(--primary);
+}
+
+.fm-radio.is-on {
+  border-color: var(--primary);
+  background: radial-gradient(circle, var(--primary) 0 45%, var(--surface) 50%);
+}
+
+.fm-badge {
+  flex: 0 0 auto;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 650;
+  background: var(--primary-soft);
+  color: var(--primary-soft-fg);
+}
+
+.fm-include.is-other-folder {
+  border-style: dashed;
+  opacity: 0.6;
+}
+
+.fm-item-folder.is-inactive .fm-item-file .fm-name {
+  color: var(--fg-muted);
+}
+
+.fm-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+}
+
+.fm-inline select {
+  min-height: 30px;
+  font-size: 0.85rem;
+}
+
+.fm-item-folder + .fm-item-folder {
+  margin-top: 0.15rem;
+}
+
+.import-wizard-folder {
+  color: var(--fg-muted);
+}

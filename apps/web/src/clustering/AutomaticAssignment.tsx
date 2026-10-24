@@ -65,7 +65,9 @@ export function AutomaticAssignment({ result, selected, candidates, cutK, busy, 
         return <div key={label}>
           <label>{label} destination <select value={isNew ? '__new__' : mapping.destinationPath} onChange={event => {
             if (event.target.value === '__new__') {
-              const folder = result.data.path.slice(0, result.data.path.lastIndexOf('/') + 1);
+              // Beside the analyzed groups (Windows paths use backslashes).
+              const cut = Math.max(result.data.path.lastIndexOf('/'), result.data.path.lastIndexOf('\\'));
+              const folder = result.data.path.slice(0, cut + 1);
               update(label, { groupLabel: label, destinationPath: `${folder}${label.replace(/[^A-Za-z0-9._-]/g, '_') || `group_${index + 1}`}.parquet`, newGroupName: label });
             } else update(label, { groupLabel: label, destinationPath: event.target.value });
           }}>

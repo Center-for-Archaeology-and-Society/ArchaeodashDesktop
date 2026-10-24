@@ -316,6 +316,59 @@ pub struct PatchDescriptiveValuesRequest {
     pub edits: Vec<DescriptiveEdit>,
 }
 
+/// One group folder: a directory of group files that together form one
+/// grouping of the samples (each sample at most once per folder).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupFolder {
+    /// Project-relative folder path (`/`-separated; `""` is the project root).
+    pub path: String,
+    /// Display name (last path component).
+    pub name: String,
+    /// Ready group files directly in the folder.
+    pub group_count: u64,
+}
+
+/// `POST /groups/folders` request: create an empty group folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateFolderRequest {
+    pub name: String,
+}
+
+/// `POST /groups/folders/rename` request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenameFolderRequest {
+    /// Current project-relative folder path.
+    pub path: String,
+    /// New folder name (same parent).
+    pub new_name: String,
+}
+
+/// `POST /groups/folders/delete` request: removes an empty group folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteFolderRequest {
+    pub path: String,
+}
+
+/// One source group of a copy/move, at the revision the caller read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupRevisionRef {
+    pub path: String,
+    pub expected_revision: String,
+}
+
+/// `POST /groups/copy` request: copy (or move) whole groups into a folder,
+/// keeping their samples' identities. Refused when the folder would then
+/// hold any sample twice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CopyGroupsRequest {
+    pub sources: Vec<GroupRevisionRef>,
+    /// Destination folder (created when missing).
+    pub destination_folder: String,
+    /// Move instead of copy: the sources are removed in the same transaction.
+    #[serde(default)]
+    pub remove_sources: bool,
+}
+
 /// `POST /groups/duplicate` request: duplicate one whole group to a new
 /// path. UUIDs and source lineage are preserved by default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

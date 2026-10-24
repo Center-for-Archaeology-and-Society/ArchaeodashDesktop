@@ -27,6 +27,9 @@ import type {
   ExportMeasuredDataRequest,
   ExportPcaScoresRequest,
   ExportTableRequest,
+  GroupFolder,
+  RenameFolderRequest,
+  CopyGroupsRequest,
   ExportResult,
   ExportTransformedRequest,
   EuclideanMatchesRequest,
@@ -260,6 +263,11 @@ export class HttpTransport implements Transport {
       patchDescriptiveValues: (request: PatchDescriptiveValuesRequest) =>
         this.request('PATCH', '/api/v1/groups/descriptive-values', { body: request }),
       duplicateGroup: (request) => this.request('POST', '/api/v1/groups/duplicate', { body: request }),
+      folders: () => this.request<GroupFolder[]>('GET', '/api/v1/groups/folders'),
+      createFolder: (name: string) => this.request<GroupFolder>('POST', '/api/v1/groups/folders', { body: { name } }),
+      renameFolder: (request: RenameFolderRequest) => this.request<GroupFolder>('POST', '/api/v1/groups/folders/rename', { body: request }),
+      deleteFolder: async (path: string) => { await this.request('POST', '/api/v1/groups/folders/delete', { body: { path } }); },
+      copyGroups: (request: CopyGroupsRequest) => this.request('POST', '/api/v1/groups/copy', { body: request }),
       deleteGroup: (request: DeleteGroupRequest) =>
         this.request('DELETE', `/api/v1/groups/${HttpTransport.pathSegment(request.path)}`, {
           query: { expected_revision: request.expected_revision, confirm_path: request.confirm_path },

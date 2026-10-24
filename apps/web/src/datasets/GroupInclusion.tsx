@@ -7,6 +7,10 @@
  * storage: groups are included by default and newly imported groups join
  * automatically. Without a provider (page tests) pages keep their own
  * per-page selection as before.
+ *
+ * Analyses use one group folder at a time (`activeFolder`): a folder is one
+ * grouping of the samples, and copies of the same samples live in other
+ * folders, so mixing folders would count samples twice.
  */
 import { createContext, useCallback, useContext, useMemo, useState, type ReactElement, type ReactNode } from 'react';
 
@@ -14,6 +18,9 @@ export interface GroupInclusionState {
   readonly excluded: ReadonlySet<string>;
   /** Replaces the excluded set. */
   readonly setExcluded: (paths: Iterable<string>) => void;
+  /** Folder analyses use (null: the first folder with groups). */
+  readonly activeFolder?: string | null;
+  readonly setActiveFolder?: (folder: string) => void;
 }
 
 const GroupInclusionContext = createContext<GroupInclusionState | null>(null);
@@ -23,6 +30,15 @@ export function useGroupInclusion(): GroupInclusionState | null {
 }
 
 const storageKey = (projectKey: string) => `archaeodash.excludedGroups:${projectKey}`;
+const folderKey = (projectKey: string) => `archaeodash.activeFolder:${projectKey}`;
+
+function readFolder(projectKey: string): string | null {
+  try {
+    return globalThis.localStorage?.getItem(folderKey(projectKey)) ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function readExcluded(projectKey: string): Set<string> {
   try {
@@ -55,7 +71,16 @@ export function GroupInclusionProvider({ projectKey, children }: GroupInclusionP
     writeExcluded(projectKey, next);
     setExcludedState(next);
   }, [projectKey]);
-  const value = useMemo(() => ({ excluded, setExcluded }), [excluded, setExcluded]);
+  const [activeFolder, setActiveFolderState] = useState<string | null>(() => readFolder(projectKey));
+  const setActiveFolder = useCallback((folder: string) => {
+    try {
+      globalThis.localStorage?.setItem(folderKey(projectKey), folder);
+    } catch {
+      /* storage blocked: the choice still holds this session */
+    }
+    setActiveFolderState(folder);
+  }, [projectKey]);
+  const value = useMemo(() => ({ excluded, setExcluded, activeFolder, setActiveFolder }), [excluded, setExcluded, activeFolder, setActiveFolder]);
   return <GroupInclusionContext.Provider value={value}>{children}</GroupInclusionContext.Provider>;
 }
 

@@ -97,6 +97,10 @@ pub enum TransactionAction {
     /// and source lineage by default (Section 10.2
     /// `POST /groups/{id}/duplicate`).
     DuplicateGroup,
+    /// Copy whole groups into another folder (same identities and names).
+    CopyGroups,
+    /// Move whole groups into another folder; the sources are removed.
+    MoveGroups,
 }
 
 /// Journal record for one multi-file transaction (Section 6.8). Serialized to

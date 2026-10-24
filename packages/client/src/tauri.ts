@@ -33,6 +33,9 @@ import type {
   ExportMeasuredDataRequest,
   ExportPcaScoresRequest,
   ExportTableRequest,
+  GroupFolder,
+  RenameFolderRequest,
+  CopyGroupsRequest,
   ExportResult,
   ExportTransformedRequest,
   EuclideanMatchesRequest,
@@ -173,6 +176,11 @@ export class TauriTransport implements Transport {
       patchDescriptiveValues: (request: PatchDescriptiveValuesRequest) =>
         this.call('patch_descriptive_values', { request }),
       duplicateGroup: (request: DuplicateGroupRequest) => this.call('duplicate_group', { request }),
+      folders: () => this.call<GroupFolder[]>('list_group_folders'),
+      createFolder: (name: string) => this.call<GroupFolder>('create_group_folder', { request: { name } }),
+      renameFolder: (request: RenameFolderRequest) => this.call<GroupFolder>('rename_group_folder', { request }),
+      deleteFolder: (path: string) => this.call<void>('delete_group_folder', { request: { path } }),
+      copyGroups: (request: CopyGroupsRequest) => this.call('copy_groups', { request }),
       deleteGroup: (request: DeleteGroupRequest) => this.call('delete_group', { request }),
     };
   }

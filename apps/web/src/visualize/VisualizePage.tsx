@@ -386,7 +386,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       // convention (`groups/<Name>.parquet`); existing targets use their path.
       const firstPath = orderedPaths[0] ?? 'groups/group.parquet';
       const destinationPath = isNew
-        ? firstPath.replace(/[^/]+$/, `${name.replace(/[^A-Za-z0-9._-]/g, '_') || 'group'}.parquet`)
+        ? firstPath.replace(/[^/\\]+$/,`${name.replace(/[^A-Za-z0-9._-]/g, '_') || 'group'}.parquet`)
         : assignTarget;
       let created = false;
       for (const [sourcePath, uuids] of selectionBySource(combined, selection.uuids)) {

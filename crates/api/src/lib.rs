@@ -275,6 +275,61 @@ async fn groups_duplicate(
         .map_err(store_error_response)
 }
 
+async fn groups_folders(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<archaeodash_contracts::GroupFolder>>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .groups
+        .list_folders()
+        .map(Json)
+        .map_err(store_error_response)
+}
+
+async fn groups_folder_create(
+    State(state): State<AppState>,
+    Json(req): Json<archaeodash_contracts::CreateFolderRequest>,
+) -> Result<Json<archaeodash_contracts::GroupFolder>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .groups
+        .create_folder(&req)
+        .map(Json)
+        .map_err(store_error_response)
+}
+
+async fn groups_folder_rename(
+    State(state): State<AppState>,
+    Json(req): Json<archaeodash_contracts::RenameFolderRequest>,
+) -> Result<Json<archaeodash_contracts::GroupFolder>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .groups
+        .rename_folder(&req)
+        .map(Json)
+        .map_err(store_error_response)
+}
+
+async fn groups_folder_delete(
+    State(state): State<AppState>,
+    Json(req): Json<archaeodash_contracts::DeleteFolderRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .groups
+        .delete_folder(&req)
+        .map(|()| StatusCode::NO_CONTENT)
+        .map_err(store_error_response)
+}
+
+/// `POST /api/v1/groups/copy`: copy or move whole groups into a folder.
+async fn groups_copy(
+    State(state): State<AppState>,
+    Json(req): Json<archaeodash_contracts::CopyGroupsRequest>,
+) -> Result<Json<TransactionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .groups
+        .copy_groups(&req)
+        .map(Json)
+        .map_err(store_error_response)
+}
+
 /// Query parameters for the destructive delete route (Section 10.4: the
 /// client confirms the exact path and names the revision it last read).
 #[derive(Debug, serde::Deserialize)]
@@ -732,6 +787,13 @@ pub fn root_router(state: AppState) -> Router {
             patch(groups_patch_descriptive_values),
         )
         .route("/api/v1/groups/duplicate", post(groups_duplicate))
+        .route("/api/v1/groups/copy", post(groups_copy))
+        .route(
+            "/api/v1/groups/folders",
+            get(groups_folders).post(groups_folder_create),
+        )
+        .route("/api/v1/groups/folders/rename", post(groups_folder_rename))
+        .route("/api/v1/groups/folders/delete", post(groups_folder_delete))
         .route("/api/v1/groups/{*path}", delete(groups_delete))
         .route(
             "/api/v1/transformations",
@@ -2689,7 +2751,8 @@ mod tests {
             source_path: path.clone(),
             expected_revision: "rev-2".into(),
             new_group_name: "Baca Copy".into(),
-            destination_path: None,
+            // A folder holds each sample once: duplicates go to another folder.
+            destination_path: Some("copies/Baca_Copy.parquet".into()),
             preserve_uuids: true,
         };
         let response = app
@@ -2706,10 +2769,10 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let tx: TransactionResponse = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(tx.action, "duplicate_group");
-        assert_eq!(tx.outputs[0].path, "groups/Baca_Copy.parquet");
+        assert_eq!(tx.outputs[0].path, "copies/Baca_Copy.parquet");
 
         let copy = archaeodash_data_io::read_group_file(
-            dir.path().join("groups/Baca_Copy.parquet").as_path(),
+            dir.path().join("copies/Baca_Copy.parquet").as_path(),
         )
         .expect("read duplicate");
         assert_eq!(copy.rows.len(), after.rows.len());

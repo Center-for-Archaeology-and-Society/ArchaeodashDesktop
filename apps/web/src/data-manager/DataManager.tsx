@@ -1,15 +1,17 @@
 /**
  * Data Manager sidebar: a compact file manager for the project's group files.
- * Toolbar (Import…, Refresh, Duplicate, Merge, Delete, Export…), a keyboard-accessible
+ * Toolbar (Import…, Export…, Refresh, New folder…, Rename…, Copy to…, Move to…,
+ * Merge, Delete), a keyboard-accessible
  * tree (role="tree") with multi-select, inline name/confirm forms, a details
  * panel for the selected file, and the import wizard in a modal dialog.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactElement } from 'react';
-import type { ExportFormat, GroupSummary } from '@archaeodash/contracts';
+import type { ExportFormat, GroupFolder, GroupSummary } from '@archaeodash/contracts';
+import { activeFolderAmong, exclusionWithin, folderLabel, folderOf, inFolder } from '../datasets/folders.ts';
 import { downloadExportResult } from '../exports.ts';
 import { BusyLabel, BusyNote, Spinner } from '../ui/Busy.tsx';
 import { unionElements } from '../analysis-setup/setup.ts';
-import { exclusionFor, includedAmong, useGroupInclusion } from '../datasets/GroupInclusion.tsx';
+import { includedAmong, useGroupInclusion } from '../datasets/GroupInclusion.tsx';
 import { useDataCache } from '../datasets/DataCache.tsx';
 import { AnalysisSetupPanel } from './AnalysisSetupPanel.tsx';
 import { ImportDialog } from './ImportDialog.tsx';
@@ -43,17 +45,38 @@ export interface DataManagerProps {
 }
 
 type Pending =
-  | { readonly kind: 'duplicate'; readonly name: string }
   | { readonly kind: 'merge'; readonly name: string }
   | { readonly kind: 'delete' }
+  | { readonly kind: 'delete-folder' }
   | { readonly kind: 'export'; readonly format: ExportFormat }
+  | { readonly kind: 'new-folder'; readonly name: string }
+  | { readonly kind: 'rename-folder'; readonly name: string }
+  | { readonly kind: 'copy'; readonly move: boolean; readonly folder: string; readonly newName: string }
   | null;
 
-const FOLDER_ID = '__groups_folder__';
+/** Tree ids for folder rows (group rows use their path). */
+const FOLDER_PREFIX = '\u0001folder:';
+const folderId = (folder: string) => `${FOLDER_PREFIX}${folder}`;
+const isFolderId = (id: string) => id.startsWith(FOLDER_PREFIX);
+const folderFromId = (id: string) => id.slice(FOLDER_PREFIX.length);
+const NEW_FOLDER = '\u0001new';
 const message = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
 const basename = (path: string) => path.split(/[\\/]/).at(-1) ?? path;
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
 const stripExtension = (name: string) => name.replace(/\.[^.]+$/, '');
+const quoted = (folder: string) => `“${folderLabel(folder)}”`;
+
+export interface FolderNode {
+  readonly path: string;
+  readonly name: string;
+  readonly entries: readonly GroupFileEntry[];
+}
+
+/** Folders of the tree: listed folders (including empty ones) plus every folder that holds a group file. */
+export function folderNodes(entries: readonly GroupFileEntry[], listed: readonly GroupFolder[] = []): FolderNode[] {
+  const paths = [...new Set([...listed.map((f) => f.path), ...entries.map((e) => folderOf(e.path))])].sort((a, b) => a.localeCompare(b));
+  return paths.map((path) => ({ path, name: folderLabel(path), entries: entries.filter((e) => folderOf(e.path) === path) }));
+}
 
 export async function loadGroupFiles(groups: DataManagerTransport['groups']): Promise<GroupFileEntry[]> {
   const found = await groups.scan();
@@ -78,6 +101,7 @@ export async function loadGroupFiles(groups: DataManagerTransport['groups']): Pr
 
 export function DataManager({ transport, projectName = '', onDataChanged, onRevealProject, revealLabel = 'Open project folder' }: DataManagerProps): ReactElement {
   const [entries, setEntries] = useState<GroupFileEntry[]>([]);
+  const [listedFolders, setListedFolders] = useState<GroupFolder[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   /** What the current busy operation is doing, shown with a spinner. */
@@ -85,23 +109,31 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
   const [selection, setSelection] = useState<SelectionState>({ selected: [], anchor: null });
-  const [folderOpen, setFolderOpen] = useState(true);
-  const [focusId, setFocusId] = useState<string>(FOLDER_ID);
+  const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
+  const [closedFolders, setClosedFolders] = useState<ReadonlySet<string>>(new Set());
+  const [focusId, setFocusId] = useState<string>('');
   const [pending, setPending] = useState<Pending>(null);
   const [importOpen, setImportOpen] = useState(false);
   const loadSeq = useRef(0);
   const itemRefs = useRef(new Map<string, HTMLLIElement>());
+  const supportsFolders = Boolean(transport.groups.folders && transport.groups.copyGroups);
 
   const refresh = useCallback(async () => {
     const seq = ++loadSeq.current;
     setLoading(true);
     try {
-      const next = await loadGroupFiles(transport.groups);
+      const [next, folders] = await Promise.all([
+        loadGroupFiles(transport.groups),
+        transport.groups.folders ? transport.groups.folders().catch(() => [] as GroupFolder[]) : Promise.resolve([] as GroupFolder[]),
+      ]);
       if (seq !== loadSeq.current) return;
       setEntries(next);
+      setListedFolders(folders);
       const order = next.map((entry) => entry.path);
+      const folderPaths = new Set([...folders.map((f) => f.path), ...order.map(folderOf)]);
       setSelection((current) => pruneSelection(order, current));
-      setFocusId((current) => (current === FOLDER_ID || order.includes(current) ? current : FOLDER_ID));
+      setSelectedFolder((current) => (current !== null && folderPaths.has(current) ? current : null));
+      setFocusId((current) => (order.includes(current) || (isFolderId(current) && folderPaths.has(folderFromId(current))) ? current : ''));
       setError('');
     } catch (cause) {
       if (seq === loadSeq.current) setError(message(cause));
@@ -115,38 +147,64 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     return onGroupsChanged(() => void refresh());
   }, [refresh]);
 
-  const order = entries.map((entry) => entry.path);
+  const folders = useMemo(() => folderNodes(entries, listedFolders), [entries, listedFolders]);
+  const order = folders.flatMap((folder) => folder.entries.map((entry) => entry.path));
   const selectedEntries = entries.filter((entry) => selection.selected.includes(entry.path));
 
   // Groups included in analyses (checkboxes), shared with every page's
-  // Dataset picker. Files that need attention cannot be included.
+  // Dataset picker. Analyses use one folder at a time; files that need
+  // attention cannot be included.
   const inclusion = useGroupInclusion();
   const readyPaths = entries.filter((entry) => entry.summary && !entry.error).map((entry) => entry.path);
-  const includedPaths = inclusion ? includedAmong(readyPaths, inclusion.excluded) : null;
+  const activeFolder = inclusion ? activeFolderAmong(readyPaths, inclusion.activeFolder) : null;
+  const activeReady = inFolder(readyPaths, activeFolder);
+  const includedPaths = inclusion ? includedAmong(activeReady, inclusion.excluded) : null;
   const includedSet = includedPaths ? new Set(includedPaths) : null;
-  const setIncluded = (paths: readonly string[]) => inclusion?.setExcluded(exclusionFor(readyPaths, paths));
+  const chooseFolder = (folder: string) => inclusion?.setActiveFolder?.(folder);
+  // Remember the folder analyses use as soon as it is known, so a folder
+  // created or copied into later (which may sort first) never takes over.
+  useEffect(() => {
+    if (inclusion?.setActiveFolder && (inclusion.activeFolder === null || inclusion.activeFolder === undefined) && activeFolder !== null) {
+      inclusion.setActiveFolder(activeFolder);
+    }
+  }, [inclusion, activeFolder]);
+  /** Includes exactly `paths` (all in one folder), switching analyses to that folder. */
+  const setIncluded = (paths: readonly string[], folder: string | null = activeFolder) => {
+    if (!inclusion) return;
+    if (folder !== null && folder !== activeFolder) chooseFolder(folder);
+    inclusion.setExcluded(exclusionWithin(inclusion.excluded, inFolder(readyPaths, folder), paths));
+  };
   const toggleIncluded = (path: string) => {
     if (!includedPaths || !readyPaths.includes(path)) return;
+    const folder = folderOf(path);
+    if (folder !== activeFolder) {
+      // A group in another folder: analyses switch to that folder.
+      chooseFolder(folder);
+      inclusion?.setExcluded([...inclusion.excluded].filter((p) => p !== path));
+      setStatus(`Analyses now use the folder ${quoted(folder)}.`);
+      return;
+    }
     setIncluded(includedPaths.includes(path) ? includedPaths.filter((p) => p !== path) : [...includedPaths, path]);
   };
-  const includeOnly = (path: string) => { if (readyPaths.includes(path)) setIncluded([path]); };
+  const includeOnly = (path: string) => { if (readyPaths.includes(path)) setIncluded([path], folderOf(path)); };
   const selectedReady = selectedEntries.map((entry) => entry.path).filter((path) => readyPaths.includes(path));
+  const selectedFolders = [...new Set(selectedReady.map(folderOf))];
 
-  // Preload every ready group's rows in the background (included groups
+  // Preload the active folder's rows in the background (included groups
   // first) so analysis pages open without waiting for the data.
   const cache = useDataCache();
-  const preloadKey = entries.map((entry) => `${entry.path}@${entry.revision ?? ''}`).join('|');
+  const preloadKey = `${activeFolder ?? ''}|${entries.map((entry) => `${entry.path}@${entry.revision ?? ''}`).join('|')}`;
   useEffect(() => {
     if (!cache) return;
-    const ready = entries.filter((entry) => entry.summary && !entry.error && entry.revision);
+    const ready = entries.filter((entry) => entry.summary && !entry.error && entry.revision && (activeFolder === null || folderOf(entry.path) === activeFolder));
     const excluded = inclusion?.excluded;
     const ordered = [...ready.filter((e) => !excluded?.has(e.path)), ...ready.filter((e) => excluded?.has(e.path))];
     void cache.preload(transport.groups, ordered.map((e) => ({ path: e.path, revision: e.revision, rowCount: e.summary?.row_count })));
-    // `preloadKey` captures the file list and revisions.
+    // `preloadKey` captures the folder, file list, and revisions.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cache, preloadKey, transport.groups]);
-  const single = selectedEntries.length === 1 ? selectedEntries[0]! : null;
-  const visibleIds = folderOpen ? [FOLDER_ID, ...order] : [FOLDER_ID];
+  const visibleIds = folders.flatMap((folder) => [folderId(folder.path), ...(closedFolders.has(folder.path) ? [] : folder.entries.map((e) => e.path))]);
+  const currentFocus = visibleIds.includes(focusId) ? focusId : (visibleIds[0] ?? '');
 
   const focusItem = (id: string) => {
     setFocusId(id);
@@ -155,8 +213,25 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
 
   const select = (path: string, modifiers: { toggle?: boolean; range?: boolean } = {}) => {
     setSelection((current) => applySelection(order, current, path, modifiers));
+    setSelectedFolder(null);
     setFocusId(path);
-    setPending((current) => (current?.kind === 'delete' ? null : current));
+    setPending((current) => (current?.kind === 'delete' || current?.kind === 'delete-folder' || current?.kind === 'rename-folder' ? null : current));
+  };
+
+  const selectFolder = (folder: string) => {
+    setSelectedFolder(folder);
+    setSelection({ selected: [], anchor: null });
+    setFocusId(folderId(folder));
+    setPending((current) => (current?.kind === 'delete' || current?.kind === 'copy' || current?.kind === 'merge' ? null : current));
+  };
+
+  const toggleFolderOpen = (folder: string) => {
+    setClosedFolders((current) => {
+      const next = new Set(current);
+      if (next.has(folder)) next.delete(folder);
+      else next.add(folder);
+      return next;
+    });
   };
 
   const onRowClick = (event: MouseEvent, path: string) => {
@@ -172,7 +247,7 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
       const nextSelected = await work();
       setPending(null);
       await refresh();
-      if (nextSelected) setSelection({ selected: nextSelected, anchor: nextSelected[0] ?? null });
+      if (nextSelected) { setSelection({ selected: nextSelected, anchor: nextSelected[0] ?? null }); setSelectedFolder(null); }
       setStatus(done);
       onDataChanged?.();
     } catch (cause) {
@@ -182,17 +257,6 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     } finally {
       setBusy(false);
     }
-  };
-
-  const submitDuplicate = (event: FormEvent) => {
-    event.preventDefault();
-    if (pending?.kind !== 'duplicate' || !single?.revision) return;
-    const name = pending.name.trim();
-    if (!name) return;
-    void runChange(async () => {
-      const result = await transport.groups.duplicateGroup({ source_path: single.path, expected_revision: single.revision!, new_group_name: name });
-      return result.outputs.map((output) => output.path);
-    }, `Duplicated ${single.name} as ${name}.`, `Duplicating ${single.name}…`);
   };
 
   const submitMerge = (event: FormEvent) => {
@@ -216,6 +280,67 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
       }
       return [];
     }, `Deleted ${targets.map((entry) => entry.name).join(', ')}.`, `Deleting ${plural(targets.length, 'group')}…`);
+  };
+
+  const submitNewFolder = (event: FormEvent) => {
+    event.preventDefault();
+    const create = transport.groups.createFolder;
+    if (pending?.kind !== 'new-folder' || !create) return;
+    const name = pending.name.trim();
+    if (!name) return;
+    void runChange(async () => {
+      const made = await create(name);
+      setSelectedFolder(made.path);
+    }, `Created the folder ${quoted(name)}. Copy groups into it with Copy to….`, `Creating ${quoted(name)}…`);
+  };
+
+  const submitRename = (event: FormEvent) => {
+    event.preventDefault();
+    const rename = transport.groups.renameFolder;
+    if (pending?.kind !== 'rename-folder' || selectedFolder === null || !rename) return;
+    const name = pending.name.trim();
+    if (!name) return;
+    const from = selectedFolder;
+    void runChange(async () => {
+      const renamed = await rename({ path: from, new_name: name });
+      // Keep the analysis choice and exclusions with the renamed folder.
+      if (inclusion) {
+        // Keep each path's own separator (Windows paths use backslashes).
+        const moved = (p: string) => (folderOf(p) === from ? `${renamed.path}${p.includes('\\') ? '\\' : '/'}${basename(p)}` : p);
+        inclusion.setExcluded([...inclusion.excluded].map(moved));
+        if (activeFolder === from) chooseFolder(renamed.path);
+      }
+      setSelectedFolder(renamed.path);
+    }, `Renamed ${quoted(from)} to ${quoted(name)}.`, `Renaming ${quoted(from)}…`);
+  };
+
+  const confirmDeleteFolder = () => {
+    const remove = transport.groups.deleteFolder;
+    if (selectedFolder === null || !remove) return;
+    const folder = selectedFolder;
+    void runChange(async () => {
+      await remove(folder);
+      setSelectedFolder(null);
+    }, `Deleted the empty folder ${quoted(folder)}.`, `Deleting ${quoted(folder)}…`);
+  };
+
+  const submitCopy = (event: FormEvent) => {
+    event.preventDefault();
+    const copy = transport.groups.copyGroups;
+    if (pending?.kind !== 'copy' || !copy) return;
+    const targets = selectedEntries.filter((entry) => entry.revision && !entry.error);
+    const destination = pending.folder === NEW_FOLDER ? pending.newName.trim() : pending.folder;
+    if (!targets.length || !destination) return;
+    const verb = pending.move ? 'Moved' : 'Copied';
+    void runChange(async () => {
+      const result = await copy({
+        sources: targets.map((entry) => ({ path: entry.path, expected_revision: entry.revision! })),
+        destination_folder: destination,
+        remove_sources: pending.move,
+      });
+      return result.outputs.map((output) => output.path);
+    }, `${verb} ${plural(targets.length, 'group')} to ${quoted(destination)}.${destination === activeFolder ? '' : ' Click the folder’s circle to use it in analyses.'}`,
+    `${pending.move ? 'Moving' : 'Copying'} ${plural(targets.length, 'group')} to ${quoted(destination)}…`);
   };
 
   // Export: the highlighted groups, or every group included in analyses
@@ -250,53 +375,75 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     }
   };
 
-  const canDuplicate = !busy && single !== null && !!single.revision;
-  const canMerge = !busy && selectedEntries.length >= 2 && selectedEntries.every((entry) => !entry.error);
-  const canDelete = !busy && selectedEntries.length > 0 && selectedEntries.every((entry) => entry.revision);
+  const selectedFolderNode = selectedFolder === null ? null : folders.find((f) => f.path === selectedFolder) ?? null;
+  const canCopy = !busy && supportsFolders && selectedEntries.length > 0 && selectedEntries.every((entry) => entry.revision && !entry.error);
+  const canMerge = !busy && selectedEntries.length >= 2 && selectedEntries.every((entry) => !entry.error) && new Set(selectedEntries.map((e) => folderOf(e.path))).size === 1;
+  const canDeleteGroups = !busy && selectedEntries.length > 0 && selectedEntries.every((entry) => entry.revision);
+  const canDeleteFolder = !busy && !!transport.groups.deleteFolder && selectedFolderNode !== null && selectedFolderNode.entries.length === 0 && selectedFolderNode.path !== '';
+  const canDelete = canDeleteGroups || canDeleteFolder;
+  const startDelete = () => setPending(canDeleteGroups ? { kind: 'delete' } : { kind: 'delete-folder' });
+  const copyChoices = folders.map((f) => f.path).filter((p) => p !== '');
+  const startCopy = (move: boolean) => {
+    const from = new Set(selectedEntries.map((e) => folderOf(e.path)));
+    const first = copyChoices.find((p) => !from.has(p));
+    setPending({ kind: 'copy', move, folder: first ?? NEW_FOLDER, newName: 'New grouping' });
+  };
 
   const onTreeKeyDown = (event: KeyboardEvent<HTMLUListElement>) => {
-    const index = visibleIds.indexOf(focusId);
-    const isFolder = focusId === FOLDER_ID;
+    const index = visibleIds.indexOf(currentFocus);
+    const onFolder = isFolderId(currentFocus);
+    const folder = onFolder ? folderFromId(currentFocus) : folderOf(currentFocus);
     const move = (to: number) => {
-      const id = visibleIds[Math.max(0, Math.min(visibleIds.length - 1, to))]!;
+      const id = visibleIds[Math.max(0, Math.min(visibleIds.length - 1, to))];
+      if (id === undefined) return;
       focusItem(id);
-      if (event.shiftKey && id !== FOLDER_ID) select(id, { range: true });
+      if (event.shiftKey && !isFolderId(id)) select(id, { range: true });
     };
     switch (event.key) {
       case 'ArrowDown': event.preventDefault(); move(index + 1); break;
       case 'ArrowUp': event.preventDefault(); move(index - 1); break;
       case 'Home': event.preventDefault(); move(0); break;
       case 'End': event.preventDefault(); move(visibleIds.length - 1); break;
-      case 'ArrowRight':
+      case 'ArrowRight': {
         event.preventDefault();
-        if (isFolder && !folderOpen) setFolderOpen(true);
-        else if (isFolder && order.length) focusItem(order[0]!);
+        if (!onFolder) break;
+        const node = folders.find((f) => f.path === folder);
+        if (closedFolders.has(folder)) toggleFolderOpen(folder);
+        else if (node?.entries.length) focusItem(node.entries[0]!.path);
         break;
+      }
       case 'ArrowLeft':
         event.preventDefault();
-        if (isFolder) setFolderOpen(false);
-        else focusItem(FOLDER_ID);
+        if (onFolder) { if (!closedFolders.has(folder)) toggleFolderOpen(folder); }
+        else focusItem(folderId(folder));
         break;
       case 'Enter':
       case ' ':
         event.preventDefault();
-        if (isFolder) setFolderOpen((open) => !open);
+        // Space on a folder makes it the analysis folder; Enter selects it.
+        if (onFolder) { if (event.key === ' ' && inclusion) chooseFolder(folder); else selectFolder(folder); }
         // Space ticks the focused group's box (WAI-ARIA checkbox tree);
         // Ctrl/Cmd+Space and Enter change the highlight selection.
-        else if (event.key === ' ' && includedSet && !event.ctrlKey && !event.metaKey && !event.shiftKey) toggleIncluded(focusId);
-        else select(focusId, { toggle: event.key === ' ' || event.ctrlKey || event.metaKey, range: event.shiftKey });
+        else if (event.key === ' ' && includedSet && !event.ctrlKey && !event.metaKey && !event.shiftKey) toggleIncluded(currentFocus);
+        else select(currentFocus, { toggle: event.key === ' ' || event.ctrlKey || event.metaKey, range: event.shiftKey });
         break;
       case 'a':
         if (event.ctrlKey || event.metaKey) {
           event.preventDefault();
-          setSelection({ selected: order, anchor: order[0] ?? null });
+          const inThis = folders.find((f) => f.path === folder)?.entries.map((e) => e.path) ?? order;
+          setSelection({ selected: inThis, anchor: inThis[0] ?? null });
+          setSelectedFolder(null);
         }
         break;
       case 'Delete':
-        if (canDelete) { event.preventDefault(); setPending({ kind: 'delete' }); }
+        if (canDelete) { event.preventDefault(); startDelete(); }
+        break;
+      case 'F2':
+        if (onFolder && supportsFolders && folder !== '') { event.preventDefault(); selectFolder(folder); setPending({ kind: 'rename-folder', name: folderLabel(folder) }); }
         break;
       case 'Escape':
         setSelection({ selected: [], anchor: null });
+        setSelectedFolder(null);
         setPending(null);
         break;
     }
@@ -309,6 +456,8 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     if (element) itemRefs.current.set(id, element);
     else itemRefs.current.delete(id);
   };
+
+  const escapeCancels = (event: KeyboardEvent<HTMLInputElement>) => { if (event.key === 'Escape') setPending(null); };
 
   return (
     <div className="file-manager">
@@ -339,21 +488,67 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
             )}
             <button type="button" className="fm-tool fm-tool-icon" disabled={busy || loading} onClick={() => { setStatus(''); void refresh(); }} aria-label="Refresh" title="Refresh">⟳</button>
           </span>
+          {supportsFolders && (
+            <span className="fm-tool-group">
+              <button type="button" className="fm-tool" disabled={busy || !transport.groups.createFolder} aria-pressed={pending?.kind === 'new-folder'} onClick={() => setPending({ kind: 'new-folder', name: 'New grouping' })} title="Create an empty folder for a new grouping of the samples">New folder…</button>
+              <button type="button" className="fm-tool" disabled={busy || !selectedFolderNode || selectedFolderNode.path === '' || !transport.groups.renameFolder} aria-pressed={pending?.kind === 'rename-folder'} onClick={() => selectedFolderNode && setPending({ kind: 'rename-folder', name: selectedFolderNode.name })} title="Rename the selected folder (click a folder to select it)">Rename…</button>
+            </span>
+          )}
           <span className="fm-tool-group">
-            <button type="button" className="fm-tool" disabled={!canDuplicate} aria-pressed={pending?.kind === 'duplicate'} onClick={() => single && setPending({ kind: 'duplicate', name: `${single.name} copy` })}>Duplicate</button>
+            {supportsFolders && (
+              <>
+                <button type="button" className="fm-tool" disabled={!canCopy} aria-pressed={pending?.kind === 'copy' && !pending.move} onClick={() => startCopy(false)} title="Copy the highlighted groups into another folder">Copy to…</button>
+                <button type="button" className="fm-tool" disabled={!canCopy} aria-pressed={pending?.kind === 'copy' && pending.move} onClick={() => startCopy(true)} title="Move the highlighted groups into another folder">Move to…</button>
+              </>
+            )}
             <button type="button" className="fm-tool" disabled={!canMerge} aria-pressed={pending?.kind === 'merge'} onClick={() => setPending({ kind: 'merge', name: 'Merged' })}>Merge</button>
-            <button type="button" className="fm-tool fm-tool-danger" disabled={!canDelete} aria-pressed={pending?.kind === 'delete'} onClick={() => setPending({ kind: 'delete' })}>Delete</button>
+            <button type="button" className="fm-tool fm-tool-danger" disabled={!canDelete} aria-pressed={pending?.kind === 'delete' || pending?.kind === 'delete-folder'} onClick={startDelete}>Delete</button>
           </span>
         </div>
       </header>
 
-      {pending?.kind === 'duplicate' && single && (
-        <form className="fm-inline" onSubmit={submitDuplicate} aria-label="Duplicate file">
-          <label>Name for the copy of {single.name}
-            <input autoFocus value={pending.name} disabled={busy} onChange={(event) => setPending({ kind: 'duplicate', name: event.target.value })} onKeyDown={(event) => { if (event.key === 'Escape') setPending(null); }} />
+      {pending?.kind === 'new-folder' && (
+        <form className="fm-inline" onSubmit={submitNewFolder} aria-label="New folder">
+          <label>Name of the new folder
+            <input autoFocus value={pending.name} disabled={busy} onChange={(event) => setPending({ kind: 'new-folder', name: event.target.value })} onKeyDown={escapeCancels} />
+          </label>
+          <p className="fm-hint">A folder is one grouping of the samples. Copy groups into it, then reassign samples there without changing the original grouping.</p>
+          <div className="fm-inline-actions">
+            <button type="submit" disabled={busy || !pending.name.trim()}><BusyLabel busy={busy}>Create folder</BusyLabel></button>
+            <button type="button" disabled={busy} onClick={() => setPending(null)}>Cancel</button>
+          </div>
+        </form>
+      )}
+      {pending?.kind === 'rename-folder' && selectedFolderNode && (
+        <form className="fm-inline" onSubmit={submitRename} aria-label="Rename folder">
+          <label>New name for {quoted(selectedFolderNode.path)}
+            <input autoFocus value={pending.name} disabled={busy} onChange={(event) => setPending({ kind: 'rename-folder', name: event.target.value })} onKeyDown={escapeCancels} />
           </label>
           <div className="fm-inline-actions">
-            <button type="submit" disabled={busy || !pending.name.trim()}><BusyLabel busy={busy}>Duplicate</BusyLabel></button>
+            <button type="submit" disabled={busy || !pending.name.trim() || pending.name.trim() === selectedFolderNode.name}><BusyLabel busy={busy}>Rename</BusyLabel></button>
+            <button type="button" disabled={busy} onClick={() => setPending(null)}>Cancel</button>
+          </div>
+        </form>
+      )}
+      {pending?.kind === 'copy' && selectedEntries.length > 0 && (
+        <form className="fm-inline" onSubmit={submitCopy} aria-label={pending.move ? 'Move groups' : 'Copy groups'}>
+          <p className="fm-export-what">{pending.move ? 'Move' : 'Copy'} {selectedEntries.map((entry) => entry.name).join(', ')} to</p>
+          <label>Folder
+            <select value={pending.folder} disabled={busy} onChange={(event) => setPending({ ...pending, folder: event.target.value })}>
+              {copyChoices.map((path) => (
+                <option key={path} value={path}>{folderLabel(path)}{selectedFolders.includes(path) ? ' (current folder)' : ''}</option>
+              ))}
+              <option value={NEW_FOLDER}>New folder…</option>
+            </select>
+          </label>
+          {pending.folder === NEW_FOLDER && (
+            <label>New folder name
+              <input autoFocus value={pending.newName} disabled={busy} onChange={(event) => setPending({ ...pending, newName: event.target.value })} onKeyDown={escapeCancels} />
+            </label>
+          )}
+          <p className="fm-hint">{pending.move ? 'The groups leave their current folder.' : 'The originals stay where they are.'} A folder holds each sample once, so copying into a folder that already has these samples is refused.</p>
+          <div className="fm-inline-actions">
+            <button type="submit" disabled={busy || (pending.folder === NEW_FOLDER && !pending.newName.trim())}><BusyLabel busy={busy}>{pending.move ? 'Move' : 'Copy'}</BusyLabel></button>
             <button type="button" disabled={busy} onClick={() => setPending(null)}>Cancel</button>
           </div>
         </form>
@@ -361,7 +556,7 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
       {pending?.kind === 'merge' && selectedEntries.length >= 2 && (
         <form className="fm-inline" onSubmit={submitMerge} aria-label="Merge files">
           <label>Merge {selectedEntries.map((entry) => entry.name).join(', ')} into
-            <input autoFocus value={pending.name} disabled={busy} onChange={(event) => setPending({ kind: 'merge', name: event.target.value })} onKeyDown={(event) => { if (event.key === 'Escape') setPending(null); }} />
+            <input autoFocus value={pending.name} disabled={busy} onChange={(event) => setPending({ kind: 'merge', name: event.target.value })} onKeyDown={escapeCancels} />
           </label>
           <div className="fm-inline-actions">
             <button type="submit" disabled={busy || !pending.name.trim()}><BusyLabel busy={busy}>Merge</BusyLabel></button>
@@ -374,6 +569,15 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
           <p>Delete {selectedEntries.map((entry) => entry.name).join(', ')}? This removes {selectedEntries.length === 1 ? 'the group file' : `${selectedEntries.length} group files`} from the project.</p>
           <div className="fm-inline-actions">
             <button type="button" className="fm-danger" disabled={busy} onClick={confirmDelete}><BusyLabel busy={busy}>Confirm</BusyLabel></button>
+            <button type="button" autoFocus disabled={busy} onClick={() => setPending(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {pending?.kind === 'delete-folder' && selectedFolderNode && (
+        <div className="fm-inline fm-inline-danger" role="group" aria-label="Confirm folder delete">
+          <p>Delete the empty folder {quoted(selectedFolderNode.path)}?</p>
+          <div className="fm-inline-actions">
+            <button type="button" className="fm-danger" disabled={busy} onClick={confirmDeleteFolder}><BusyLabel busy={busy}>Delete folder</BusyLabel></button>
             <button type="button" autoFocus disabled={busy} onClick={() => setPending(null)}>Cancel</button>
           </div>
         </div>
@@ -401,17 +605,20 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
         </form>
       )}
 
-      {includedSet && readyPaths.length > 0 && (
+      {includedSet && activeReady.length > 0 && (
         <div className="fm-include-bar" role="group" aria-label="Groups in analyses">
-          <span className="fm-include-count" aria-live="polite">In analyses: {includedSet.size} of {readyPaths.length}</span>
-          <button type="button" className="fm-tool" disabled={includedSet.size === readyPaths.length} onClick={() => setIncluded(readyPaths)}>All</button>
+          <span className="fm-include-count" aria-live="polite">
+            In analyses: {includedSet.size} of {activeReady.length}
+            {folders.length > 1 && activeFolder !== null && <> in {quoted(activeFolder)}</>}
+          </span>
+          <button type="button" className="fm-tool" disabled={includedSet.size === activeReady.length} onClick={() => setIncluded(activeReady)}>All</button>
           <button type="button" className="fm-tool" disabled={includedSet.size === 0} onClick={() => setIncluded([])}>None</button>
           <button
             type="button"
             className="fm-tool"
-            disabled={!selectedReady.length}
+            disabled={selectedReady.length === 0 || selectedFolders.length !== 1}
             title="Include only the highlighted groups (Ctrl/Cmd-click or Shift-click to highlight several)"
-            onClick={() => setIncluded(selectedReady)}
+            onClick={() => setIncluded(selectedReady, selectedFolders[0] ?? activeFolder)}
           >
             Only selected
           </button>
@@ -420,14 +627,19 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
 
       <GroupFileTree
         entries={entries}
+        folders={folders}
         selected={selection.selected}
+        selectedFolder={selectedFolder}
+        activeFolder={inclusion ? activeFolder : undefined}
         included={includedSet}
         onToggleInclude={toggleIncluded}
         onIncludeOnly={includeOnly}
-        folderOpen={folderOpen}
-        focusId={focusId}
+        closedFolders={closedFolders}
+        focusId={currentFocus}
         loading={loading}
-        onToggleFolder={() => { setFolderOpen((open) => !open); setFocusId(FOLDER_ID); }}
+        onToggleFolder={toggleFolderOpen}
+        onSelectFolder={selectFolder}
+        onUseFolder={inclusion?.setActiveFolder ? (folder) => { chooseFolder(folder); setStatus(`Analyses now use the folder ${quoted(folder)}.`); } : undefined}
         onRowClick={onRowClick}
         onCheck={(path) => select(path, { toggle: true })}
         onKeyDown={onTreeKeyDown}
@@ -448,7 +660,11 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
         dataKey={entries.map((entry) => `${entry.path}@${entry.revision ?? ''}`).join('|')}
       />
 
-      <GroupDetails entries={selectedEntries} />
+      {selectedFolderNode ? (
+        <FolderDetails folder={selectedFolderNode} inAnalyses={activeFolder === selectedFolderNode.path} />
+      ) : (
+        <GroupDetails entries={selectedEntries} />
+      )}
 
       {importOpen && (
         <ImportDialog title="Import data" onClose={() => setImportOpen(false)}>
@@ -468,11 +684,20 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
 
 export interface GroupFileTreeProps {
   readonly entries: readonly GroupFileEntry[];
+  /** Folders to show (default: the folders of `entries`). */
+  readonly folders?: readonly FolderNode[];
   readonly selected: readonly string[];
+  readonly selectedFolder?: string | null;
+  /** Folder analyses use; `undefined` hides the folder switch. */
+  readonly activeFolder?: string | null;
+  /** All folders open/closed (tests); `closedFolders` wins when given. */
   readonly folderOpen?: boolean;
+  readonly closedFolders?: ReadonlySet<string>;
   readonly focusId?: string;
   readonly loading?: boolean;
-  readonly onToggleFolder?: () => void;
+  readonly onToggleFolder?: (folder: string) => void;
+  readonly onSelectFolder?: (folder: string) => void;
+  readonly onUseFolder?: (folder: string) => void;
   readonly onRowClick?: (event: MouseEvent, path: string) => void;
   readonly onCheck?: (path: string) => void;
   /**
@@ -487,14 +712,20 @@ export interface GroupFileTreeProps {
   readonly setRef?: (id: string) => (element: HTMLLIElement | null) => void;
 }
 
-/** Presentational tree: a collapsible "groups" folder with one row per group file. */
+/** Presentational tree: one collapsible row per group folder, one row per group file. */
 export function GroupFileTree({
   entries,
+  folders: givenFolders,
   selected,
+  selectedFolder = null,
+  activeFolder,
   folderOpen = true,
-  focusId = FOLDER_ID,
+  closedFolders,
+  focusId,
   loading = false,
   onToggleFolder,
+  onSelectFolder,
+  onUseFolder,
   onRowClick,
   onCheck,
   included = null,
@@ -504,83 +735,125 @@ export function GroupFileTree({
   onFocusItem,
   setRef,
 }: GroupFileTreeProps): ReactElement {
-  const rovingFocus = entries.some((entry) => entry.path === focusId) && folderOpen ? focusId : FOLDER_ID;
+  const folders = givenFolders ?? folderNodes(entries);
+  const isOpen = (folder: string) => (closedFolders ? !closedFolders.has(folder) : folderOpen);
+  const ids = folders.flatMap((folder) => [folderId(folder.path), ...(isOpen(folder.path) ? folder.entries.map((e) => e.path) : [])]);
+  const rovingFocus = focusId !== undefined && ids.includes(focusId) ? focusId : (ids[0] ?? '');
+  const showSwitch = activeFolder !== undefined && folders.length > 1;
   return (
     <ul className="fm-tree" role="tree" aria-label="Project files" aria-multiselectable="true" aria-busy={loading} onKeyDown={onKeyDown}>
-      <li
-        role="treeitem"
-        aria-expanded={folderOpen}
-        aria-level={1}
-        aria-label={`groups, ${entries.length} file${entries.length === 1 ? '' : 's'}`}
-        tabIndex={rovingFocus === FOLDER_ID ? 0 : -1}
-        ref={setRef?.(FOLDER_ID)}
-        onFocus={(event) => { if (event.target === event.currentTarget) onFocusItem?.(FOLDER_ID); }}
-        className="fm-item fm-item-folder"
-      >
-        <div className="fm-row" onClick={onToggleFolder}>
-          <span className="fm-twisty" aria-hidden="true">{folderOpen ? '▾' : '▸'}</span>
-          <FolderIcon open={folderOpen} />
-          <span className="fm-name">groups</span>
-          <span className="fm-meta">{loading && !entries.length ? <><Spinner />Loading…</> : entries.length}</span>
-        </div>
-        {folderOpen && (
-          <ul role="group" className="fm-group">
-            {!entries.length && !loading && <li role="none" className="fm-empty">No group files yet. Use Import… to add data.</li>}
-            {entries.map((entry) => {
-              const isSelected = selected.includes(entry.path);
-              const rows = entry.summary?.row_count;
-              const includable = Boolean(entry.summary && !entry.error);
-              const isIncluded = included ? included.has(entry.path) : undefined;
-              return (
-                <li
-                  key={entry.path}
-                  role="treeitem"
-                  aria-level={2}
-                  aria-selected={isSelected}
-                  aria-checked={included && includable ? isIncluded : undefined}
-                  aria-invalid={entry.error ? true : undefined}
-                  aria-label={`${entry.name}${rows === undefined ? '' : `, ${plural(rows, 'row')}`}${entry.error ? `, needs attention: ${entry.error}` : ''}`}
-                  tabIndex={rovingFocus === entry.path ? 0 : -1}
-                  ref={setRef?.(entry.path)}
-                  title={entry.error ? `Needs attention: ${entry.error}` : entry.path}
-                  className={`fm-item fm-item-file${isSelected ? ' is-selected' : ''}${entry.error ? ' is-invalid' : ''}${included && includable && !isIncluded ? ' is-excluded' : ''}`}
-                  onFocus={(event) => { if (event.target === event.currentTarget) onFocusItem?.(entry.path); }}
-                  data-path={entry.path}
-                >
-                  <div className="fm-row" onClick={(event) => onRowClick?.(event, entry.path)}>
-                    {included ? (
-                      <span
-                        className={`fm-check fm-include${isIncluded ? ' is-on' : ''}${includable ? '' : ' is-disabled'}`}
-                        aria-hidden="true"
-                        title={includable ? 'Include in analyses (double-click: only this group)' : 'Fix this file to include it in analyses'}
-                        onClick={(event) => { event.stopPropagation(); if (includable) onToggleInclude?.(entry.path); }}
-                        onDoubleClick={(event) => { event.stopPropagation(); if (includable) onIncludeOnly?.(entry.path); }}
-                      >
-                        {isIncluded ? '✓' : ''}
-                      </span>
-                    ) : (
-                      <span
-                        className="fm-check"
-                        aria-hidden="true"
-                        onClick={(event) => { event.stopPropagation(); onCheck?.(entry.path); }}
-                      >
-                        {isSelected ? '✓' : ''}
-                      </span>
-                    )}
-                    <FileIcon />
-                    <span className="fm-name">{entry.name}</span>
-                    <span className="fm-meta">{rows === undefined ? '' : plural(rows, 'row')}</span>
-                    {entry.error && (
-                      <span className="fm-warn" role="img" aria-label={`Needs attention: ${entry.error}`}>⚠</span>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </li>
+      {!folders.length && (
+        <li role="none" className="fm-empty">{loading ? <><Spinner />Loading…</> : 'No group files yet. Use Import… to add data.'}</li>
+      )}
+      {folders.map((folder) => {
+        const open = isOpen(folder.path);
+        const id = folderId(folder.path);
+        const active = activeFolder === folder.path;
+        return (
+          <li
+            key={id}
+            role="treeitem"
+            aria-expanded={open}
+            aria-level={1}
+            aria-selected={selectedFolder === folder.path}
+            aria-label={`${folder.name}, ${plural(folder.entries.length, 'file')}${active && showSwitch ? ', used in analyses' : ''}`}
+            tabIndex={rovingFocus === id ? 0 : -1}
+            ref={setRef?.(id)}
+            onFocus={(event) => { if (event.target === event.currentTarget) onFocusItem?.(id); }}
+            className={`fm-item fm-item-folder${selectedFolder === folder.path ? ' is-selected' : ''}${active && showSwitch ? ' is-active' : ''}${!active && showSwitch ? ' is-inactive' : ''}`}
+          >
+            <div className="fm-row" onClick={() => (onSelectFolder ? onSelectFolder(folder.path) : onToggleFolder?.(folder.path))}>
+              <span className="fm-twisty" aria-hidden="true" onClick={(event) => { event.stopPropagation(); onToggleFolder?.(folder.path); }}>{open ? '▾' : '▸'}</span>
+              {showSwitch && (
+                <span
+                  className={`fm-radio${active ? ' is-on' : ''}`}
+                  aria-hidden="true"
+                  title={active ? 'Analyses use this folder' : 'Use this folder in analyses'}
+                  onClick={(event) => { event.stopPropagation(); onUseFolder?.(folder.path); }}
+                />
+              )}
+              <FolderIcon open={open} />
+              <span className="fm-name">{folder.name}</span>
+              {active && showSwitch && <span className="fm-badge">In analyses</span>}
+              <span className="fm-meta">{folder.entries.length}</span>
+            </div>
+            {open && (
+              <ul role="group" className="fm-group">
+                {!folder.entries.length && <li role="none" className="fm-empty">Empty folder. Copy groups into it with Copy to….</li>}
+                {folder.entries.map((entry) => {
+                  const isSelected = selected.includes(entry.path);
+                  const rows = entry.summary?.row_count;
+                  const includable = Boolean(entry.summary && !entry.error);
+                  const inActive = activeFolder === undefined || activeFolder === null || folder.path === activeFolder;
+                  const isIncluded = included ? inActive && included.has(entry.path) : undefined;
+                  return (
+                    <li
+                      key={entry.path}
+                      role="treeitem"
+                      aria-level={2}
+                      aria-selected={isSelected}
+                      aria-checked={included && includable ? isIncluded : undefined}
+                      aria-invalid={entry.error ? true : undefined}
+                      aria-label={`${entry.name}${rows === undefined ? '' : `, ${plural(rows, 'row')}`}${entry.error ? `, needs attention: ${entry.error}` : ''}`}
+                      tabIndex={rovingFocus === entry.path ? 0 : -1}
+                      ref={setRef?.(entry.path)}
+                      title={entry.error ? `Needs attention: ${entry.error}` : entry.path}
+                      className={`fm-item fm-item-file${isSelected ? ' is-selected' : ''}${entry.error ? ' is-invalid' : ''}${included && includable && !isIncluded ? ' is-excluded' : ''}`}
+                      onFocus={(event) => { if (event.target === event.currentTarget) onFocusItem?.(entry.path); }}
+                      data-path={entry.path}
+                    >
+                      <div className="fm-row" onClick={(event) => onRowClick?.(event, entry.path)}>
+                        {included ? (
+                          <span
+                            className={`fm-check fm-include${isIncluded ? ' is-on' : ''}${includable ? '' : ' is-disabled'}${inActive ? '' : ' is-other-folder'}`}
+                            aria-hidden="true"
+                            title={!includable ? 'Fix this file to include it in analyses' : inActive ? 'Include in analyses (double-click: only this group)' : 'Use this folder in analyses and include this group'}
+                            onClick={(event) => { event.stopPropagation(); if (includable) onToggleInclude?.(entry.path); }}
+                            onDoubleClick={(event) => { event.stopPropagation(); if (includable) onIncludeOnly?.(entry.path); }}
+                          >
+                            {isIncluded ? '✓' : ''}
+                          </span>
+                        ) : (
+                          <span
+                            className="fm-check"
+                            aria-hidden="true"
+                            onClick={(event) => { event.stopPropagation(); onCheck?.(entry.path); }}
+                          >
+                            {isSelected ? '✓' : ''}
+                          </span>
+                        )}
+                        <FileIcon />
+                        <span className="fm-name">{entry.name}</span>
+                        <span className="fm-meta">{rows === undefined ? '' : plural(rows, 'row')}</span>
+                        {entry.error && (
+                          <span className="fm-warn" role="img" aria-label={`Needs attention: ${entry.error}`}>⚠</span>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </li>
+        );
+      })}
     </ul>
+  );
+}
+
+/** Details for a selected folder. */
+export function FolderDetails({ folder, inAnalyses }: { folder: FolderNode; inAnalyses: boolean }): ReactElement {
+  const rows = folder.entries.reduce((sum, entry) => sum + (entry.summary?.row_count ?? 0), 0);
+  return (
+    <section className="fm-details" aria-label="Folder details">
+      <h3>{folder.name}</h3>
+      <dl>
+        <dt>Path</dt><dd className="fm-path">{folder.path || '(project root)'}</dd>
+        <dt>Groups</dt><dd>{folder.entries.length}</dd>
+        <dt>Rows</dt><dd>{rows}</dd>
+        <dt>Analyses</dt><dd>{inAnalyses ? 'Use this folder' : 'Not used (click its circle to use it)'}</dd>
+      </dl>
+    </section>
   );
 }
 

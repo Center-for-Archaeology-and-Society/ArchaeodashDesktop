@@ -11,7 +11,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { GroupCandidate, GroupsService } from '@archaeodash/client';
 import { combineGroupFiles, type CombinedRows, type LoadedGroupFile } from '../visualize/combine.ts';
-import { exclusionFor, includedAmong, useGroupInclusion } from './GroupInclusion.tsx';
+import { includedAmong, useGroupInclusion } from './GroupInclusion.tsx';
+import { activeFolderAmong, exclusionWithin, folderOf } from './folders.ts';
 import { useDataCache } from './DataCache.tsx';
 
 export type GroupFilesLoad =
@@ -56,10 +57,17 @@ export function useGroupFiles(groups: GroupsService): GroupFiles {
   // Set by `reload()` so the next load skips cached rows.
   const forceReload = useRef(false);
 
-  const ready = useMemo(
-    () => candidates.filter((c) => c.ready && c.group !== null && c.group !== undefined),
-    [candidates],
-  );
+  // With shared inclusion, pages work on the active folder only (a folder
+  // is one grouping of the samples; other folders may hold the same ones).
+  const activeFolder = inclusion?.activeFolder;
+  const ready = useMemo(() => {
+    const all = candidates.filter((c) => c.ready && c.group !== null && c.group !== undefined);
+    if (!inclusion) return all;
+    const folder = activeFolderAmong(all.map((c) => c.path), activeFolder);
+    return folder === null ? all : all.filter((c) => folderOf(c.path) === folder);
+    // `inclusion` only matters through `activeFolder` here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candidates, activeFolder, inclusion === null]);
   const options = useMemo(
     () => ready.map((c) => ({ path: c.path, name: c.group?.group_name ?? c.path })),
     [ready],
@@ -72,7 +80,7 @@ export function useGroupFiles(groups: GroupsService): GroupFiles {
   );
   const setSelectedPaths = useCallback(
     (paths: string[]) => {
-      if (inclusion) inclusion.setExcluded(exclusionFor(readyPaths, paths));
+      if (inclusion) inclusion.setExcluded(exclusionWithin(inclusion.excluded, readyPaths, paths));
       else setLocalSelected(paths);
     },
     [inclusion, readyPaths],
@@ -82,14 +90,18 @@ export function useGroupFiles(groups: GroupsService): GroupFiles {
     async (keep?: (allReady: string[]) => string[]) => {
       const list = await groups.scan();
       setCandidates(list);
-      const all = list.filter((c) => c.ready && c.group).map((c) => c.path);
+      const allFolders = list.filter((c) => c.ready && c.group).map((c) => c.path);
       const shared = inclusionRef.current;
       if (shared) {
         // Shared inclusion: new groups are included automatically; `keep`
-        // (e.g. after moving rows into a new group) sets it explicitly.
-        if (keep) shared.setExcluded(exclusionFor(all, keep(all)));
+        // (e.g. after moving rows into a new group) sets it explicitly,
+        // within the active folder only.
+        const folder = activeFolderAmong(allFolders, shared.activeFolder);
+        const scope = folder === null ? allFolders : allFolders.filter((p) => folderOf(p) === folder);
+        if (keep) shared.setExcluded(exclusionWithin(shared.excluded, scope, keep(scope)));
         return;
       }
+      const all = allFolders;
       setLocalSelected((current) => {
         if (keep) return keep(all);
         const surviving = current.filter((p) => all.includes(p));
