@@ -803,7 +803,10 @@ mod tests {
         def.ratios = vec![ratio("as", "fe")];
         let applied = apply(def.clone());
         assert_eq!(applied.columns, vec!["as", "fe", "as_fe"]);
-        assert_eq!(applied.rows[0], vec![Some(0.176), Some(0.477), Some(-0.301)]);
+        assert_eq!(
+            applied.rows[0],
+            vec![Some(0.176), Some(0.477), Some(-0.301)]
+        );
 
         // Ratio-only mode transforms the ratios too.
         def.ratio_mode = RatioMode::Only;

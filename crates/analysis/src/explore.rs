@@ -764,9 +764,40 @@ mod tests {
 
         // Skewed data still gives exactly n bins, covering every value.
         let skewed = vec![
-            3.784, 48.188, 1.646, 18.636, 4.306, 2.653, 3.6546, 90.7601, 16.098, 121.0, 3.41, 1.24,
-            46490.0, 8.297, 22.82, 110.2, 1.03, 13.94, 240.7, 1.763, 0.733, 13.35, 74.2, 197.0,
-            64130.0, 487.0, 51110.0, 4.545, 933.0, 658.0, 2.903, 5.524, 103.0, f64::NAN,
+            3.784,
+            48.188,
+            1.646,
+            18.636,
+            4.306,
+            2.653,
+            3.6546,
+            90.7601,
+            16.098,
+            121.0,
+            3.41,
+            1.24,
+            46490.0,
+            8.297,
+            22.82,
+            110.2,
+            1.03,
+            13.94,
+            240.7,
+            1.763,
+            0.733,
+            13.35,
+            74.2,
+            197.0,
+            64130.0,
+            487.0,
+            51110.0,
+            4.545,
+            933.0,
+            658.0,
+            2.903,
+            5.524,
+            103.0,
+            f64::NAN,
         ];
         for bins in [2usize, 7, 30, 50, 100] {
             let (breaks, counts) = histogram_bins(&skewed, bins).expect("histogram");
@@ -797,7 +828,9 @@ mod tests {
 
         // A zero range uses ggplot's 0.1 width and keeps every value.
         let (breaks, counts) = histogram_bins(&[4.0, 4.0, 4.0], 30).expect("histogram");
-        assert!(breaks.windows(2).all(|w| ((w[1] - w[0]) - 0.1).abs() < 1e-12));
+        assert!(breaks
+            .windows(2)
+            .all(|w| ((w[1] - w[0]) - 0.1).abs() < 1e-12));
         assert_eq!(counts.iter().sum::<u64>(), 3);
 
         assert!(histogram_bins(&[f64::NAN], 10).is_err());
