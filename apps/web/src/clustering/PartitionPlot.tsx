@@ -1,6 +1,7 @@
 import { useState, type ReactElement } from 'react';
 import type { ClusterFitResponse } from '@archaeodash/client';
 import { groupColors } from '../visualize/visualize-model.ts';
+import { extent } from '../visualize/multiplot-model.ts';
 
 /** Ten marker shapes (circle, square, triangles, diamond, plus, cross, star, pentagon, hourglass). */
 const SHAPES = 10;
@@ -40,8 +41,9 @@ export function PartitionPlot({ result, labelOf = (row: number) => `Analytical u
   const colors = groupColors(unique.length);
   const colorOf = (label: string) => colors[unique.indexOf(label)] ?? '#444444';
   const shapeOf = (label: string, cluster: number) => (groups ? cluster - 1 : Math.floor(unique.indexOf(label) / SHAPES));
-  const xs = points.map(p => p.x), ys = points.map(p => p.y);
-  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  // No spread into Math.min/max: WebKit caps arguments near 65k rows.
+  const [minX, maxX] = extent(points.map(p => p.x)) ?? [0, 0];
+  const [minY, maxY] = extent(points.map(p => p.y)) ?? [0, 0];
   const sx = (x: number) => 65 + (maxX === minX ? 0.5 : (x - minX) / (maxX - minX)) * 540;
   const sy = (y: number) => 355 - (maxY === minY ? 0.5 : (y - minY) / (maxY - minY)) * 305;
   return <figure aria-label="Partition cluster plot">
