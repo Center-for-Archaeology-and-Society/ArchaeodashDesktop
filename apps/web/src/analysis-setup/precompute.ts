@@ -45,7 +45,7 @@ export function planPrecompute(setup: TransformationDefinition | null, candidate
   const firstColumns = ready[0]!.group!.elemental_columns;
   const shared = firstColumns.filter((c) => ready.every((r) => r.group!.elemental_columns.includes(c)));
   const input = analysisInput(setup, shared);
-  if (input.columns.length < 2) return skipAll('needs two selected elements shared by every group');
+  if (input.columns.length < 2) return skipAll('needs two selected elements or ratios shared by every group');
 
   const [path, ...extra] = ready.map((c) => c.path);
   const base = { path: path!, extra_paths: extra, columns: input.columns, transformation: input.transformation ?? null };

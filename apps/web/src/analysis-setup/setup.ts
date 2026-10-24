@@ -5,10 +5,57 @@
  * demand from measured values and never writes derived values into group
  * files (Section 5 storage invariant).
  */
-import type { ImputationMethod, TransformationDefinition, TransformMethod } from '@archaeodash/contracts';
+import type { ImputationMethod, RatioMode, RatioSpecDto, TransformationDefinition, TransformMethod } from '@archaeodash/contracts';
 
 /** Reserved definition name for the active setup (stored per project). */
 export const ANALYSIS_SETUP_NAME = 'analysis_setup';
+
+/** Saved names keep at most this many characters on disk (legacy limit). */
+const MAX_NAME_LEN = 32;
+
+/**
+ * Filename-safe form of a name, as the backend stores it
+ * (`sanitize_group_name`): letters, digits, `.`, `_` and `-` are kept, any
+ * other character becomes `_`.
+ */
+export function sanitizeName(name: string): string {
+  const safe = Array.from(name, (c) => (/[\p{L}\p{N}._-]/u.test(c) ? c : '_')).join('');
+  return safe || 'group';
+}
+
+/** Storage key of a saved setup name; names with the same key overwrite each other. */
+export function setupStorageKey(name: string): string {
+  return Array.from(sanitizeName(name)).slice(0, MAX_NAME_LEN).join('');
+}
+
+/** Why a name cannot be used for a saved setup, or '' when it can. */
+export function setupNameProblem(name: string): string {
+  if (!name.trim()) return 'Enter a name.';
+  if (setupStorageKey(name) === ANALYSIS_SETUP_NAME) return `“${name.trim()}” is reserved for the active setup; choose another name.`;
+  return '';
+}
+
+/** Output column name of a ratio: its own name, else sanitized `numerator_denominator`. */
+export function ratioOutputName(spec: RatioSpecDto): string {
+  return spec.output_name || sanitizeName(`${spec.numerator}_${spec.denominator}`);
+}
+
+/**
+ * Ratio specs for every numerator × denominator pair (legacy
+ * `expand_grid`), skipping a column divided by itself. A single pair may
+ * carry a custom name; batches use `numerator_denominator`.
+ */
+export function ratioCombinations(numerators: readonly string[], denominators: readonly string[], name = ''): RatioSpecDto[] {
+  const pairs = numerators.flatMap((numerator) => denominators.filter((d) => d !== numerator).map((denominator) => ({ numerator, denominator })));
+  const single = numerators.length === 1 && denominators.length === 1;
+  return pairs.map((pair) => ({ ...pair, output_name: single && name.trim() ? sanitizeName(name.trim()) : ratioOutputName(pair) }));
+}
+
+/** Adds ratios, replacing any existing ratio with the same output name. */
+export function mergeRatios(current: readonly RatioSpecDto[], added: readonly RatioSpecDto[]): RatioSpecDto[] {
+  const names = new Set(added.map(ratioOutputName));
+  return [...current.filter((r) => !names.has(ratioOutputName(r))), ...added];
+}
 
 export const TRANSFORM_CHOICES: readonly { value: TransformMethod; label: string; hint: string }[] = [
   { value: 'none', label: 'None', hint: 'Measured values as imported.' },
@@ -57,15 +104,21 @@ export function newSetup(elements: readonly string[]): TransformationDefinition 
 
 /** Whether the setup changes values (rather than only choosing columns). */
 export function setupTransforms(setup: TransformationDefinition | null): boolean {
-  return !!setup && (setup.transform_method !== 'none' || setup.imputation_method !== 'none');
+  return !!setup && (setup.transform_method !== 'none' || setup.imputation_method !== 'none' || setup.ratios.length > 0);
 }
 
 export interface AnalysisInput {
-  /** Columns to analyze, in the order the data lists them. */
+  /**
+   * Columns to analyze: the selected elements in the order the data lists
+   * them, then ratio outputs (`append`), or only the ratio outputs (`only`).
+   * Ratio columns exist only in the transformation's output.
+   */
   readonly columns: string[];
+  /** The selected measured elements these groups have (no ratio outputs). */
+  readonly elements: string[];
   /** Definition to send with the request, when values are transformed. */
   readonly transformation?: TransformationDefinition;
-  /** Selected elements missing from these groups. */
+  /** Selected elements, and ratios whose sources are, missing from these groups. */
   readonly missing: string[];
 }
 
@@ -77,12 +130,18 @@ export function analysisInput(
   setup: TransformationDefinition | null,
   available: readonly string[],
 ): AnalysisInput {
-  if (!setup) return { columns: [...available], missing: [] };
+  if (!setup) return { columns: [...available], elements: [...available], missing: [] };
   const chosen = new Set(setup.elemental_columns);
-  const columns = available.filter((c) => chosen.has(c));
+  const elements = available.filter((c) => chosen.has(c));
   const missing = setup.elemental_columns.filter((c) => !available.includes(c));
-  if (!setupTransforms(setup)) return { columns, missing };
-  return { columns, missing, transformation: { ...setup, elemental_columns: columns } };
+  // Like the legacy app, ratios whose sources these groups lack are skipped.
+  const ratios = setup.ratios.filter((r) => available.includes(r.numerator) && available.includes(r.denominator));
+  for (const r of setup.ratios) if (!ratios.includes(r)) missing.push(ratioOutputName(r));
+  const ratioNames = [...new Set(ratios.map(ratioOutputName))];
+  const columns = setup.ratio_mode === 'only' && ratioNames.length ? ratioNames : [...new Set([...elements, ...ratioNames])];
+  const definition = { ...setup, elemental_columns: elements, ratios };
+  if (!setupTransforms(definition)) return { columns, elements, missing };
+  return { columns, elements, missing, transformation: definition };
 }
 
 /** One-line summary for the Data Manager, e.g. "12 of 33 elements · Log10". */
@@ -91,8 +150,14 @@ export function setupSummary(setup: TransformationDefinition | null, allElements
   const used = setup.elemental_columns.filter((c) => allElements.includes(c)).length;
   const parts = [`${used} of ${allElements.length} elements`];
   if (setup.imputation_method !== 'none') parts.push(imputationLabel(setup.imputation_method));
+  if (setup.ratios.length) parts.push(ratioSummary(setup.ratios.length, setup.ratio_mode));
   parts.push(setup.transform_method === 'none' ? 'no transform' : transformLabel(setup.transform_method));
   return parts.join(' · ');
+}
+
+/** "2 ratios appended" / "1 ratio only". */
+export function ratioSummary(count: number, mode: RatioMode): string {
+  return `${count} ${count === 1 ? 'ratio' : 'ratios'} ${mode === 'only' ? 'only' : 'appended'}`;
 }
 
 /** Union of measured columns across groups, in first-seen order. */

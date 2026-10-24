@@ -5,8 +5,14 @@
  * no transform.
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactElement, type ReactNode } from 'react';
-import type { TransformationDefinition, TransformationsService } from '@archaeodash/client';
-import { ANALYSIS_SETUP_NAME } from './setup.ts';
+import type {
+  AppliedTransformation,
+  ApplyTransformationRequest,
+  TransformationDefinition,
+  TransformationSummary,
+  TransformationsService,
+} from '@archaeodash/client';
+import { ANALYSIS_SETUP_NAME, setupNameProblem, setupStorageKey } from './setup.ts';
 
 export interface AnalysisSetupState {
   readonly setup: TransformationDefinition | null;
@@ -17,6 +23,16 @@ export interface AnalysisSetupState {
   readonly save?: (setup: TransformationDefinition) => Promise<void>;
   /** Removes the setup, returning to all elements with no transform. */
   readonly reset?: () => Promise<void>;
+  /** Named setups saved in the project (summaries only; loaded on demand). */
+  readonly saved?: readonly TransformationSummary[];
+  /** Saves `setup` under `name`, replacing a saved setup with the same name. */
+  readonly saveAs?: (name: string, setup: TransformationDefinition) => Promise<void>;
+  /** Copies a named setup into the active setup. */
+  readonly loadSaved?: (name: string) => Promise<void>;
+  /** Deletes a named setup; the active setup is unchanged. */
+  readonly deleteSaved?: (name: string) => Promise<void>;
+  /** Applies a definition without saving it (for previews), when supported. */
+  readonly preview?: (request: ApplyTransformationRequest) => Promise<AppliedTransformation>;
 }
 
 const AnalysisSetupContext = createContext<AnalysisSetupState>({ setup: null, loaded: true, error: '' });
@@ -26,7 +42,7 @@ export function useAnalysisSetup(): AnalysisSetupState {
 }
 
 export interface AnalysisSetupProviderProps {
-  readonly service: Pick<TransformationsService, 'list' | 'load' | 'save' | 'remove'>;
+  readonly service: Pick<TransformationsService, 'list' | 'load' | 'save' | 'remove'> & Partial<Pick<TransformationsService, 'apply'>>;
   /** Changes when another project opens, so its own setup is loaded. */
   readonly generation?: number | string | null;
   readonly children: ReactNode;
@@ -34,6 +50,7 @@ export interface AnalysisSetupProviderProps {
 
 export function AnalysisSetupProvider({ service, generation, children }: AnalysisSetupProviderProps): ReactElement {
   const [setup, setSetup] = useState<TransformationDefinition | null>(null);
+  const [saved, setSaved] = useState<readonly TransformationSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
 
@@ -43,6 +60,7 @@ export function AnalysisSetupProvider({ service, generation, children }: Analysi
     setError('');
     (async () => {
       const list = await service.list();
+      if (active) setSaved(namedSetups(list.transformations));
       if (!list.transformations.some((t) => t.name === ANALYSIS_SETUP_NAME)) return null;
       return service.load(ANALYSIS_SETUP_NAME);
     })()
@@ -51,6 +69,7 @@ export function AnalysisSetupProvider({ service, generation, children }: Analysi
         if (!active) return;
         // No project open (or no catalog yet): analyses fall back to defaults.
         setSetup(null);
+        setSaved([]);
         setError(cause instanceof Error ? cause.message : String(cause));
       })
       .finally(() => { if (active) setLoaded(true); });
@@ -68,6 +87,38 @@ export function AnalysisSetupProvider({ service, generation, children }: Analysi
     setSetup(null);
   }, [service]);
 
-  const value = useMemo<AnalysisSetupState>(() => ({ setup, loaded, error, save, reset }), [setup, loaded, error, save, reset]);
+  const refreshSaved = useCallback(async () => {
+    setSaved(namedSetups((await service.list()).transformations));
+  }, [service]);
+
+  const saveAs = useCallback(async (name: string, next: TransformationDefinition) => {
+    const problem = setupNameProblem(name);
+    if (problem) throw new Error(problem);
+    await service.save({ definition: { ...next, name: name.trim() } });
+    await refreshSaved();
+  }, [service, refreshSaved]);
+
+  const loadSaved = useCallback(async (name: string) => {
+    await save(await service.load(name));
+  }, [service, save]);
+
+  const deleteSaved = useCallback(async (name: string) => {
+    if (setupStorageKey(name) === ANALYSIS_SETUP_NAME) throw new Error('The active setup is removed with Reset to defaults.');
+    await service.remove(name);
+    await refreshSaved();
+  }, [service, refreshSaved]);
+
+  const apply = service.apply;
+  const preview = useMemo(() => (apply ? (request: ApplyTransformationRequest) => apply.call(service, request) : undefined), [service, apply]);
+
+  const value = useMemo<AnalysisSetupState>(
+    () => ({ setup, loaded, error, save, reset, saved, saveAs, loadSaved, deleteSaved, preview }),
+    [setup, loaded, error, save, reset, saved, saveAs, loadSaved, deleteSaved, preview],
+  );
   return <AnalysisSetupContext.Provider value={value}>{children}</AnalysisSetupContext.Provider>;
+}
+
+/** Saved definitions other than the reserved active setup, by name. */
+export function namedSetups(list: readonly TransformationSummary[]): TransformationSummary[] {
+  return list.filter((t) => setupStorageKey(t.name) !== ANALYSIS_SETUP_NAME).sort((a, b) => a.name.localeCompare(b.name));
 }
