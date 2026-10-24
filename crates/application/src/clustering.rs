@@ -910,7 +910,9 @@ impl ClusterService {
         feature_count: usize,
         requested: Option<&[String]>,
     ) -> Result<(Vec<String>, Option<String>), DomainError> {
-        let eligible = get_eligible(groups, feature_count);
+        let mut eligible = get_eligible(groups, feature_count);
+        // `eligible_groups[!is.na(eligible_groups) & nzchar(eligible_groups)]`.
+        eligible.retain(|group| !group.is_empty());
         let requested: Vec<&String> = requested
             .unwrap_or_default()
             .iter()
@@ -2004,6 +2006,26 @@ mod tests {
         let none = f(&groups, 10, None).expect("groups");
         assert_eq!(none.0, vec!["A", "B", "C"]);
         assert!(none.1.is_some());
+
+        // Blank group labels are never eligible (`nzchar` filter in
+        // GroupMembership.R); when only the blank group is large enough the
+        // legacy all-groups fallback applies instead of an error.
+        let blanks: Vec<String> = [""; 8]
+            .into_iter()
+            .chain(["A"; 8])
+            .chain(["C"; 2])
+            .map(String::from)
+            .collect();
+        assert_eq!(f(&blanks, 2, None).expect("groups").0, vec!["A"]);
+        let only_blank: Vec<String> = [""; 8]
+            .into_iter()
+            .chain(["A"; 2])
+            .chain(["C"; 2])
+            .map(String::from)
+            .collect();
+        let fallback = f(&only_blank, 2, None).expect("groups");
+        assert_eq!(fallback.0, vec!["A", "C"]);
+        assert!(fallback.1.is_some());
     }
 
     #[test]
