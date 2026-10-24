@@ -1,7 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the main window. File-system scope stays minimal per IMPLEMENTATION.md Section 2; native dialogs are granted per-command in later phases.",
+  "description": "Default capability for the main window. File-system scope stays minimal per IMPLEMENTATION.md Section 2; native dialogs are granted per-command in later phases. The opener may only open https URLs (external links open in the system browser).",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }]
+    }
+  ]
 }

@@ -59,6 +59,20 @@ pub fn init(log_dir: Option<&std::path::Path>) -> Option<WorkerGuard> {
     }
 }
 
+/// Opens the app's log folder in the system file manager ("Show log
+/// folder" in the Info menu). The folder comes from Tauri's app log
+/// directory, never from JavaScript.
+#[tauri::command]
+pub(crate) fn reveal_log_folder(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let no_dir = |e: tauri::Error| format!("no app log directory: {e}");
+    let not_created = |e: std::io::Error| format!("could not create the log folder: {e}");
+    let dir = app.path().app_log_dir().map_err(no_dir)?;
+    std::fs::create_dir_all(&dir).map_err(not_created)?;
+    let shown = crate::projects::display_path(&dir.to_string_lossy());
+    crate::projects::open_in_file_manager(&shown)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)] // test code; panics are the failure mode

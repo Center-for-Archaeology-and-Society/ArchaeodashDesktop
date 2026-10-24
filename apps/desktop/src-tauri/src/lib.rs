@@ -62,16 +62,67 @@ pub(crate) fn snapshot(state: &SharedState) -> Result<Arc<DesktopState>, String>
         .map_err(|e| e.to_string())
 }
 
-/// Runs a command body off the main thread against the current project.
-async fn run_blocking<T, F>(state: &SharedState, op: F) -> Result<T, String>
+/// Commands at least this slow are logged at `info`; faster ones at `debug`
+/// (job polling runs several times a second).
+const SLOW_COMMAND_MS: u64 = 1000;
+
+/// Longest error text written to the log for one failed command.
+const MAX_LOGGED_ERROR_CHARS: usize = 500;
+
+/// Logs one finished command: its name, how long it took, and the error
+/// message when it failed. Request arguments and results are never logged.
+fn log_command<T>(name: &'static str, started: std::time::Instant, result: &Result<T, String>) {
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    match result {
+        Ok(_) if elapsed_ms >= SLOW_COMMAND_MS => {
+            tracing::info!(command = name, elapsed_ms, "command finished");
+        }
+        Ok(_) => tracing::debug!(command = name, elapsed_ms, "command finished"),
+        Err(error) => {
+            let error: String = error.chars().take(MAX_LOGGED_ERROR_CHARS).collect();
+            tracing::warn!(command = name, elapsed_ms, %error, "command failed");
+        }
+    }
+}
+
+/// Runs a command body off the main thread against the current project and
+/// logs the command name, elapsed time, and any error.
+async fn run_blocking<T, F>(name: &'static str, state: &SharedState, op: F) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce(&DesktopState) -> Result<T, String> + Send + 'static,
 {
-    let current = snapshot(state)?;
-    tauri::async_runtime::spawn_blocking(move || op(&current))
-        .await
-        .map_err(|e| format!("background task failed: {e}"))?
+    let started = std::time::Instant::now();
+    let result = async {
+        let current = snapshot(state)?;
+        tauri::async_runtime::spawn_blocking(move || op(&current))
+            .await
+            .map_err(|e| format!("background task failed: {e}"))?
+    }
+    .await;
+    log_command(name, started, &result);
+    result
+}
+
+/// Opens the in-app help in its own window (or focuses it when it is
+/// already open). Async so window creation cannot deadlock on Windows.
+#[tauri::command]
+async fn open_help_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("help") {
+        let _ = window.unminimize();
+        return window.set_focus().map_err(|e| e.to_string());
+    }
+    let url = tauri::WebviewUrl::App("help-window".into());
+    let _window = tauri::WebviewWindowBuilder::new(&app, "help", url)
+        .title("ArchaeoDash Help")
+        .inner_size(900.0, 800.0)
+        .build()
+        .map_err(|e| format!("could not open the help window: {e}"))?;
+    #[cfg(windows)]
+    if let Ok(hwnd) = _window.hwnd() {
+        windows_icon::apply(hwnd.0);
+    }
+    Ok(())
 }
 
 impl DesktopState {
@@ -127,7 +178,10 @@ async fn submit_analysis_job(
     state: tauri::State<'_, SharedState>,
     request: archaeodash_contracts::SubmitAnalysisJobRequest,
 ) -> Result<archaeodash_contracts::AnalysisJobSnapshot, String> {
-    run_blocking(&state, move |s| s.clustering.submit_analysis_job(request)).await
+    run_blocking("submit_analysis_job", &state, move |s| {
+        s.clustering.submit_analysis_job(request)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -135,7 +189,10 @@ async fn get_analysis_job(
     state: tauri::State<'_, SharedState>,
     id: String,
 ) -> Result<archaeodash_contracts::AnalysisJobSnapshot, String> {
-    run_blocking(&state, move |s| s.clustering.get_analysis_job(&id)).await
+    run_blocking("get_analysis_job", &state, move |s| {
+        s.clustering.get_analysis_job(&id)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -143,7 +200,10 @@ async fn cancel_analysis_job(
     state: tauri::State<'_, SharedState>,
     id: String,
 ) -> Result<archaeodash_contracts::AnalysisJobSnapshot, String> {
-    run_blocking(&state, move |s| s.clustering.cancel_analysis_job(&id)).await
+    run_blocking("cancel_analysis_job", &state, move |s| {
+        s.clustering.cancel_analysis_job(&id)
+    })
+    .await
 }
 
 /// Smoke command exposed to the React client over Tauri IPC.
@@ -158,7 +218,10 @@ async fn open_import_preview(
     state: tauri::State<'_, SharedState>,
     request: ImportPreviewRequest,
 ) -> Result<archaeodash_contracts::ImportPreviewResponse, String> {
-    run_blocking(&state, move |s| s.import.open_import_preview(request)).await
+    run_blocking("open_import_preview", &state, move |s| {
+        s.import.open_import_preview(request)
+    })
+    .await
 }
 
 /// Publish one validated group Parquet file per group (`commit_group_import`).
@@ -166,8 +229,16 @@ async fn open_import_preview(
 async fn commit_group_import(
     state: tauri::State<'_, SharedState>,
     request: ImportCommitRequest,
+    options: Option<archaeodash_contracts::ImportCommitOptions>,
 ) -> Result<archaeodash_contracts::ImportCommitResponse, String> {
-    run_blocking(&state, move |s| s.import.commit_group_import(request)).await
+    run_blocking("commit_group_import", &state, move |s| {
+        s.import
+            .commit_group_import_with(archaeodash_contracts::ImportCommitCommand {
+                request,
+                options: options.unwrap_or_default(),
+            })
+    })
+    .await
 }
 
 /// Recursive candidate discovery (`scan_group_candidates`, Section 10.4).
@@ -175,7 +246,10 @@ async fn commit_group_import(
 async fn scan_group_candidates(
     state: tauri::State<'_, SharedState>,
 ) -> Result<Vec<archaeodash_contracts::GroupCandidate>, String> {
-    run_blocking(&state, move |s| s.groups.scan_group_candidates()).await
+    run_blocking("scan_group_candidates", &state, move |s| {
+        s.groups.scan_group_candidates()
+    })
+    .await
 }
 
 /// Full validation-on-add (`validate_group_file`).
@@ -184,7 +258,10 @@ async fn validate_group_file(
     state: tauri::State<'_, SharedState>,
     path: String,
 ) -> Result<archaeodash_contracts::GroupSummary, String> {
-    run_blocking(&state, move |s| s.groups.validate_group_file(path)).await
+    run_blocking("validate_group_file", &state, move |s| {
+        s.groups.validate_group_file(path)
+    })
+    .await
 }
 
 /// Full row data of one group file for the client dataset table
@@ -194,7 +271,7 @@ async fn group_rows(
     state: tauri::State<'_, SharedState>,
     path: String,
 ) -> Result<archaeodash_contracts::GroupRowsResponse, String> {
-    run_blocking(&state, move |s| s.groups.group_rows(path)).await
+    run_blocking("group_rows", &state, move |s| s.groups.group_rows(path)).await
 }
 
 /// Move/copy analytical units by hidden UUID (`move_analytical_units` /
@@ -204,7 +281,10 @@ async fn transfer_units(
     state: tauri::State<'_, SharedState>,
     request: TransferUnitsRequest,
 ) -> Result<archaeodash_contracts::TransactionResponse, String> {
-    run_blocking(&state, move |s| s.groups.transfer_units(request)).await
+    run_blocking("transfer_units", &state, move |s| {
+        s.groups.transfer_units(request)
+    })
+    .await
 }
 
 /// Move selected analytical units to multiple existing groups atomically.
@@ -213,7 +293,10 @@ async fn batch_transfer_units(
     state: tauri::State<'_, SharedState>,
     request: BatchTransferUnitsRequest,
 ) -> Result<archaeodash_contracts::TransactionResponse, String> {
-    run_blocking(&state, move |s| s.groups.batch_transfer_units(request)).await
+    run_blocking("batch_transfer_units", &state, move |s| {
+        s.groups.batch_transfer_units(request)
+    })
+    .await
 }
 
 /// Merge whole groups into one target (`merge_groups`).
@@ -222,7 +305,10 @@ async fn merge_groups(
     state: tauri::State<'_, SharedState>,
     request: MergeGroupsRequest,
 ) -> Result<archaeodash_contracts::TransactionResponse, String> {
-    run_blocking(&state, move |s| s.groups.merge_groups(request)).await
+    run_blocking("merge_groups", &state, move |s| {
+        s.groups.merge_groups(request)
+    })
+    .await
 }
 
 /// Delete one group file after exact-path confirmation and revision check
@@ -232,7 +318,10 @@ async fn delete_group(
     state: tauri::State<'_, SharedState>,
     request: DeleteGroupRequest,
 ) -> Result<archaeodash_contracts::TransactionResponse, String> {
-    run_blocking(&state, move |s| s.groups.delete_group(request)).await
+    run_blocking("delete_group", &state, move |s| {
+        s.groups.delete_group(request)
+    })
+    .await
 }
 
 /// Batch hidden-UUID-addressed descriptive edits (`patch_descriptive_values`).
@@ -241,7 +330,10 @@ async fn patch_descriptive_values(
     state: tauri::State<'_, SharedState>,
     request: PatchDescriptiveValuesRequest,
 ) -> Result<archaeodash_contracts::TransactionResponse, String> {
-    run_blocking(&state, move |s| s.groups.patch_descriptive_values(request)).await
+    run_blocking("patch_descriptive_values", &state, move |s| {
+        s.groups.patch_descriptive_values(request)
+    })
+    .await
 }
 
 /// Duplicate one whole group (`duplicate_group`), preserving UUIDs and
@@ -251,7 +343,10 @@ async fn duplicate_group(
     state: tauri::State<'_, SharedState>,
     request: DuplicateGroupRequest,
 ) -> Result<archaeodash_contracts::TransactionResponse, String> {
-    run_blocking(&state, move |s| s.groups.duplicate_group(request)).await
+    run_blocking("duplicate_group", &state, move |s| {
+        s.groups.duplicate_group(request)
+    })
+    .await
 }
 
 /// Stage-upload a source file through the bounded quarantine and promote it
@@ -261,7 +356,10 @@ async fn upload_source_file(
     state: tauri::State<'_, SharedState>,
     request: archaeodash_contracts::FileUploadRequest,
 ) -> Result<archaeodash_contracts::StagedFile, String> {
-    run_blocking(&state, move |s| s.files.upload_source_file(request)).await
+    run_blocking("upload_source_file", &state, move |s| {
+        s.files.upload_source_file(request)
+    })
+    .await
 }
 
 /// Quarantine-record metadata for one uploaded source file
@@ -271,7 +369,10 @@ async fn source_file_metadata(
     state: tauri::State<'_, SharedState>,
     file_id: String,
 ) -> Result<archaeodash_contracts::StagedFile, String> {
-    run_blocking(&state, move |s| s.files.source_file_metadata(file_id)).await
+    run_blocking("source_file_metadata", &state, move |s| {
+        s.files.source_file_metadata(file_id)
+    })
+    .await
 }
 
 /// Raw bytes plus metadata for one uploaded source file
@@ -281,7 +382,10 @@ async fn download_source_file(
     state: tauri::State<'_, SharedState>,
     file_id: String,
 ) -> Result<archaeodash_contracts::FileDownload, String> {
-    run_blocking(&state, move |s| s.files.download_source_file(file_id)).await
+    run_blocking("download_source_file", &state, move |s| {
+        s.files.download_source_file(file_id)
+    })
+    .await
 }
 
 /// Soft-delete one uploaded source file (`delete_source_file`).
@@ -290,7 +394,10 @@ async fn delete_source_file(
     state: tauri::State<'_, SharedState>,
     file_id: String,
 ) -> Result<archaeodash_contracts::StagedFile, String> {
-    run_blocking(&state, move |s| s.files.delete_source_file(file_id)).await
+    run_blocking("delete_source_file", &state, move |s| {
+        s.files.delete_source_file(file_id)
+    })
+    .await
 }
 
 /// Save (upsert by name) one transformation definition (`save_transformation`).
@@ -299,7 +406,7 @@ async fn save_transformation(
     state: tauri::State<'_, SharedState>,
     definition: archaeodash_contracts::TransformationDefinition,
 ) -> Result<archaeodash_contracts::SaveTransformationResponse, String> {
-    run_blocking(&state, move |s| {
+    run_blocking("save_transformation", &state, move |s| {
         s.transforms.save_transformation(definition)
     })
     .await
@@ -310,7 +417,10 @@ async fn save_transformation(
 async fn list_transformations(
     state: tauri::State<'_, SharedState>,
 ) -> Result<archaeodash_contracts::TransformationListResponse, String> {
-    run_blocking(&state, move |s| s.transforms.list_transformations()).await
+    run_blocking("list_transformations", &state, move |s| {
+        s.transforms.list_transformations()
+    })
+    .await
 }
 
 /// Load one saved transformation definition (`load_transformation`).
@@ -319,7 +429,10 @@ async fn load_transformation(
     state: tauri::State<'_, SharedState>,
     name: String,
 ) -> Result<archaeodash_contracts::TransformationDefinition, String> {
-    run_blocking(&state, move |s| s.transforms.load_transformation(name)).await
+    run_blocking("load_transformation", &state, move |s| {
+        s.transforms.load_transformation(name)
+    })
+    .await
 }
 
 /// Delete one saved transformation definition (`delete_transformation`).
@@ -328,7 +441,10 @@ async fn delete_transformation(
     state: tauri::State<'_, SharedState>,
     name: String,
 ) -> Result<archaeodash_contracts::TransformationDefinition, String> {
-    run_blocking(&state, move |s| s.transforms.delete_transformation(name)).await
+    run_blocking("delete_transformation", &state, move |s| {
+        s.transforms.delete_transformation(name)
+    })
+    .await
 }
 
 /// One-to-one or Cartesian batch ratio-spec generation (`batch_ratio_specs`).
@@ -337,7 +453,10 @@ async fn batch_ratio_specs(
     state: tauri::State<'_, SharedState>,
     request: BatchRatioRequest,
 ) -> Result<Vec<archaeodash_contracts::RatioSpecDto>, String> {
-    run_blocking(&state, move |s| s.transforms.batch_ratio_specs(request)).await
+    run_blocking("batch_ratio_specs", &state, move |s| {
+        s.transforms.batch_ratio_specs(request)
+    })
+    .await
 }
 
 /// Ephemeral on-demand transformation application (`apply_transformation`);
@@ -347,7 +466,10 @@ async fn apply_transformation(
     state: tauri::State<'_, SharedState>,
     request: ApplyTransformationRequest,
 ) -> Result<archaeodash_contracts::AppliedTransformation, String> {
-    run_blocking(&state, move |s| s.transforms.apply_transformation(request)).await
+    run_blocking("apply_transformation", &state, move |s| {
+        s.transforms.apply_transformation(request)
+    })
+    .await
 }
 
 /// `explore_missing_profile`: `profile_missing` band summary (Section 8.12).
@@ -356,7 +478,10 @@ async fn explore_missing_profile(
     state: tauri::State<'_, SharedState>,
     request: ExploreMissingProfileRequest,
 ) -> Result<archaeodash_contracts::ExploreMissingProfileResponse, String> {
-    run_blocking(&state, move |s| s.explore.explore_missing_profile(request)).await
+    run_blocking("explore_missing_profile", &state, move |s| {
+        s.explore.explore_missing_profile(request)
+    })
+    .await
 }
 
 /// `explore_histogram`: `hist.default` breakpoints and counts.
@@ -365,7 +490,10 @@ async fn explore_histogram(
     state: tauri::State<'_, SharedState>,
     request: ExploreHistogramRequest,
 ) -> Result<archaeodash_contracts::ExploreHistogramResponse, String> {
-    run_blocking(&state, move |s| s.explore.explore_histogram(request)).await
+    run_blocking("explore_histogram", &state, move |s| {
+        s.explore.explore_histogram(request)
+    })
+    .await
 }
 
 /// `explore_crosstab`: legacy `compute_crosstab_summary`.
@@ -374,7 +502,10 @@ async fn explore_crosstab(
     state: tauri::State<'_, SharedState>,
     request: ExploreCrosstabRequest,
 ) -> Result<archaeodash_contracts::ExploreCrosstabResponse, String> {
-    run_blocking(&state, move |s| s.explore.explore_crosstab(request)).await
+    run_blocking("explore_crosstab", &state, move |s| {
+        s.explore.explore_crosstab(request)
+    })
+    .await
 }
 
 /// `explore_compositional_profile`: the `pivot_longer` long table.
@@ -383,7 +514,7 @@ async fn explore_compositional_profile(
     state: tauri::State<'_, SharedState>,
     request: ExploreCompositionalProfileRequest,
 ) -> Result<archaeodash_contracts::ExploreCompositionalProfileResponse, String> {
-    run_blocking(&state, move |s| {
+    run_blocking("explore_compositional_profile", &state, move |s| {
         s.explore.explore_compositional_profile(request)
     })
     .await
@@ -396,7 +527,10 @@ async fn ordination_pca(
     state: tauri::State<'_, SharedState>,
     request: PcaRequest,
 ) -> Result<archaeodash_contracts::PcaResponse, String> {
-    run_blocking(&state, move |s| s.ordination.ordination_pca(request)).await
+    run_blocking("ordination_pca", &state, move |s| {
+        s.ordination.ordination_pca(request)
+    })
+    .await
 }
 
 /// `ordination_lda`: `MASS::lda` moment-method parity with the legacy
@@ -406,7 +540,10 @@ async fn ordination_lda(
     state: tauri::State<'_, SharedState>,
     request: LdaRequest,
 ) -> Result<archaeodash_contracts::LdaResponse, String> {
-    run_blocking(&state, move |s| s.ordination.ordination_lda(request)).await
+    run_blocking("ordination_lda", &state, move |s| {
+        s.ordination.ordination_lda(request)
+    })
+    .await
 }
 
 /// `ordination_umap`: legacy naive UMAP parity with the deterministic seed;
@@ -418,7 +555,10 @@ async fn ordination_umap(
     state: tauri::State<'_, SharedState>,
     request: UmapRequest,
 ) -> Result<archaeodash_contracts::UmapResponse, String> {
-    run_blocking(&state, move |s| s.ordination.ordination_umap(request)).await
+    run_blocking("ordination_umap", &state, move |s| {
+        s.ordination.ordination_umap(request)
+    })
+    .await
 }
 
 /// `cluster_diagnostics`: WSS elbow + mean-silhouette series; results are
@@ -428,7 +568,10 @@ async fn cluster_diagnostics(
     state: tauri::State<'_, SharedState>,
     request: ClusterDiagnosticsRequest,
 ) -> Result<archaeodash_contracts::ClusterDiagnosticsResponse, String> {
-    run_blocking(&state, move |s| s.clustering.cluster_diagnostics(request)).await
+    run_blocking("cluster_diagnostics", &state, move |s| {
+        s.clustering.cluster_diagnostics(request)
+    })
+    .await
 }
 
 /// `cluster_fit`: one kmeans/pam/ward.D2/DIANA fit; results are ephemeral
@@ -438,7 +581,10 @@ async fn cluster_fit(
     state: tauri::State<'_, SharedState>,
     request: ClusterFitRequest,
 ) -> Result<archaeodash_contracts::ClusterFitResponse, String> {
-    run_blocking(&state, move |s| s.clustering.cluster_fit(request)).await
+    run_blocking("cluster_fit", &state, move |s| {
+        s.clustering.cluster_fit(request)
+    })
+    .await
 }
 
 /// `membership_probabilities`: `group.mem.probs` parity; results are
@@ -448,7 +594,7 @@ async fn membership_probabilities(
     state: tauri::State<'_, SharedState>,
     request: MembershipProbabilitiesRequest,
 ) -> Result<archaeodash_contracts::MembershipProbabilitiesResponse, String> {
-    run_blocking(&state, move |s| {
+    run_blocking("membership_probabilities", &state, move |s| {
         s.clustering.membership_probabilities(request)
     })
     .await
@@ -461,7 +607,10 @@ async fn euclidean_matches(
     state: tauri::State<'_, SharedState>,
     request: EuclideanMatchesRequest,
 ) -> Result<archaeodash_contracts::EuclideanMatchesResponse, String> {
-    run_blocking(&state, move |s| s.clustering.euclidean_matches(request)).await
+    run_blocking("euclidean_matches", &state, move |s| {
+        s.clustering.euclidean_matches(request)
+    })
+    .await
 }
 
 /// `export_measured_data`: measured chemical frame as ephemeral CSV
@@ -471,7 +620,10 @@ async fn export_measured_data(
     state: tauri::State<'_, SharedState>,
     request: ExportMeasuredDataRequest,
 ) -> Result<archaeodash_contracts::ExportResult, String> {
-    run_blocking(&state, move |s| s.exports.export_measured_data(request)).await
+    run_blocking("export_measured_data", &state, move |s| {
+        s.exports.export_measured_data(request)
+    })
+    .await
 }
 
 /// `export_transformed`: explicitly computed transformed result as ephemeral
@@ -481,7 +633,10 @@ async fn export_transformed(
     state: tauri::State<'_, SharedState>,
     request: ExportTransformedRequest,
 ) -> Result<archaeodash_contracts::ExportResult, String> {
-    run_blocking(&state, move |s| s.exports.export_transformed(request)).await
+    run_blocking("export_transformed", &state, move |s| {
+        s.exports.export_transformed(request)
+    })
+    .await
 }
 
 /// `export_pca_scores`: computed PCA score frame as ephemeral CSV (Section 3.2
@@ -491,7 +646,10 @@ async fn export_pca_scores(
     state: tauri::State<'_, SharedState>,
     request: ExportPcaScoresRequest,
 ) -> Result<archaeodash_contracts::ExportResult, String> {
-    run_blocking(&state, move |s| s.exports.export_pca_scores(request)).await
+    run_blocking("export_pca_scores", &state, move |s| {
+        s.exports.export_pca_scores(request)
+    })
+    .await
 }
 
 /// `preferences_get`: every stored allowlisted preference (Section 10.1).
@@ -499,7 +657,10 @@ async fn export_pca_scores(
 async fn preferences_get(
     state: tauri::State<'_, SharedState>,
 ) -> Result<GetPreferencesResponse, String> {
-    run_blocking(&state, move |s| s.preferences.preferences_get()).await
+    run_blocking("preferences_get", &state, move |s| {
+        s.preferences.preferences_get()
+    })
+    .await
 }
 
 /// `preferences_set`: upsert one allowlisted, shape-validated preference.
@@ -508,14 +669,20 @@ async fn preferences_set(
     state: tauri::State<'_, SharedState>,
     request: PutPreferenceRequest,
 ) -> Result<(), String> {
-    run_blocking(&state, move |s| s.preferences.preferences_set(request)).await
+    run_blocking("preferences_set", &state, move |s| {
+        s.preferences.preferences_set(request)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn list_group_folders(
     state: tauri::State<'_, SharedState>,
 ) -> Result<Vec<archaeodash_contracts::GroupFolder>, String> {
-    run_blocking(&state, move |s| s.groups.list_folders()).await
+    run_blocking("list_group_folders", &state, move |s| {
+        s.groups.list_folders()
+    })
+    .await
 }
 
 #[tauri::command]
@@ -523,7 +690,10 @@ async fn create_group_folder(
     state: tauri::State<'_, SharedState>,
     request: archaeodash_contracts::CreateFolderRequest,
 ) -> Result<archaeodash_contracts::GroupFolder, String> {
-    run_blocking(&state, move |s| s.groups.create_folder(request)).await
+    run_blocking("create_group_folder", &state, move |s| {
+        s.groups.create_folder(request)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -531,7 +701,10 @@ async fn rename_group_folder(
     state: tauri::State<'_, SharedState>,
     request: archaeodash_contracts::RenameFolderRequest,
 ) -> Result<archaeodash_contracts::GroupFolder, String> {
-    run_blocking(&state, move |s| s.groups.rename_folder(request)).await
+    run_blocking("rename_group_folder", &state, move |s| {
+        s.groups.rename_folder(request)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -539,7 +712,34 @@ async fn delete_group_folder(
     state: tauri::State<'_, SharedState>,
     request: archaeodash_contracts::DeleteFolderRequest,
 ) -> Result<(), String> {
-    run_blocking(&state, move |s| s.groups.delete_folder(request)).await
+    run_blocking("delete_group_folder", &state, move |s| {
+        s.groups.delete_folder(request)
+    })
+    .await
+}
+
+/// Rename one group: profile name/id and file name (`rename_group`).
+#[tauri::command]
+async fn rename_group(
+    state: tauri::State<'_, SharedState>,
+    request: archaeodash_contracts::RenameGroupRequest,
+) -> Result<archaeodash_contracts::TransactionResponse, String> {
+    run_blocking("rename_group", &state, move |s| {
+        s.groups.rename_group(request)
+    })
+    .await
+}
+
+/// Add a descriptive column to every group in a folder (`add_group_column`).
+#[tauri::command]
+async fn add_group_column(
+    state: tauri::State<'_, SharedState>,
+    request: archaeodash_contracts::AddDescriptiveColumnRequest,
+) -> Result<archaeodash_contracts::TransactionResponse, String> {
+    run_blocking("add_group_column", &state, move |s| {
+        s.groups.add_descriptive_column(request)
+    })
+    .await
 }
 
 /// Copy or move whole groups into a folder (`copy_groups`).
@@ -548,7 +748,10 @@ async fn copy_groups(
     state: tauri::State<'_, SharedState>,
     request: archaeodash_contracts::CopyGroupsRequest,
 ) -> Result<archaeodash_contracts::TransactionResponse, String> {
-    run_blocking(&state, move |s| s.groups.copy_groups(request)).await
+    run_blocking("copy_groups", &state, move |s| {
+        s.groups.copy_groups(request)
+    })
+    .await
 }
 
 /// `export_table`: any result table as CSV or XLSX (no project access).
@@ -568,6 +771,8 @@ async fn export_table(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // External https links (Home/About, Help) open in the system browser.
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Rotating desktop logs (Section 12). The worker guard must
             // outlive the process for flush-on-drop; the app runs until
@@ -648,6 +853,8 @@ pub fn run() {
             export_files::save_export_file,
             export_table,
             projects::reveal_project,
+            logging::reveal_log_folder,
+            open_help_window,
             list_group_folders,
             create_group_folder,
             rename_group_folder,

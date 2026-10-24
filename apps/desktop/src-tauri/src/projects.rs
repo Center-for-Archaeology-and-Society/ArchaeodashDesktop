@@ -89,7 +89,7 @@ pub(crate) fn reveal_project(state: tauri::State<'_, super::SharedState>) -> Res
 
 /// Strips Windows' extended-length prefixes (`\\?\C:\…`, `\\?\UNC\host\…`),
 /// which File Explorer does not accept.
-fn display_path(path: &str) -> String {
+pub(crate) fn display_path(path: &str) -> String {
     if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{rest}")
     } else if let Some(rest) = path.strip_prefix(r"\\?\") {
@@ -99,7 +99,7 @@ fn display_path(path: &str) -> String {
     }
 }
 
-fn open_in_file_manager(path: &str) -> Result<(), String> {
+pub(crate) fn open_in_file_manager(path: &str) -> Result<(), String> {
     let program = if cfg!(target_os = "windows") {
         "explorer"
     } else if cfg!(target_os = "macos") {
