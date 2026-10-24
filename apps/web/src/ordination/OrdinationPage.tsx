@@ -33,6 +33,7 @@ import { PageHeader } from '../ui/PageHeader.tsx';
 import { TabPanels } from '../ui/TabPanels.tsx';
 import { ContributionTableCard, LdaScalingBars, LdaStripPlot, LdaVectorPlot, PcaVariablesPlot } from './OrdinationCharts.tsx';
 import { GRADIENT_SCALE, componentCount, individualCos2, ldaLayout, requestGate } from './ordination-model.ts';
+import { plotlyText } from '../charts/plotly-text.ts';
 
 export interface OrdinationDeps {
   readonly groups: GroupsService;
@@ -159,7 +160,7 @@ function ScatterPlot({
           name: colorTitle,
           x,
           y,
-          text: labels.map((g, i) => `${ids?.[i] || `Row ${i + 1}`} · ${g}`),
+          text: labels.map((g, i) => plotlyText(`${ids?.[i] || `Row ${i + 1}`} · ${g}`)),
           customdata: [...colorValues],
           hovertemplate: `%{text}<br>${xLabel}: %{x:.3f}<br>${yLabel}: %{y:.3f}<br>${colorTitle}: %{customdata:.3f}<extra></extra>`,
           marker: {
@@ -180,10 +181,10 @@ function ScatterPlot({
       return {
         type: 'scatter',
         mode: 'markers',
-        name,
+        name: plotlyText(name),
         x: idx.map((i) => x[i]),
         y: idx.map((i) => y[i]),
-        text: idx.map((i) => `${ids?.[i] || `Row ${i + 1}`} · ${name}`),
+        text: idx.map((i) => plotlyText(`${ids?.[i] || `Row ${i + 1}`} · ${name}`)),
         hovertemplate: `%{text}<br>${xLabel}: %{x:.3f}<br>${yLabel}: %{y:.3f}<extra></extra>`,
         marker: { color: colors[gi], size: 7, opacity: 0.85 },
       } as Data;

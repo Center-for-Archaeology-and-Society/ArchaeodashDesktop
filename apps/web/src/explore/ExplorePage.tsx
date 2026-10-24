@@ -27,6 +27,7 @@ import type {
 import type { Data } from 'plotly.js-dist-min';
 import { downloadExportResult } from '../exports.ts';
 import { PlotlyChart } from '../charts/PlotlyChart.tsx';
+import { plotlyText } from '../charts/plotly-text.ts';
 import { groupColors } from '../visualize/visualize-model.ts';
 import {
   asRowsResponse,
@@ -963,13 +964,13 @@ export function profileTraces(
       // SVG, not WebGL: WebKitGTK webviews often lack WebGL.
       type: 'scatter',
       mode: 'lines',
-      name,
+      name: plotlyText(name),
       x: series.x,
       y: series.y,
       connectgaps: false,
       opacity: grouped ? 0.45 : 0.25,
       line: { color: grouped ? colors[i] : '#d62728', width: 1 },
-      hovertemplate: `${name}<br>%{x}: %{y}<extra></extra>`,
+      hovertemplate: `${plotlyText(name)}<br>%{x}: %{y}<extra></extra>`,
     } as Data;
   });
 }

@@ -214,6 +214,15 @@ test('profile traces draw one gapped line per sample, grouped, log-safe', () => 
   assert.deepEqual(traces[1]!.y, [5, null]);
 });
 
+test('profile group names reach Plotly as text, not pseudo-HTML or template fields', () => {
+  const [trace] = profileTraces([{ rowid: 1, element: 'as', value: 3, group_label: '<b>A</b> 5%{y}' }], true) as {
+    name: string;
+    hovertemplate: string;
+  }[];
+  assert.equal(trace!.name, '&lt;b&gt;A&lt;/b&gt; 5&#37;{y}');
+  assert.ok(trace!.hovertemplate.startsWith('&lt;b&gt;A&lt;/b&gt; 5&#37;{y}<br>'));
+});
+
 test('large dataset tables draw only the rows in view', async () => {
   const deps = makeDeps();
   const base = await deps.groups.rows('groups/Baca.parquet');

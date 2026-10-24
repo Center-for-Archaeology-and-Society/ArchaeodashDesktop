@@ -10,6 +10,7 @@ import { useEffect, useRef, useState, type ReactElement } from 'react';
 import type { Data, Layout } from 'plotly.js-dist-min';
 import { plotTheme } from '../charts/PlotlyChart.tsx';
 import { PlotSaveButtons } from '../ui/PlotSave.tsx';
+import { plotlyText } from '../charts/plotly-text.ts';
 
 export interface ScatterPoint {
   readonly uuid: string;
@@ -118,7 +119,7 @@ export function VisualizeScatter({
           wrapped.push({
             type: 'scatter',
             mode: 'lines',
-            name: `${t.name} ellipse`,
+            name: `${plotlyText(t.name)} ellipse`,
             x: [...t.ellipse.px],
             y: [...t.ellipse.py],
             line: { color: t.color, width: 1.5 },
@@ -133,7 +134,8 @@ export function VisualizeScatter({
           name: t.name,
           x: t.points.map((p) => p.x),
           y: t.points.map((p) => p.y),
-          text: t.showLabels ? t.points.map((p) => p.label) : undefined,
+          // SVG text is pseudo-HTML (escape user labels); WebGL text is plain.
+          text: t.showLabels ? t.points.map((p) => (pointType === 'scatter' ? plotlyText(p.label) : p.label)) : undefined,
           customdata: t.points.map((p) => [p.uuid, p.hover]),
           textposition: 'top center',
           // Hover shows the display label and group, never the uuid.
@@ -154,7 +156,7 @@ export function VisualizeScatter({
         wrapped.push({
           type: 'scatter',
           mode: 'markers',
-          name: t.name,
+          name: plotlyText(t.name),
           x: [null],
           y: [null],
           legendgroup: t.name,
@@ -166,7 +168,7 @@ export function VisualizeScatter({
         wrapped.push({
           type: 'scatter',
           mode: 'markers',
-          name: entry.name,
+          name: plotlyText(entry.name),
           x: [null],
           y: [null],
           legendgroup: '__symbols__',

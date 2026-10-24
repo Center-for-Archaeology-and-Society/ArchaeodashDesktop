@@ -40,6 +40,7 @@ import {
   type Selection,
 } from './visualize-model.ts';
 import { moveAcrossSources } from '../clustering/multi-source-move.ts';
+import { plotlyText } from '../charts/plotly-text.ts';
 import { ValueMultiSelect } from './ValueMultiSelect.tsx';
 import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
 import { TableCard } from '../ui/TableExport.tsx';
@@ -421,7 +422,9 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
         x,
         y,
         label,
-        hover: hoverLines.join('<br>'),
+        // IDs, metadata and names are user data: escaped so Plotly shows
+        // them as text, not as its pseudo-HTML.
+        hover: hoverLines.map(plotlyText).join('<br>'),
         groupName,
         color: colorOf(groupName),
         symbol,

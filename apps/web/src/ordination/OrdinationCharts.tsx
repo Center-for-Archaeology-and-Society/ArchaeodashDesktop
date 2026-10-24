@@ -6,6 +6,7 @@
 import { useMemo, type ReactElement } from 'react';
 import type { Data, Layout } from 'plotly.js-dist-min';
 import { PlotlyChart } from '../charts/PlotlyChart.tsx';
+import { plotlyText } from '../charts/plotly-text.ts';
 import { groupColors } from '../visualize/visualize-model.ts';
 import { TableCard, num, type TableSheet } from '../ui/TableExport.tsx';
 import {
@@ -86,7 +87,7 @@ export function PcaVariablesPlot({
     const y = variableCoords(rotation, sdev, 1);
     const contrib = variableContrib(rotation, sdev, 0, 1);
     const t = normalize(contrib);
-    const labels = rotation.map((_, j) => names[j] ?? `Column ${j + 1}`);
+    const labels = rotation.map((_, j) => plotlyText(names[j] ?? `Column ${j + 1}`));
     const points: Data = {
       type: 'scatter',
       mode: 'text+markers',
@@ -178,7 +179,7 @@ export function LdaVectorPlot({
       mode: 'text',
       x,
       y,
-      text: vectors.map((v) => v.variable),
+      text: vectors.map((v) => plotlyText(v.variable)),
       textposition: x.map((v) => (v >= 0 ? 'middle right' : 'middle left')),
       textfont: { color: '#AA0317', size: 13 },
       hovertemplate: `%{text}<br>${axisNames[0]}: %{x:.3f}<br>${axisNames[1]}: %{y:.3f}<extra></extra>`,
@@ -213,13 +214,13 @@ export function LdaStripPlot({
     const traces = byGroup.map(([name, idx], gi) => ({
       type: 'box',
       orientation: 'h',
-      name,
+      name: plotlyText(name),
       x: idx.map((i) => values[i]),
-      text: idx.map((i) => ids?.[i] || `Row ${i + 1}`),
+      text: idx.map((i) => plotlyText(ids?.[i] || `Row ${i + 1}`)),
       boxpoints: 'all',
       jitter: 0.5,
       pointpos: 0,
-      hovertemplate: `%{text} · ${name}<br>${axisName}: %{x:.3f}<extra></extra>`,
+      hovertemplate: `%{text} · ${plotlyText(name)}<br>${axisName}: %{x:.3f}<extra></extra>`,
       marker: { color: colors[gi], size: 6, opacity: 0.8 },
       line: { color: colors[gi] },
       fillcolor: 'rgba(0,0,0,0)',
@@ -248,7 +249,7 @@ export function LdaScalingBars({
     const vectors = ldaVectors(scaling, names);
     const trace = {
       type: 'bar',
-      x: vectors.map((v) => v.variable),
+      x: vectors.map((v) => plotlyText(v.variable)),
       y: vectors.map((v) => v.x),
       marker: { color: '#4A90E2' },
       hovertemplate: `%{x}: %{y:.3f}<extra></extra>`,
