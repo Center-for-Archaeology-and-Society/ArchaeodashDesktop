@@ -66,15 +66,23 @@ export class ActivityTracker {
   /** Counts `promise` as running work under `label` until it settles. */
   track<T>(label: string | null, promise: Promise<T>): Promise<T> {
     if (label === null) return promise;
+    const done = this.begin(label);
+    promise.then(done, done);
+    return promise;
+  }
+
+  /**
+   * Counts work that is not a single promise (e.g. a background job) as
+   * running until the returned function is called; calling it again is a
+   * no-op.
+   */
+  begin(label: string): () => void {
     const id = this.nextId++;
     this.running.set(id, label);
     this.publish();
-    const done = () => {
-      this.running.delete(id);
-      this.publish();
+    return () => {
+      if (this.running.delete(id)) this.publish();
     };
-    promise.then(done, done);
-    return promise;
   }
 
   snapshot = (): ActivitySnapshot => this.current;
@@ -92,6 +100,92 @@ export class ActivityTracker {
 }
 
 export const activity = new ActivityTracker();
+
+/** The fields of an analysis job snapshot that job tracking reads. */
+export interface JobStatus {
+  readonly id: string;
+  readonly state: string;
+  readonly error?: { readonly message?: string } | null;
+}
+
+function isJobStatus(value: unknown): value is JobStatus {
+  if (typeof value !== 'object' || value === null) return false;
+  const job = value as Record<string, unknown>;
+  return typeof job.id === 'string' && typeof job.state === 'string';
+}
+
+/**
+ * Background analysis jobs as activity. Submitting a job returns at once,
+ * so the job is counted from the first snapshot that shows it queued or
+ * running until a snapshot shows it finished (the analysis page polls until
+ * then). `onFinish` runs once per job that was seen running, with how long
+ * it was tracked. A job with no snapshot for `staleMs` (its poller went
+ * away) stops counting.
+ */
+export class JobActivity {
+  private readonly open = new Map<string, { end: () => void; timer: ReturnType<typeof setTimeout>; startedMs: number }>();
+  private readonly tracker: ActivityTracker;
+  private readonly onFinish: ((job: JobStatus, elapsedMs: number) => void) | undefined;
+  private readonly staleMs: number;
+  private readonly label = 'Running analysis';
+
+  constructor(tracker: ActivityTracker = activity, onFinish?: (job: JobStatus, elapsedMs: number) => void, staleMs = 30_000) {
+    this.tracker = tracker;
+    this.onFinish = onFinish;
+    this.staleMs = staleMs;
+  }
+
+  /** Feed every job snapshot returned by submit/get/cancel; other values are ignored. */
+  observe(value: unknown): void {
+    if (!isJobStatus(value)) return;
+    const entry = this.open.get(value.id);
+    if (value.state === 'queued' || value.state === 'running') {
+      if (entry) clearTimeout(entry.timer);
+      const end = entry?.end ?? this.tracker.begin(this.label);
+      const timer = setTimeout(() => this.finish(value.id), this.staleMs);
+      (timer as { unref?: () => void }).unref?.();
+      this.open.set(value.id, { end, timer, startedMs: entry?.startedMs ?? Date.now() });
+      return;
+    }
+    if (entry) {
+      this.finish(value.id);
+      this.onFinish?.(value, Date.now() - entry.startedMs);
+    }
+  }
+
+  /** Jobs currently counted as running. */
+  get size(): number {
+    return this.open.size;
+  }
+
+  private finish(id: string): void {
+    const entry = this.open.get(id);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    entry.end();
+    this.open.delete(id);
+  }
+}
+
+/** Jobs at least this long get a "finished" notification. */
+const NOTIFY_SUCCESS_AFTER_MS = 3000;
+
+/**
+ * Notification for a finished job, or `null`: failures always; success only
+ * for long jobs (the user may have moved to another page meanwhile);
+ * nothing for cancellations.
+ */
+export function jobFinishedNotice(job: JobStatus, elapsedMs: number): { kind: 'success' | 'error'; text: string } | null {
+  if (job.state === 'succeeded') return elapsedMs >= NOTIFY_SUCCESS_AFTER_MS ? { kind: 'success', text: 'Analysis finished.' } : null;
+  if (job.state === 'failed') return { kind: 'error', text: `Analysis failed: ${job.error?.message ?? 'unknown error'}` };
+  if (job.state === 'timed_out') return { kind: 'error', text: 'Analysis timed out.' };
+  return null;
+}
+
+/** Tauri commands and HTTP request keys whose results are job snapshots. */
+export function returnsJobSnapshot(nameOrKey: string): boolean {
+  return /^(submit|get|cancel)_analysis_job$|^(GET|POST) \/api\/v1\/jobs(\/[^/]+(\/cancel)?)?$/.test(nameOrKey);
+}
 
 /**
  * Current activity, shown only after it has lasted `delayMs` (so instant

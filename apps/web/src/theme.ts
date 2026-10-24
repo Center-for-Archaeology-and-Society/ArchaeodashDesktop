@@ -1,8 +1,8 @@
 /**
- * Theme state (Section 9.3): three legacy themes, stored locally, with the
- * server preference applied after hydration so the stored choice always
- * paints first (no legacy startup race that sent the default before the
- * saved preference was read).
+ * Theme state (Section 9.3): three legacy themes, stored locally. Hosted:
+ * the server preference is applied after hydration so the stored choice
+ * always paints first (no legacy startup race that sent the default before
+ * the saved preference was read). Desktop: local storage only.
  */
 import { normalizeTheme, themeCssVariables, themes, themeStorageKey, type ThemeName, type Transport } from '@archaeodash/client';
 
@@ -41,11 +41,33 @@ export function applyTheme(theme: ThemeName): void {
 }
 
 /**
- * Hydration: ask the backend for the persisted theme preference; when present
- * it wins over the local choice (server preference after hydration), matching
- * the legacy `theme_preference` restore message.
+ * Whether the theme is synced with the backend. The desktop app keeps the
+ * choice in local storage only (Section 9.3): its preferences live inside
+ * each project folder, so a per-project copy would go stale and repaint the
+ * app on every reload or project switch.
  */
-export async function hydrateTheme(transport: Transport, current: ThemeName): Promise<ThemeName> {
+export function themeSyncsWithBackend(transport: Pick<Transport, 'kind'>): boolean {
+  return transport.kind !== 'tauri';
+}
+
+/** Saves a theme choice to the backend preference (hosted only). */
+export async function saveThemePreference(transport: Pick<Transport, 'kind' | 'preferences'>, theme: ThemeName): Promise<void> {
+  if (!themeSyncsWithBackend(transport)) return;
+  try {
+    await transport.preferences.put('theme', theme);
+  } catch {
+    /* offline: the local choice still stands */
+  }
+}
+
+/**
+ * Hydration (hosted): ask the backend for the persisted theme preference;
+ * when present it wins over the local choice (server preference after
+ * hydration), matching the legacy `theme_preference` restore message. The
+ * desktop app keeps the local choice.
+ */
+export async function hydrateTheme(transport: Pick<Transport, 'kind' | 'preferences'>, current: ThemeName): Promise<ThemeName> {
+  if (!themeSyncsWithBackend(transport)) return current;
   try {
     const { preferences } = await transport.preferences.get();
     const entry = preferences.find((p) => p.key === 'theme');

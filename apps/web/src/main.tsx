@@ -4,7 +4,7 @@
  * async resolves, then hydrate the persisted theme preference without the
  * legacy startup race.
  */
-import { StrictMode, useEffect, useRef, useState, type ReactElement } from 'react';
+import { StrictMode, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createBrowserRouter, Navigate, Outlet, RouterProvider, type RouteObject } from 'react-router';
 import type { AppInfo, Transport } from '@archaeodash/client';
@@ -15,8 +15,10 @@ import { DataCacheProvider } from './datasets/DataCache.tsx';
 import { ExportsProvider } from './ui/TableExport.tsx';
 import {
   HelpPage,
+  HelpWindow,
   HomePage,
   PrivacyPage,
+  ShellInfoContext,
   TermsPage,
 } from './shell/routes.tsx';
 import {
@@ -29,8 +31,12 @@ import { ExplorePage, type ExploreDeps } from './explore/ExplorePage.tsx';
 import { OrdinationPage, type OrdinationDeps } from './ordination/OrdinationPage.tsx';
 import { VisualizePage, type VisualizeDeps } from './visualize/VisualizePage.tsx';
 import { AnalysisPage, type AnalysisDeps } from './clustering/AnalysisPage.tsx';
-import { applyTheme, hydrateTheme, readStoredTheme } from './theme.ts';
+import { applyTheme, hydrateTheme, normalizeTheme, readStoredTheme, saveThemePreference, themeStorageKey } from './theme.ts';
+import { AppErrorPage } from './ui/ErrorBoundary.tsx';
+import { HELP_WINDOW_PATH, revealLogFolder } from './ui/external.tsx';
+import { errorText, notify } from './ui/toast-store.ts';
 import { createTransport } from './transport.ts';
+import './shell/shell.css';
 
 function AppRoot({ transport }: { transport: Transport }): ReactElement {
   const [theme, setTheme] = useState<string>(() => readStoredTheme());
@@ -50,6 +56,7 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
       .catch(() => {
         /* offline/unready: the shell still renders */
       });
+    // Hosted only: the desktop theme lives in local storage (theme.ts).
     void hydrateTheme(transport, readStoredTheme()).then((hydrated) => {
       if (!cancelled) setTheme(hydrated);
     });
@@ -86,7 +93,11 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
     return () => { cancelled = true; };
   }, [transport]);
 
+  const desktop = transport.kind === 'tauri';
+  const shellInfo = useMemo(() => ({ appInfo, desktop }), [appInfo, desktop]);
+
   return (
+    <ShellInfoContext.Provider value={shellInfo}>
     <ExportsProvider service={transport.exports}>
     <AnalysisSetupProvider service={transport.transformations} generation={projectGeneration}>
     <GroupInclusionProvider key={projectPath} projectKey={projectPath || 'default'}>
@@ -94,14 +105,14 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
     <AppShell
       theme={theme}
       onThemeChange={(next) => {
-        setTheme(next);
-        applyTheme(next as Parameters<typeof applyTheme>[0]);
+        const chosen = normalizeTheme(next);
+        setTheme(chosen);
+        applyTheme(chosen);
         // Section 10.1: theme is an allowlisted persisted preference; local
-        // choice paints immediately, the server upsert follows.
-        void transport.preferences.put('theme', next).catch(() => {
-          /* offline: the local choice still stands */
-        });
+        // choice paints immediately, the server upsert follows (hosted only).
+        void saveThemePreference(transport, chosen);
       }}
+      onShowLogFolder={desktop ? showLogFolder : undefined}
       appInfo={appInfo}
       projects={transport.projects}
       dataManager={transport}
@@ -120,7 +131,30 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
     </GroupInclusionProvider>
     </AnalysisSetupProvider>
     </ExportsProvider>
+    </ShellInfoContext.Provider>
   );
+}
+
+function showLogFolder(): void {
+  void revealLogFolder().catch((error: unknown) => notify({ kind: 'error', text: `Could not open the log folder: ${errorText(error)}` }));
+}
+
+/** Hosted-only routes: accounts, hosted projects, and email links. */
+function hostedRoutes(transport: Transport): RouteObject[] {
+  return [
+    { path: 'account', element: <AccountPage auth={transport.auth} /> },
+    {
+      path: 'projects',
+      element: (
+        <HostedProjectsPage
+          projects={transport.hostedProjects}
+          files={transport.hostedFiles}
+        />
+      ),
+    },
+    { path: 'auth/verify', element: <VerifyEmailPage auth={transport.auth} /> },
+    { path: 'auth/reset', element: <ResetPasswordPage auth={transport.auth} /> },
+  ];
 }
 
 function routeChildren(deps: ExploreDeps, ordinationDeps: OrdinationDeps, visualizeDeps: VisualizeDeps, analysisDeps: AnalysisDeps, transport: Transport): RouteObject[] {
@@ -134,22 +168,13 @@ function routeChildren(deps: ExploreDeps, ordinationDeps: OrdinationDeps, visual
     { path: 'cluster', element: <AnalysisPage key="cluster" kind="cluster" deps={analysisDeps} /> },
     { path: 'probabilities', element: <AnalysisPage key="membership" kind="membership" deps={analysisDeps} /> },
     { path: 'euclidean', element: <AnalysisPage key="euclidean" kind="euclidean" deps={analysisDeps} /> },
-    { path: 'info', element: <HelpPage /> },
+    // One Help page (two kept-alive copies would duplicate heading ids).
+    { path: 'info', element: <Navigate to="/info/help" replace /> },
     { path: 'info/help', element: <HelpPage /> },
     { path: 'info/terms', element: <TermsPage /> },
     { path: 'info/privacy', element: <PrivacyPage /> },
-    { path: 'account', element: <AccountPage auth={transport.auth} /> },
-    {
-      path: 'projects',
-      element: (
-        <HostedProjectsPage
-          projects={transport.hostedProjects}
-          files={transport.hostedFiles}
-        />
-      ),
-    },
-    { path: 'auth/verify', element: <VerifyEmailPage auth={transport.auth} /> },
-    { path: 'auth/reset', element: <ResetPasswordPage auth={transport.auth} /> },
+    // The desktop app has no hosted accounts or hosted projects.
+    ...(transport.kind === 'tauri' ? [] : hostedRoutes(transport)),
     { path: '*', element: <HomePage /> },
   ];
 }
@@ -172,7 +197,12 @@ export function createAppRouter(transport: Transport) {
     exports: transport.exports,
   };
   return createBrowserRouter([
-    { element: <AppRoot transport={transport} />, children: routeChildren(exploreDeps, ordinationDeps, visualizeDeps, transport, transport) },
+    {
+      element: <AppRoot transport={transport} />,
+      // Last resort for errors outside a page (pages have their own boundary).
+      errorElement: <AppErrorPage />,
+      children: routeChildren(exploreDeps, ordinationDeps, visualizeDeps, transport, transport),
+    },
   ]);
 }
 
@@ -180,6 +210,20 @@ export async function boot(rootEl: Element | null): Promise<void> {
   if (!rootEl) throw new Error('missing #root');
   // Paint the stored theme before anything async resolves (Section 9.3).
   applyTheme(readStoredTheme());
+  if (window.location.pathname === HELP_WINDOW_PATH) {
+    // The separate Help window: static help only, no backend. Follow theme
+    // changes made in the main window (same origin, shared local storage).
+    window.addEventListener('storage', (event) => {
+      if (event.key === themeStorageKey) applyTheme(normalizeTheme(event.newValue));
+    });
+    document.title = 'ArchaeoDash Help';
+    createRoot(rootEl).render(
+      <StrictMode>
+        <HelpWindow />
+      </StrictMode>,
+    );
+    return;
+  }
   const transport = await createTransport();
   const router = createAppRouter(transport);
   createRoot(rootEl).render(
