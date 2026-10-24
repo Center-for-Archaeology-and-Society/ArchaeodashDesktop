@@ -44,6 +44,7 @@ import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
 import { useCachedResult, useDataCache } from '../datasets/DataCache.tsx';
 import { analysisInput } from '../analysis-setup/setup.ts';
 import { missingProfile } from './missing.ts';
+import { nextSort, sameSortKey, tableOrder, type SortKey, type SortState } from './tableView.ts';
 import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
 import { TableCard, num, type TableSheet } from '../ui/TableExport.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
@@ -95,9 +96,23 @@ export function DataTable({
   onReload: () => void;
 }): ReactElement {
   const combined = useMemo(() => combineGroupFiles(files), [files]);
+  // Global search and column sort (legacy DT table). The order lists
+  // indexes into combined.rows, so edits still reach the right row.
+  const [query, setQuery] = useState('');
+  const [sort, setSort] = useState<SortState | null>(null);
+  const order = useMemo(
+    () =>
+      tableOrder(combined.rows, combined.descriptiveColumns.length, query, sort, (row, i) => {
+        const key = cellKey(row.analytical_uuid, combined.descriptiveColumns[i] ?? '');
+        // Saved edits count; the order is recomputed when the search or sort
+        // changes, not on every save, so an edited row stays in place.
+        return autosave.saved.has(key) ? (autosave.saved.get(key) ?? null) : (row.descriptive[i] ?? null);
+      }),
+    [combined, query, sort, autosave],
+  );
   // Large tables render only the rows in view (plus a margin), so scrolling
   // and typing stay fast however many rows are loaded.
-  const total = combined.rows.length;
+  const total = order.length;
   const virtual = total > VIRTUALIZE_FROM;
   const scrollRef = useRef<HTMLDivElement>(null);
   const [rowHeight, setRowHeight] = useState(DEFAULT_ROW_HEIGHT);
@@ -116,9 +131,14 @@ export function DataTable({
     if (row && row.offsetHeight > 0 && Math.abs(row.offsetHeight - rowHeight) > 0.5) setRowHeight(row.offsetHeight);
     updateWindow();
   }, [virtual, rowHeight, updateWindow]);
+  // A new search or sort starts from the top of the table.
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+    setWindowStart(0);
+  }, [query, sort]);
   const first = virtual ? Math.min(windowStart, Math.max(0, total - windowSize)) : 0;
   const last = virtual ? Math.min(total, first + windowSize) : total;
-  const visibleRows = virtual ? combined.rows.slice(first, last) : combined.rows;
+  const visibleRows = virtual ? order.slice(first, last) : order;
   const columnCount = 2 + combined.descriptiveColumns.length + combined.elementalColumns.length;
   // Drafts key on uuid+NUL+column (the UUID itself is never rendered).
   const [drafts, setDrafts] = useState<Map<string, string>>(new Map());
@@ -258,6 +278,27 @@ export function DataTable({
         </p>
       )}
       {exportError && <p role="alert">Export failed: {exportError}</p>}
+      <div className="toolbar-row table-search">
+        <label className="field field-inline">
+          Search
+          <input
+            type="search"
+            value={query}
+            placeholder="Filter rows"
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </label>
+        {query.trim() !== '' && (
+          <span role="status" className="muted">
+            {`${total.toLocaleString()} of ${combined.rows.length.toLocaleString()} rows match`}
+          </span>
+        )}
+        {sort && (
+          <button type="button" className="btn btn-sm" onClick={() => setSort(null)}>
+            Clear sort
+          </button>
+        )}
+      </div>
       {virtual && (
         <p className="table-window-note">
           {`${total.toLocaleString()} rows; scroll the table to see more (rows ${(first + 1).toLocaleString()}–${last.toLocaleString()} are drawn).`}
@@ -271,15 +312,21 @@ export function DataTable({
         <table className="data-table" aria-rowcount={total + 1}>
           <thead>
             <tr>
-              <th>{combined.visibleIdColumn}</th>
-              <th>{combined.legacyRowidColumn}</th>
-              {combined.descriptiveColumns.map((c) => (
-                <th key={c}>{c}</th>
+              <SortHeader label={combined.visibleIdColumn} sortKey={{ kind: 'visible_id' }} sort={sort} onSort={setSort} />
+              <SortHeader label={combined.legacyRowidColumn} sortKey={{ kind: 'legacy_rowid' }} sort={sort} onSort={setSort} />
+              {combined.descriptiveColumns.map((c, index) => (
+                <SortHeader key={c} label={c} sortKey={{ kind: 'descriptive', index }} sort={sort} onSort={setSort} />
               ))}
-              {combined.elementalColumns.map((c) => (
-                <th key={c} className="locked-col" title="Measured elemental values are read-only">
-                  {c}
-                </th>
+              {combined.elementalColumns.map((c, index) => (
+                <SortHeader
+                  key={c}
+                  label={c}
+                  sortKey={{ kind: 'elemental', index }}
+                  sort={sort}
+                  onSort={setSort}
+                  className="locked-col"
+                  title="Measured elemental values are read-only"
+                />
               ))}
             </tr>
           </thead>
@@ -289,13 +336,14 @@ export function DataTable({
                 <td colSpan={columnCount} />
               </tr>
             )}
-            {visibleRows.map((row, offset) => {
-              const rowIndex = first + offset;
+            {visibleRows.map((rowIndex, offset) => {
+              const row = combined.rows[rowIndex]!;
+              const position = first + offset;
               const path = combined.pathOf[rowIndex]!;
               const own = fileOf.get(path)?.data.descriptive_columns ?? [];
               const rowLabel = row.visible_id ?? `row ${rowIndex + 1}`;
               return (
-                <tr key={row.analytical_uuid} data-row aria-rowindex={rowIndex + 2}>
+                <tr key={row.analytical_uuid} data-row aria-rowindex={position + 2}>
                   <td>{row.visible_id ?? ''}</td>
                   <td>{row.legacy_rowid ?? ''}</td>
                   {row.descriptive.map((value, i) => {
@@ -365,8 +413,66 @@ export function DataTable({
           </tbody>
         </table>
       </div>
+      {total === 0 && combined.rows.length > 0 && <p className="muted">No rows match the search.</p>}
     </div>
   );
+}
+
+/** Column header that sorts the table: ascending, descending, then file order. */
+function SortHeader({
+  label,
+  sortKey,
+  sort,
+  onSort,
+  className,
+  title,
+}: {
+  label: string;
+  sortKey: SortKey;
+  sort: SortState | null;
+  onSort: (next: SortState | null) => void;
+  className?: string;
+  title?: string;
+}): ReactElement {
+  const active = sort !== null && sameSortKey(sort.key, sortKey) ? sort.dir : null;
+  return (
+    <th
+      className={className}
+      title={title}
+      aria-sort={active === 'asc' ? 'ascending' : active === 'desc' ? 'descending' : undefined}
+    >
+      <button type="button" className="sort-header" onClick={() => onSort(nextSort(sort, sortKey))}>
+        {label}
+        <span className="sort-indicator" aria-hidden="true">
+          {active === 'asc' ? '▲' : active === 'desc' ? '▼' : ''}
+        </span>
+      </button>
+    </th>
+  );
+}
+
+/**
+ * Keeps a select's value among its options: when the options change (for
+ * example the Analysis setup drops an element), a value no longer offered
+ * falls back to `fallback` if offered, else the first option.
+ */
+export function validChoice(value: string, options: readonly string[], fallback = ''): string {
+  if (options.includes(value)) return value;
+  if (options.includes(fallback)) return fallback;
+  return options[0] ?? '';
+}
+
+function useValidChoice(
+  options: readonly string[],
+  initial: string | (() => string),
+  fallback = '',
+): [string, (v: string) => void] {
+  const [value, setValue] = useState(initial);
+  const effective = validChoice(value, options, fallback);
+  useEffect(() => {
+    if (effective !== value) setValue(effective);
+  }, [effective, value]);
+  return [effective, setValue];
 }
 
 /** Request input over the selected group files. */
@@ -384,6 +490,22 @@ export function exploreKey(kind: string, revKey: string, request: unknown): stri
  */
 export function MissingView({ combined, columns }: { combined: CombinedRows; columns: string[] }): ReactElement {
   const rows = useMemo(() => missingProfile(combined, columns), [combined, columns]);
+  const traces = useMemo(() => missingBarTraces(rows), [rows]);
+  const layout = useMemo(
+    () => ({
+      barmode: 'stack' as const,
+      xaxis: { title: { text: 'Missing rows' }, rangemode: 'tozero' as const },
+      yaxis: {
+        title: { text: 'Features' },
+        categoryorder: 'array' as const,
+        categoryarray: rows.map((r) => r.feature),
+        automargin: true,
+      },
+      legend: { orientation: 'h' as const, y: 1.08, x: 0 },
+      showlegend: true,
+    }),
+    [rows],
+  );
   if (rows.length === 0) return <p>Choose a dataset first.</p>;
   const sheet: TableSheet = {
     name: 'Missing values',
@@ -391,6 +513,16 @@ export function MissingView({ combined, columns }: { combined: CombinedRows; col
     rows: rows.map((r) => [r.feature, r.num_missing, num(r.pct_missing * 100), r.band]),
   };
   return (
+    <div className="results">
+    <section className="card">
+      <PlotlyChart
+        data={traces}
+        layout={layout}
+        ariaLabel="Missing rows by feature"
+        saveName="Missing values"
+        height={Math.max(260, 22 * rows.length + 110)}
+      />
+    </section>
     <TableCard title="Missing values" fileName="Missing values" sheets={() => [sheet]} note={`${combined.rows.length} rows. Bands: Good ≤ 5%, OK ≤ 40%, Bad ≤ 80%, else Remove.`}>
     <table className="data-table missing-table">
       <thead>
@@ -413,15 +545,68 @@ export function MissingView({ combined, columns }: { combined: CombinedRows; col
       </tbody>
     </table>
     </TableCard>
+    </div>
   );
 }
 
+/** Band fill colors for the missing-value chart (Good, OK, Bad, Remove). */
+export const BAND_COLORS: Readonly<Record<string, string>> = {
+  Good: '#1f8a63',
+  OK: '#3b6fd8',
+  Bad: '#d9822b',
+  Remove: '#c8423b',
+};
+
+/**
+ * Legacy `plot_missing`: horizontal bars of missing rows per feature, filled
+ * by band, one trace per band present (in band order) so the legend lists
+ * the bands. Features keep the profile order (most missing first, drawn at
+ * the bottom as with `coord_flip`).
+ */
+export function missingBarTraces(
+  rows: readonly { feature: string; num_missing: number; pct_missing: number; band: string }[],
+): Data[] {
+  return Object.keys(BAND_COLORS)
+    .map((band) => ({ band, rows: rows.filter((r) => r.band === band) }))
+    .filter((b) => b.rows.length > 0)
+    .map(
+      ({ band, rows: bandRows }) =>
+        ({
+          type: 'bar',
+          orientation: 'h',
+          name: band,
+          y: bandRows.map((r) => r.feature),
+          x: bandRows.map((r) => r.num_missing),
+          text: bandRows.map((r) => (Number.isNaN(r.pct_missing) ? 'NA' : `${(r.pct_missing * 100).toFixed(1)}%`)),
+          textposition: 'none',
+          hovertemplate: `%{y}: %{x} missing (%{text}, ${band})<extra></extra>`,
+          marker: { color: BAND_COLORS[band] },
+        }) as Data,
+    );
+}
+
 const DEFAULT_BINS = 30;
+const MIN_BINS = 2;
+const MAX_BINS = 100;
+
+/** Bin count typed in the histogram field: a whole number 2–100, else null. */
+export function parseBins(text: string): number | null {
+  const t = text.trim();
+  if (!/^\d+$/.test(t)) return null;
+  const n = Number(t);
+  return n >= MIN_BINS && n <= MAX_BINS ? n : null;
+}
+
+/** Short label for a bin edge (hover text). */
+function edgeLabel(v: number | undefined): string {
+  return v === undefined ? '' : String(Number(v.toPrecision(6)));
+}
 /** Largest profile (rows × elements) warmed in the background. */
 const PROFILE_WARMUP_CELLS = 250_000;
 
+/** Equal-width bins (legacy ggplot `geom_histogram(bins = n)`): exactly n bars. */
 function histogramRequest(input: InputPaths, column: string, bins: number) {
-  return { ...input, column, bins, transformation: null };
+  return { ...input, column, bins, binning: 'equal_width' as const, transformation: null };
 }
 
 function profileRequest(input: InputPaths, columns: string[], groupColumn: string) {
@@ -476,8 +661,14 @@ function HistogramView({
   columns: string[];
   revKey: string;
 }): ReactElement {
-  const [column, setColumn] = useState(columns[0] ?? '');
+  const [column, setColumn] = useValidChoice(columns, columns[0] ?? '');
+  // The typed text is kept as is (it may be empty or out of range while
+  // typing); the plot uses the last valid bin count.
+  const [binsText, setBinsText] = useState(String(DEFAULT_BINS));
   const [bins, setBins] = useState(DEFAULT_BINS);
+  const [binsTouched, setBinsTouched] = useState(false);
+  const binsInvalid = parseBins(binsText) === null;
+  const showBinsError = binsInvalid && (binsTouched || binsText.trim() !== '');
   const request = useMemo(() => histogramRequest(input, column, bins), [input, column, bins]);
   const state: AsyncState<ExploreHistogramResponse> = useCachedResult(
     column ? exploreKey('histogram', revKey, request) : null,
@@ -492,7 +683,7 @@ function HistogramView({
       x: counts.map((_, i) => ((breaks[i] ?? 0) + (breaks[i + 1] ?? 0)) / 2),
       y: counts,
       width: counts.map((_, i) => (breaks[i + 1] ?? 0) - (breaks[i] ?? 0)),
-      text: counts.map((c, i) => `${breaks[i]}–${breaks[i + 1]}: ${c}`),
+      text: counts.map((c, i) => `${edgeLabel(breaks[i])}–${edgeLabel(breaks[i + 1])}: ${c}`),
       textposition: 'none',
       hovertemplate: '%{text}<extra></extra>',
       marker: { color: '#1f8a63', line: { color: 'rgba(255,255,255,0.6)', width: 1 } },
@@ -521,12 +712,26 @@ function HistogramView({
         Bins (2–100)
         <input
           type="number"
-          min={2}
-          max={100}
-          value={bins}
-          onChange={(e) => setBins(Math.min(100, Math.max(2, Number(e.target.value) || DEFAULT_BINS)))}
+          min={MIN_BINS}
+          max={MAX_BINS}
+          step={1}
+          value={binsText}
+          aria-invalid={showBinsError ? true : undefined}
+          aria-describedby={showBinsError ? 'explore-bins-error' : undefined}
+          onChange={(e) => {
+            const text = e.target.value;
+            setBinsText(text);
+            const n = parseBins(text);
+            if (n !== null) setBins(n);
+          }}
+          onBlur={() => setBinsTouched(true)}
         />
       </label>
+      {showBinsError && (
+        <span id="explore-bins-error" role="alert" className="explore-field-error">
+          {`Enter a whole number from ${MIN_BINS} to ${MAX_BINS}; showing ${bins} bins.`}
+        </span>
+      )}
       </div>
       {state.kind === 'loading' && <BusyNote>Computing histogram…</BusyNote>}
       {state.kind === 'error' && <p role="alert">Error: {state.message}</p>}
@@ -553,10 +758,15 @@ function CrosstabView({
   defaultGroupColumn: string;
   revKey: string;
 }): ReactElement {
-  const [groupColumn, setGroupColumn] = useState(defaultGroupColumn);
+  // Any column can group (legacy crosstab selects listed every column).
+  const allColumns = useMemo(
+    () => data.descriptive_columns.concat(data.elemental_columns),
+    [data.descriptive_columns, data.elemental_columns],
+  );
+  const [groupColumn, setGroupColumn] = useValidChoice(allColumns, defaultGroupColumn, defaultGroupColumn);
   // Default to the first other descriptive field with two or more distinct
   // non-missing values; an all-missing column makes an empty-looking table.
-  const [valueColumn, setValueColumn] = useState(() => {
+  const [valueColumn, setValueColumn] = useValidChoice(allColumns, () => {
     const informative = data.descriptive_columns.find((c, i) => {
       if (c === defaultGroupColumn) return false;
       const seen = new Set<string>();
@@ -591,7 +801,7 @@ function CrosstabView({
       <label className="field field-inline">
         Group field
         <select value={groupColumn} onChange={(e) => setGroupColumn(e.target.value)}>
-          {data.descriptive_columns.map((c) => (
+          {allColumns.map((c) => (
             <option key={c} value={c}>
               {c}
             </option>
@@ -601,7 +811,7 @@ function CrosstabView({
       <label className="field field-inline">
         Second field
         <select value={valueColumn} onChange={(e) => setValueColumn(e.target.value)}>
-          {data.descriptive_columns.concat(data.elemental_columns).map((c) => (
+          {allColumns.map((c) => (
             <option key={c} value={c}>
               {c}
             </option>
@@ -637,7 +847,7 @@ function CrosstabView({
             {state.data.rows.map((row, i) => (
               <tr key={i}>
                 <td>{row.group ?? '(Missing)'}</td>
-                <td>{row.result === null ? '(Missing)' : row.result.toFixed(3)}</td>
+                <td>{row.result === null ? '(Missing)' : row.result.toFixed(2)}</td>
               </tr>
             ))}
           </tbody>
@@ -750,7 +960,8 @@ function ProfileView({
   defaultGroupColumn: string;
   revKey: string;
 }): ReactElement {
-  const [groupColumn, setGroupColumn] = useState(defaultGroupColumn);
+  const groupOptions = useMemo(() => [''].concat(groupColumns), [groupColumns]);
+  const [groupColumn, setGroupColumn] = useValidChoice(groupOptions, defaultGroupColumn, defaultGroupColumn);
   const [logScale, setLogScale] = useState(true);
   const request = useMemo(() => profileRequest(input, columns, groupColumn), [input, columns, groupColumn]);
   const state: AsyncState<ExploreCompositionalProfileResponse> = useCachedResult(
@@ -808,7 +1019,7 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
   const data = useMemo(() => asRowsResponse(files, combined), [files, combined]);
   // Plots use the Analysis setup's elements; values stay as measured here.
   const { setup } = useAnalysisSetup();
-  const plotColumns = useMemo(() => analysisInput(setup, combined.elementalColumns).columns, [setup, combined.elementalColumns]);
+  const plotColumns = useMemo(() => analysisInput(setup, combined.elementalColumns).elements, [setup, combined.elementalColumns]);
   // One autosave (and undo history) per loaded set of files, kept while you
   // switch Explore tabs. Saves update revisions in place, without reloading.
   const autosave = useMemo(

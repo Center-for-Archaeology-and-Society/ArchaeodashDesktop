@@ -2571,6 +2571,7 @@ mod tests {
                             extra_paths: vec![],
                             column: "as".into(),
                             bins: 2,
+                            binning: Default::default(),
                             transformation: None,
                         })
                         .unwrap(),

@@ -289,6 +289,117 @@ pub fn histogram(values: &[f64], bins: usize) -> Result<(Vec<f64>, Vec<u64>), Do
     Ok((breaks, bin_count(&finite, &fuzzy)))
 }
 
+/// R `x %% y` for doubles: the remainder takes the sign of the divisor.
+fn r_mod(x: f64, y: f64) -> f64 {
+    x - (x / y).floor() * y
+}
+
+/// `scales::zero_range` with the default `tol = 1000 * .Machine$double.eps`.
+fn zero_range(lo: f64, up: f64) -> bool {
+    if lo == up {
+        return true;
+    }
+    let m = lo.abs().min(up.abs());
+    if m == 0.0 {
+        return false;
+    }
+    ((lo - up) / m).abs() < 1000.0 * f64::EPSILON
+}
+
+/// R `seq.default(from, to, by = by)` for a positive `by`: the `1e-10`
+/// count fuzz, the near-zero-span shortcut, and the final `pmin(x, to)`.
+fn r_seq_by(from: f64, to: f64, by: f64) -> Vec<f64> {
+    let del = to - from;
+    if del == 0.0 && to == 0.0 {
+        return vec![to];
+    }
+    let dd = del.abs() / from.abs().max(to.abs());
+    if dd < 100.0 * f64::EPSILON {
+        return vec![from];
+    }
+    let n = (del / by + 1e-10) as i64;
+    (0..=n).map(|i| (from + i as f64 * by).min(to)).collect()
+}
+
+/// ggplot2 `bin_breaks_bins(range, bins)` followed by `bin_breaks_width`
+/// with no `center`/`boundary`: width `range / (bins - 1)` with the first
+/// bin centred on the minimum (so the data span `bins` bins), a single bin
+/// spanning the range for `bins = 1`, and width `0.1` for a zero range.
+fn ggplot_bin_breaks(lo: f64, up: f64, bins: usize) -> Result<Vec<f64>, DomainError> {
+    let (width, boundary) = if zero_range(lo, up) {
+        (0.1, None)
+    } else if bins == 1 {
+        (up - lo, Some(lo))
+    } else {
+        let mut width = (up - lo) / (bins - 1) as f64;
+        let boundary = lo - width / 2.0;
+        // ggplot2's grid-alignment guard (exact comparison, as in R).
+        let b = r_mod(boundary, width);
+        if r_mod(lo, width) == b || r_mod(up, width) == b {
+            width = (up - lo) / bins as f64;
+        }
+        (width, Some(boundary))
+    };
+    let boundary = boundary.unwrap_or(width / 2.0);
+    let shift = ((lo - boundary) / width).floor();
+    let origin = boundary + shift * width;
+    let max_x = up + (1.0 - 1e-8) * width;
+    if (max_x - origin) / width > 1e6 {
+        return Err(validation(
+            "explore_histogram_bins",
+            "the number of histogram bins must be less than 1,000,000",
+        ));
+    }
+    let mut breaks = r_seq_by(origin, max_x, width);
+    if breaks.len() == 1 {
+        breaks.push(breaks[0] + width);
+    }
+    Ok(breaks)
+}
+
+/// ggplot2 `geom_histogram(bins = n)` (legacy Explore univariate plot):
+/// `n` equal-width bins with the minimum and maximum at the centres of the
+/// outer bins, counted right-closed with `include.lowest` over edges fuzzed
+/// by `1e-8 * median(diff(breaks))`. Non-finite values are dropped (ggplot
+/// removes them with a warning).
+pub fn histogram_bins(values: &[f64], bins: usize) -> Result<(Vec<f64>, Vec<u64>), DomainError> {
+    if bins < 1 {
+        return Err(validation(
+            "explore_histogram_bins",
+            "histogram requires at least one bin",
+        ));
+    }
+    let finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    if finite.is_empty() {
+        return Err(validation(
+            "explore_histogram_empty",
+            "histogram requires at least one finite value",
+        ));
+    }
+    let lo = finite.iter().cloned().fold(f64::INFINITY, f64::min);
+    let up = finite.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let breaks = ggplot_bin_breaks(lo, up, bins)?;
+    let mut diffs: Vec<f64> = breaks.windows(2).map(|w| w[1] - w[0]).collect();
+    diffs.sort_by(|a, b| a.total_cmp(b));
+    let mid = diffs.len() / 2;
+    let median = if diffs.len() % 2 == 1 {
+        diffs[mid]
+    } else {
+        (diffs[mid - 1] + diffs[mid]) / 2.0
+    };
+    let mut fuzz = 1e-8 * median;
+    if !fuzz.is_finite() {
+        fuzz = f64::EPSILON * 1e3;
+    }
+    let fuzzy: Vec<f64> = breaks
+        .iter()
+        .enumerate()
+        .map(|(i, b)| if i == 0 { b - fuzz } else { b + fuzz })
+        .collect();
+    let counts = bin_count(&finite, &fuzzy);
+    Ok((breaks, counts))
+}
+
 /// Crosstab summary method; `count` groups by both columns, the numeric
 /// summaries group by the first column only (legacy `compute_crosstab_summary`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -639,6 +750,58 @@ mod tests {
         let (breaks, counts) = histogram(&[0.0, 0.5, 1.0], 2).expect("histogram");
         assert_eq!(breaks, vec![0.0, 0.5, 1.0]);
         assert_eq!(counts, vec![2, 1]);
+    }
+
+    #[test]
+    fn histogram_bins_gives_exactly_the_requested_bin_count() {
+        // ggplot2 bins = 30 over 0..=29: width 1, first bin centred on 0.
+        let values: Vec<f64> = (0..30).map(f64::from).collect();
+        let (breaks, counts) = histogram_bins(&values, 30).expect("histogram");
+        assert_eq!(counts.len(), 30);
+        assert_eq!(counts, vec![1u64; 30]);
+        assert_eq!(breaks.first().copied(), Some(-0.5));
+        assert_eq!(breaks.last().copied(), Some(29.5));
+
+        // Skewed data still gives exactly n bins, covering every value.
+        let skewed = vec![
+            3.784, 48.188, 1.646, 18.636, 4.306, 2.653, 3.6546, 90.7601, 16.098, 121.0, 3.41, 1.24,
+            46490.0, 8.297, 22.82, 110.2, 1.03, 13.94, 240.7, 1.763, 0.733, 13.35, 74.2, 197.0,
+            64130.0, 487.0, 51110.0, 4.545, 933.0, 658.0, 2.903, 5.524, 103.0, f64::NAN,
+        ];
+        for bins in [2usize, 7, 30, 50, 100] {
+            let (breaks, counts) = histogram_bins(&skewed, bins).expect("histogram");
+            assert_eq!(counts.len(), bins, "bins = {bins}");
+            assert_eq!(breaks.len(), bins + 1);
+            assert_eq!(counts.iter().sum::<u64>(), 33);
+            // Equal widths; min and max sit at the outer bin centres.
+            let width = (64130.0 - 0.733) / (bins - 1) as f64;
+            for w in breaks.windows(2) {
+                assert!(((w[1] - w[0]) - width).abs() < 1e-9 * width);
+            }
+            assert!((breaks[0] - (0.733 - width / 2.0)).abs() < 1e-9 * width);
+        }
+    }
+
+    #[test]
+    fn histogram_bins_is_right_closed_with_ggplot_edges() {
+        // bins = 2 over [0, 2]: width 2, breaks -1, 1, 3; the value on the
+        // interior break falls in the lower bin.
+        let (breaks, counts) = histogram_bins(&[0.0, 1.0, 2.0], 2).expect("histogram");
+        assert_eq!(breaks, vec![-1.0, 1.0, 3.0]);
+        assert_eq!(counts, vec![2, 1]);
+
+        // bins = 1 spans exactly the data range.
+        let (breaks, counts) = histogram_bins(&[2.0, 5.0, 3.0], 1).expect("histogram");
+        assert_eq!(breaks, vec![2.0, 5.0]);
+        assert_eq!(counts, vec![3]);
+
+        // A zero range uses ggplot's 0.1 width and keeps every value.
+        let (breaks, counts) = histogram_bins(&[4.0, 4.0, 4.0], 30).expect("histogram");
+        assert!(breaks.windows(2).all(|w| ((w[1] - w[0]) - 0.1).abs() < 1e-12));
+        assert_eq!(counts.iter().sum::<u64>(), 3);
+
+        assert!(histogram_bins(&[f64::NAN], 10).is_err());
+        assert!(histogram_bins(&[1.0, 2.0], 0).is_err());
     }
 
     #[test]

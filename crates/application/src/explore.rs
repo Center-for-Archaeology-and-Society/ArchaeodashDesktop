@@ -13,7 +13,7 @@ use archaeodash_contracts::{
     ExploreCompositionalProfileRequest, ExploreCompositionalProfileResponse,
     ExploreCrosstabRequest, ExploreCrosstabResponse, ExploreHistogramRequest,
     ExploreHistogramResponse, ExploreMissingProfileRequest, ExploreMissingProfileResponse,
-    MissingProfileRow, TransformationDefinition,
+    HistogramBinning, MissingProfileRow, TransformationDefinition,
 };
 use archaeodash_data_io::{parse_r_numeric, r_format_double, GroupFileData};
 use archaeodash_domain::DomainError;
@@ -156,6 +156,30 @@ impl ExploreService {
         ))
     }
 
+    /// Grouping keys of one crosstab column: descriptive columns as text,
+    /// elemental columns through the R double formatter (the legacy app
+    /// allowed any column as the first crosstab field).
+    fn group_keys(
+        data: &GroupFileData,
+        name: &str,
+        context: &str,
+    ) -> Result<Vec<Option<String>>, DomainError> {
+        if data.profile.roles.descriptive.iter().any(|c| c == name) {
+            return Self::descriptive_column(data, name, context);
+        }
+        if data.profile.roles.elemental.iter().any(|c| c == name) {
+            return Self::count_value_texts(data, name, context);
+        }
+        Err(validation(
+            "missing_group_column",
+            format!("{context}: column {name:?} is not available"),
+        ))
+    }
+
+    fn is_elemental(data: &GroupFileData, name: &str) -> bool {
+        data.profile.roles.elemental.iter().any(|c| c == name)
+    }
+
     /// `profile_missing` band summary (Section 8 procedure 12).
     pub fn missing_profile(
         &self,
@@ -205,7 +229,14 @@ impl ExploreService {
             req.transformation.as_ref(),
             &req.path,
         )?;
-        let (breaks, counts) = archaeodash_analysis::histogram(&matrix.cols[0], req.bins as usize)?;
+        let (breaks, counts) = match req.binning {
+            HistogramBinning::Pretty => {
+                archaeodash_analysis::histogram(&matrix.cols[0], req.bins as usize)?
+            }
+            HistogramBinning::EqualWidth => {
+                archaeodash_analysis::explore::histogram_bins(&matrix.cols[0], req.bins as usize)?
+            }
+        };
         Ok(ExploreHistogramResponse {
             path: req.path.clone(),
             revision_id: data.profile.revision_id.clone(),
@@ -225,13 +256,24 @@ impl ExploreService {
         let input = CombinedInput::read_local(&self.root, &req.path, &req.extra_paths)?;
         input.require_columns([req.group_column.as_str(), req.value_column.as_str()])?;
         let data = input.data;
-        let groups = Self::descriptive_column(&data, &req.group_column, &req.path)?;
+        let groups = Self::group_keys(&data, &req.group_column, &req.path)?;
+        // Measured columns group and sort numerically, as `dplyr` orders a
+        // numeric key; text keys keep the C-locale order.
+        let numeric_group = Self::is_elemental(&data, &req.group_column);
         let method = CrosstabMethod::parse(&req.summary_method)?;
         let rows = match method {
             CrosstabMethod::Count => {
                 let values = Self::count_value_texts(&data, &req.value_column, &req.path)?;
+                let numeric_value = Self::is_elemental(&data, &req.value_column);
+                let mut rows = archaeodash_analysis::crosstab_count(&groups, &values)?;
+                if numeric_group || numeric_value {
+                    rows.sort_by(|a, b| {
+                        key_cmp(&a.group, &b.group, numeric_group)
+                            .then_with(|| key_cmp(&a.value, &b.value, numeric_value))
+                    });
+                }
                 CrosstabRows::Count {
-                    rows: archaeodash_analysis::crosstab_count(&groups, &values)?
+                    rows: rows
                         .into_iter()
                         .map(|r| CrosstabCountRow {
                             group: r.group,
@@ -253,8 +295,11 @@ impl ExploreService {
                         ),
                     ));
                 }
-                let summaries =
+                let mut summaries =
                     archaeodash_analysis::crosstab_value_summary(&groups, &values, method)?;
+                if numeric_group {
+                    summaries.sort_by(|a, b| key_cmp(&a.group, &b.group, true));
+                }
                 CrosstabRows::Summary {
                     result_column: format!("result-{}", req.value_column),
                     rows: summaries
@@ -318,6 +363,25 @@ impl ExploreService {
                 })
                 .collect(),
         })
+    }
+}
+
+/// Crosstab key order: numeric keys by value, text keys by bytes (C
+/// locale), missing keys last.
+fn key_cmp(a: &Option<String>, b: &Option<String>, numeric: bool) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(x), Some(y)) => {
+            if numeric {
+                if let (Some(fx), Some(fy)) = (parse_r_numeric(x), parse_r_numeric(y)) {
+                    return fx.total_cmp(&fy);
+                }
+            }
+            x.as_bytes().cmp(y.as_bytes())
+        }
     }
 }
 
@@ -432,6 +496,78 @@ mod tests {
             })
             .expect_err("unknown column");
         assert!(err.to_string().contains("missing_elemental_column"));
+    }
+
+    #[test]
+    fn crosstab_groups_by_a_measured_column_in_numeric_order() {
+        let (service, dir, path) = service_with_merged_group();
+        let response = service
+            .crosstab(&ExploreCrosstabRequest {
+                path: path.clone(),
+                extra_paths: vec![],
+                group_column: "as".into(),
+                value_column: "fe".into(),
+                summary_method: "mean".into(),
+            })
+            .expect("measured group column");
+        let CrosstabRows::Summary { rows, .. } = response.rows else {
+            panic!("expected summary rows");
+        };
+        let pairs: Vec<(Option<String>, Option<f64>)> =
+            rows.into_iter().map(|r| (r.group, r.result)).collect();
+        let some = |s: &str| Some(s.to_string());
+        // Numeric order (1.5 < 2 < ... < 11), not text order ("11" < "2").
+        assert_eq!(
+            pairs,
+            vec![
+                (some("1.5"), Some(3.0)),
+                (some("2"), Some(4.0)),
+                (some("5"), Some(6.0)),
+                (some("6"), Some(8.0)),
+                (some("9"), Some(1.0)),
+                (some("11"), Some(2.0)),
+            ]
+        );
+
+        let counts = service
+            .crosstab(&ExploreCrosstabRequest {
+                path,
+                extra_paths: vec![],
+                group_column: "fe".into(),
+                value_column: "as".into(),
+                summary_method: "count".into(),
+            })
+            .expect("measured count crosstab");
+        let CrosstabRows::Count { rows } = counts.rows else {
+            panic!("expected count rows");
+        };
+        let groups: Vec<String> = rows.into_iter().filter_map(|r| r.group).collect();
+        assert_eq!(groups, vec!["1", "2", "3", "4", "6", "8"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn histogram_equal_width_returns_the_requested_bin_count() {
+        let (service, dir, path) = service_with_merged_group();
+        let request = |binning| ExploreHistogramRequest {
+            path: path.clone(),
+            extra_paths: vec![],
+            column: "as".into(),
+            bins: 7,
+            binning,
+            transformation: None,
+        };
+        let equal = service
+            .histogram(&request(HistogramBinning::EqualWidth))
+            .expect("equal-width histogram");
+        assert_eq!(equal.counts.len(), 7);
+        assert_eq!(equal.counts.iter().sum::<u64>(), 6);
+        let pretty = service
+            .histogram(&request(HistogramBinning::Pretty))
+            .expect("pretty histogram");
+        assert_eq!(pretty.breaks.len(), pretty.counts.len() + 1);
+        assert_eq!(pretty.counts.iter().sum::<u64>(), 6);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

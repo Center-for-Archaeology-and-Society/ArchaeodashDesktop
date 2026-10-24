@@ -3,7 +3,19 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToString } from 'react-dom/server';
 import type { ExploreService, ExportsService, GroupsService } from '@archaeodash/client';
-import { CrosstabCountTable, ExplorePage, DataTable, MissingView, VIRTUALIZE_FROM, profileTraces, type ExploreDeps } from './ExplorePage.tsx';
+import {
+  BAND_COLORS,
+  CrosstabCountTable,
+  ExplorePage,
+  DataTable,
+  MissingView,
+  VIRTUALIZE_FROM,
+  missingBarTraces,
+  parseBins,
+  profileTraces,
+  validChoice,
+  type ExploreDeps,
+} from './ExplorePage.tsx';
 import { CellAutosave } from './autosave.ts';
 function makeDeps(): ExploreDeps {
   const groups = {
@@ -132,7 +144,7 @@ test('explore renders the legacy view tabs; table hides hidden identity', async 
   assert.ok(!accessible.includes('0197aaaa'), 'missing visible IDs never expose internal UUIDs in accessible labels');
   assert.ok(accessible.includes('for row 1'));
   // The synthetic group column shows each row's group and is read-only.
-  assert.ok(tableHtml.includes('<th>Group</th>'));
+  assert.match(tableHtml, /<th><button type="button" class="sort-header">Group<span class="sort-indicator" aria-hidden="true"><\/span><\/button><\/th>/);
   assert.ok(tableHtml.includes('<td class="locked-col">Baca</td>'));
   // Autosave replaces the save button: undo/redo and a status line instead.
   assert.ok(tableHtml.includes('All changes saved'));
@@ -225,4 +237,54 @@ test('large dataset tables draw only the rows in view', async () => {
   );
   assert.equal(small.match(/data-row="true"/g)?.length, base.rows.length);
   assert.doesNotMatch(small, /table-spacer/);
+});
+
+test('missing view draws a horizontal bar chart filled by band above the table', () => {
+  const row = (elemental: (number | null)[]) => ({ analytical_uuid: 'u', descriptive: [], elemental });
+  const html = renderToString(
+    <MissingView
+      combined={{ visibleIdColumn: 'anid', legacyRowidColumn: 'rowid', descriptiveColumns: ['Group'], elementalColumns: ['Ti', 'Sr'], groupColumn: 'Group', rows: [row([1, null]), row([2, 3])], groupOf: ['A', 'A'], pathOf: ['p', 'p'], groupNames: ['A'] }}
+      columns={['Ti', 'Sr']}
+    />,
+  );
+  assert.ok(html.includes('Missing rows by feature'), 'chart present');
+  assert.ok(html.indexOf('Missing rows by feature') < html.indexOf('missing-table'), 'chart above the table');
+  const traces = missingBarTraces([
+    { feature: 'Sr', num_missing: 9, pct_missing: 0.9, band: 'Remove' },
+    { feature: 'Ni', num_missing: 3, pct_missing: 0.3, band: 'OK' },
+    { feature: 'Ti', num_missing: 0, pct_missing: 0, band: 'Good' },
+    { feature: 'Zn', num_missing: 0, pct_missing: 0, band: 'Good' },
+  ]) as unknown as { name: string; orientation: string; x: number[]; y: string[]; marker: { color: string } }[];
+  // One horizontal trace per band present, in band order, colored by band.
+  assert.deepEqual(traces.map((t) => t.name), ['Good', 'OK', 'Remove']);
+  assert.ok(traces.every((t) => t.orientation === 'h'));
+  assert.deepEqual(traces[0]!.y, ['Ti', 'Zn']);
+  assert.deepEqual(traces[2]!.x, [9]);
+  assert.equal(traces[1]!.marker.color, BAND_COLORS.OK);
+});
+
+test('histogram bins accept whole numbers 2-100 only', () => {
+  assert.equal(parseBins('30'), 30);
+  assert.equal(parseBins(' 2 '), 2);
+  assert.equal(parseBins('100'), 100);
+  for (const bad of ['', '1', '101', '305', '2.5', '-5', 'abc', '1e2']) assert.equal(parseBins(bad), null, bad);
+});
+
+test('selects fall back to a valid option when their options change', () => {
+  assert.equal(validChoice('Ti', ['Ti', 'Sr']), 'Ti');
+  assert.equal(validChoice('Ni', ['Ti', 'Sr']), 'Ti');
+  assert.equal(validChoice('Ni', ['Ti', 'Sr'], 'Sr'), 'Sr');
+  assert.equal(validChoice('Ni', []), '');
+  assert.equal(validChoice('Site', ['', 'Group'], ''), '');
+});
+
+test('dataset table offers a search box and sortable headers', async () => {
+  const deps = makeDeps();
+  const rows = await deps.groups.rows('groups/Baca.parquet');
+  const html = renderToString(
+    <DataTable files={[{ path: rows.path, groupName: 'Baca', data: rows }]} deps={deps} autosave={new CellAutosave(async () => { throw new Error('unused'); }, new Map())} onReload={() => {}} />,
+  );
+  assert.match(html, /type="search"/);
+  assert.equal(html.match(/class="sort-header"/g)?.length, 2 + 2 + 2, 'every column header sorts');
+  assert.ok(!html.includes('0197aaaa'), 'analytical_uuid never rendered');
 });
