@@ -20,8 +20,8 @@
 //! `parse_r_numeric` gets a leading `'` prefix, so negative numbers such as
 //! `-1.5` are never escaped. `raw_text = true` is the clearly-labeled raw
 //! option and reproduces the byte-exact legacy `fwrite` output for the
-//! measured-data case. XLSX/TSV formats are deferred per the Section 7.1
-//! capability matrix, so the legacy filename rule always yields `.csv`.
+//! measured-data case. Exports are CSV or XLSX (`format`); TSV stays
+//! deferred per the Section 7.1 capability matrix.
 
 use std::path::{Path, PathBuf};
 
@@ -370,6 +370,20 @@ impl ExportService {
         columns.push(roles.visible_id.clone());
         columns.extend(roles.descriptive[..n_desc].iter().cloned());
         columns.extend(matrix.names.iter().cloned());
+        if req.format == ExportFormat::Xlsx {
+            let rows = data
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(i, row)| {
+                    let mut cells = text_cells(row.visible.as_deref(), &row.descriptive[..n_desc]);
+                    cells.extend(matrix.cols.iter().map(|col| number_cell(col[i])));
+                    cells
+                })
+                .collect();
+            let file_name = self.file_name(&req.path, &req.extra_paths)?;
+            return single_sheet_workbook(&file_name, "Transformed data", columns, rows);
+        }
         let n_rows = matrix.n_rows();
         let mut rows = Vec::with_capacity(n_rows);
         for (i, row) in data.rows.iter().enumerate() {
@@ -414,6 +428,20 @@ impl ExportService {
         columns.push(roles.visible_id.clone());
         columns.extend(roles.descriptive[..n_desc].iter().cloned());
         columns.extend(pca.score_names.iter().cloned());
+        if req.format == ExportFormat::Xlsx {
+            let rows = data
+                .rows
+                .iter()
+                .zip(&pca.scores)
+                .map(|(row, scores)| {
+                    let mut cells = text_cells(row.visible.as_deref(), &row.descriptive[..n_desc]);
+                    cells.extend(scores.iter().map(|&v| number_cell(v)));
+                    cells
+                })
+                .collect();
+            let file_name = self.file_name(&req.path, &req.extra_paths)?;
+            return single_sheet_workbook(&file_name, "PCA scores", columns, rows);
+        }
         let mut rows = Vec::with_capacity(data.rows.len());
         for (i, row) in data.rows.iter().enumerate() {
             let mut cells = Vec::with_capacity(columns.len());
@@ -434,6 +462,37 @@ impl ExportService {
             content_encoding: None,
         })
     }
+}
+
+/// Visible ID and descriptive values as text cells (empty when missing).
+fn text_cells(visible: Option<&str>, descriptive: &[Option<String>]) -> Vec<Option<TableCell>> {
+    std::iter::once(visible.map(str::to_string))
+        .chain(descriptive.iter().cloned())
+        .map(|v| v.map(TableCell::Text))
+        .collect()
+}
+
+/// A finite number cell; NaN and infinities are empty cells.
+fn number_cell(value: f64) -> Option<TableCell> {
+    value.is_finite().then_some(TableCell::Number(value))
+}
+
+/// One-sheet XLSX workbook named after `file_name` (its extension replaced).
+fn single_sheet_workbook(
+    file_name: &str,
+    sheet: &str,
+    columns: Vec<String>,
+    rows: Vec<Vec<Option<TableCell>>>,
+) -> Result<ExportResult, DomainError> {
+    export_table(&ExportTableRequest {
+        file_name: file_name.to_string(),
+        format: ExportFormat::Xlsx,
+        sheets: vec![ExportTableSheet {
+            name: sheet.to_string(),
+            columns,
+            rows,
+        }],
+    })
 }
 
 /// Most cells one table export may hold (all sheets together).
@@ -914,6 +973,7 @@ mod tests {
         let before = std::fs::read(dir.join(&path)).expect("read group");
         let result = service
             .export_transformed(&ExportTransformedRequest {
+                format: Default::default(),
                 path: path.clone(),
                 extra_paths: vec![],
                 definition: TransformationDefinition {
@@ -950,6 +1010,7 @@ mod tests {
         // Descriptive columns cannot be transformed (validation error).
         let err = service
             .export_transformed(&ExportTransformedRequest {
+                format: Default::default(),
                 path,
                 extra_paths: vec![],
                 definition: TransformationDefinition {
@@ -974,10 +1035,55 @@ mod tests {
     }
 
     #[test]
+    fn transformed_and_pca_exports_write_xlsx() {
+        let (service, _dir, path) = service_with_group();
+        let pca = service
+            .export_pca_scores(&ExportPcaScoresRequest {
+                format: ExportFormat::Xlsx,
+                path: path.clone(),
+                extra_paths: vec![],
+                columns: vec!["as".into(), "fe".into()],
+                scale: false,
+                transformation: None,
+            })
+            .expect("export pca xlsx");
+        assert_eq!(pca.file_name, "Baca.xlsx");
+        assert_eq!(pca.content_encoding.as_deref(), Some("base64"));
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&pca.content)
+            .expect("base64");
+        assert!(bytes.starts_with(b"PK"), "xlsx is a zip archive");
+
+        let transformed = service
+            .export_transformed(&ExportTransformedRequest {
+                format: ExportFormat::Xlsx,
+                path,
+                extra_paths: vec![],
+                definition: TransformationDefinition {
+                    name: "t".into(),
+                    transform_method: TransformMethod::Log10,
+                    imputation_method: ImputationMethod::None,
+                    imputation_seed: None,
+                    elemental_columns: vec!["as".into(), "fe".into()],
+                    descriptive_columns: vec![],
+                    group_column: None,
+                    ratios: vec![],
+                    ratio_mode: RatioMode::Append,
+                    precompute: Vec::new(),
+                },
+                raw_text: false,
+            })
+            .expect("export transformed xlsx");
+        assert_eq!(transformed.file_name, "Baca.xlsx");
+        assert_eq!(transformed.media_type, XLSX_MEDIA_TYPE);
+    }
+
+    #[test]
     fn pca_scores_export_shape() {
         let (service, _dir, path) = service_with_group();
         let result = service
             .export_pca_scores(&ExportPcaScoresRequest {
+                format: Default::default(),
                 path: path.clone(),
                 extra_paths: vec![],
                 columns: vec!["as".into(), "fe".into()],
@@ -1013,6 +1119,7 @@ mod tests {
         // Unknown column is a validation error.
         let err = service
             .export_pca_scores(&ExportPcaScoresRequest {
+                format: Default::default(),
                 path,
                 extra_paths: vec![],
                 columns: vec!["cu".into()],
@@ -1079,6 +1186,7 @@ mod tests {
         // Transformed export over both files pools rows and keeps the column.
         let transformed = service
             .export_transformed(&ExportTransformedRequest {
+                format: Default::default(),
                 path: path.clone(),
                 extra_paths: vec![other_path.clone()],
                 definition: TransformationDefinition {
@@ -1107,6 +1215,7 @@ mod tests {
         // A column missing from one file is rejected, naming that file.
         let err = service
             .export_transformed(&ExportTransformedRequest {
+                format: Default::default(),
                 path,
                 extra_paths: vec![other_path.clone()],
                 definition: TransformationDefinition {

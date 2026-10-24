@@ -144,13 +144,33 @@ export function DataTable({
   const [drafts, setDrafts] = useState<Map<string, string>>(new Map());
   const [, setTick] = useState(0);
   const [exportError, setExportError] = useState('');
-  const [exporting, setExporting] = useState<ExportFormat | null>(null);
+  const [exporting, setExporting] = useState<ExportFormat | 'setup' | null>(null);
   const runExport = (format: ExportFormat) => {
     setExportError('');
     setExporting(format);
     void autosave
       .idle()
       .then(() => deps.exports.measuredData({ ...inputPaths(files), raw_text: false, format }))
+      .then(downloadExportResult)
+      .catch((err: unknown) => setExportError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setExporting(null));
+  };
+  // The legacy "chemical" export: values after the Analysis setup (selected
+  // elements, imputation, ratios, transform), computed now, never stored.
+  const { setup } = useAnalysisSetup();
+  const setupDefinition = useMemo(() => {
+    if (!setup) return null;
+    const input = analysisInput(setup, combined.elementalColumns);
+    if (input.columns.length === 0) return null;
+    return input.transformation ?? { ...setup, elemental_columns: input.elements, ratios: [] };
+  }, [setup, combined.elementalColumns]);
+  const runSetupExport = (format: ExportFormat) => {
+    if (!setupDefinition) return;
+    setExportError('');
+    setExporting('setup');
+    void autosave
+      .idle()
+      .then(() => deps.exports.transformed({ ...inputPaths(files), definition: setupDefinition, raw_text: false, format }))
       .then(downloadExportResult)
       .catch((err: unknown) => setExportError(err instanceof Error ? err.message : String(err)))
       .finally(() => setExporting(null));
@@ -270,6 +290,16 @@ export function DataTable({
         <button type="button" disabled={exporting !== null} onClick={() => runExport('csv')}>
           <BusyLabel busy={exporting === 'csv'} busyText="Exporting…">Export CSV</BusyLabel>
         </button>
+        {setupDefinition && (
+          <button
+            type="button"
+            disabled={exporting !== null}
+            onClick={() => runSetupExport('xlsx')}
+            title="Values after the Analysis setup (elements, imputation, ratios, transform), as an Excel workbook"
+          >
+            <BusyLabel busy={exporting === 'setup'} busyText="Exporting…">Export with Analysis setup</BusyLabel>
+          </button>
+        )}
       </div>
       {autosave.error && autosave.failedCount > 0 && (
         <p role="alert">

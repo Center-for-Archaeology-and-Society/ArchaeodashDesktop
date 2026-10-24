@@ -229,7 +229,7 @@ export function PcaResult({
 }: {
   result: PcaResponse;
   onRecompute: () => void;
-  onExportScores?: () => void;
+  onExportScores?: (format: 'csv' | 'xlsx') => void;
   /** The score export is running. */
   exportBusy?: boolean;
   /** Message from the last failed score export. */
@@ -335,9 +335,14 @@ export function PcaResult({
               Recompute
             </button>
             {onExportScores && (
-              <button type="button" className="btn btn-sm btn-ghost" onClick={onExportScores} disabled={exportBusy} title="Scores with every descriptive column (CSV)">
-                <BusyLabel busy={exportBusy}>Scores with sample data (CSV)</BusyLabel>
-              </button>
+              <>
+                <button type="button" className="btn btn-sm btn-ghost" onClick={() => onExportScores('xlsx')} disabled={exportBusy} title="Scores with every descriptive column (Excel workbook)">
+                  <BusyLabel busy={exportBusy}>Scores with sample data (Excel)</BusyLabel>
+                </button>
+                <button type="button" className="btn btn-sm btn-ghost" onClick={() => onExportScores('csv')} disabled={exportBusy} title="Scores with every descriptive column (CSV)">
+                  CSV
+                </button>
+              </>
             )}
           </div>
         </header>
@@ -461,11 +466,11 @@ function PcaView({ deps, data, extraPaths, groups, rows, columns, transformation
   const { state, reload } = useOrdination<PcaResponse>(() => deps.ordination.pca(request), [deps, request]);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState('');
-  const exportScores = () => {
+  const exportScores = (format: 'csv' | 'xlsx') => {
     setExportBusy(true);
     setExportError('');
     void Promise.resolve()
-      .then(() => deps.exports.pcaScores(request))
+      .then(() => deps.exports.pcaScores({ ...request, format }))
       .then(downloadExportResult)
       .catch((cause: unknown) => setExportError(cause instanceof Error ? cause.message : String(cause)))
       .finally(() => setExportBusy(false));
