@@ -215,7 +215,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
   // Element axes use the Analysis setup's elements; with a transform, values
   // come from the backend over all loaded groups pooled (like ordination).
   const rawElementView = useMemo((): ElementView => {
-    const columns = setupInput.columns;
+    const columns = setupInput.elements;
     return {
       columns,
       values: columns.map((c) => {
@@ -223,7 +223,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
         return combined.rows.map((r) => r.elemental[i] ?? null);
       }),
     };
-  }, [setupInput.columns, combined]);
+  }, [setupInput.elements, combined]);
   const [transformedView, setTransformedView] = useState<AsyncState<ElementView>>({ kind: 'idle' });
   useEffect(() => {
     const definition = setupInput.transformation;
