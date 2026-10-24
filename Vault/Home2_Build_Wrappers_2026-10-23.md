@@ -13,6 +13,7 @@ Up: [[Index]]
   - `install-windows.sh [--launch]` — copy the build to `%LOCALAPPDATA%\Programs\ArchaeoDash\ArchaeoDash.exe` (keeps `ArchaeoDash.previous.exe`); refuses while the app runs.
   - `commit.sh MESSAGE_FILE PATH…` — commit on home2 (Windows git misreads modes over the share). Restores each changed file's recorded git mode (new files: 755 if they start with `#!`, else 644) before staging, commits as the previous commit's author, never pushes.
   - `preview.sh start|stop|status` — build and serve the web UI on `http://192.168.0.37:4173/`.
+  - `run.sh ACTION` (added 2026-10-24) — named one-off actions: `status` (git log/status/mode changes on home2, read-only), `test CRATE [FILTER]` (one crate's tests with `--nocapture`), `clippy-desktop` (Windows-target clippy on the Tauri app, which `check.sh` skips), `preview-log`. Crate names must match `archaeodash-[a-z0-9-]+`; filters `[A-Za-z0-9_:]+`.
   - `common.sh` — shared host/paths and `run_remote`, which quotes arguments with `printf %q`.
 - `.claude/settings.local.json` (personal, now gitignored) allows exactly these commands, so they run without prompts. Anything else on home2 still asks.
 
@@ -23,5 +24,6 @@ Up: [[Index]]
 ## Verification
 - Argument validation refuses injected modes, crate names, flags, and paths locally (exit 2) before contacting home2.
 - `sync.sh`, `check.sh web` (156/156), `check.sh rust archaeodash-desktop`, `preview.sh start/status/stop`, and `build-windows.sh` ran successfully; this note was committed with `commit.sh`.
+- `run.sh`: bad actions, crate names, filters, and extra arguments are refused locally (exit 2); `status`, `preview-log`, `test archaeodash-contracts [filter]`, and `clippy-desktop` ran successfully on home2 (2026-10-24). Its allow rules (`run.sh status`, `run.sh test *`, `run.sh clippy-desktop`, `run.sh preview-log`) must be added to `.claude/settings.local.json` by hand: Claude's auto-mode safety check refuses edits to its own permission settings.
 - Not run: `install-windows.sh` (it would replace the installed app).
 - The allow rules take effect in sessions started after the settings file was created (the settings watcher only covers directories that already had a settings file at session start).

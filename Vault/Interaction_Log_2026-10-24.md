@@ -1,3 +1,4 @@
 # Interaction Log 2026-10-24
 
 - Group folders: create, rename, delete (empty), copy/move groups between folders; any operation that would put a sample twice in one folder is refused; analyses use one folder at a time; imports name their folder after the group column. Rebuilt and installed the Windows app. See [[Group_Folders_2026-10-24]].
+- Added `scripts/home2/run.sh` (status, test CRATE [FILTER], clippy-desktop, preview-log) so routine home2 actions that used to need hand-written `ssh home2` commands go through a fixed wrapper; all four verified on home2. The allowlist entries could not be added by Claude (blocked as self-modification) and must be added by hand. See [[Home2_Build_Wrappers_2026-10-23]].
