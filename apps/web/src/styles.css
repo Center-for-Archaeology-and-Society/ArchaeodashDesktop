@@ -1189,6 +1189,28 @@ span[role='alert'] {
   flex-wrap: wrap;
 }
 
+.plot-save-size {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 0.8rem;
+}
+
+.plot-save-size label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.plot-save-size input {
+  width: 6rem;
+}
+
 .export-label {
   margin-right: 0.15rem;
   font-size: 0.7rem;

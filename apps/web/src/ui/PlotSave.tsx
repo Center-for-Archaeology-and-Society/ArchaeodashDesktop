@@ -11,6 +11,57 @@ import { BusyLabel } from './Busy.tsx';
 
 export type ImageFormat = 'png' | 'svg';
 
+/**
+ * Image size settings shared by every plot (the legacy save dialog asked
+ * for width, height, and dpi, default 300). Width/height apply to Plotly
+ * charts (0 = as shown on screen); resolution applies to every PNG.
+ */
+export interface ImageSettings {
+  readonly widthPx: number;
+  readonly heightPx: number;
+  readonly dpi: number;
+}
+
+export const DPI_CHOICES: readonly number[] = [96, 150, 300, 600];
+export const DEFAULT_IMAGE_SETTINGS: ImageSettings = { widthPx: 0, heightPx: 0, dpi: 300 };
+const SETTINGS_KEY = 'archaeodash.plotImageSettings';
+/** Largest PNG side in pixels, so a huge size never exhausts canvas memory. */
+export const MAX_PNG_SIDE = 12000;
+
+function clampSide(value: unknown): number {
+  const n = Math.round(Number(value));
+  return Number.isFinite(n) && n >= 100 ? Math.min(n, 5000) : 0;
+}
+
+export function readImageSettings(): ImageSettings {
+  try {
+    const raw = JSON.parse(globalThis.localStorage?.getItem(SETTINGS_KEY) ?? 'null') as Partial<ImageSettings> | null;
+    if (!raw) return DEFAULT_IMAGE_SETTINGS;
+    return {
+      widthPx: clampSide(raw.widthPx),
+      heightPx: clampSide(raw.heightPx),
+      dpi: DPI_CHOICES.includes(Number(raw.dpi)) ? Number(raw.dpi) : DEFAULT_IMAGE_SETTINGS.dpi,
+    };
+  } catch {
+    return DEFAULT_IMAGE_SETTINGS;
+  }
+}
+
+function writeImageSettings(settings: ImageSettings): void {
+  try {
+    globalThis.localStorage?.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    /* storage unavailable: settings last for this session only */
+  }
+}
+
+/** PNG scale factor for a resolution (screen pixels are 96 dpi), capped by MAX_PNG_SIDE. */
+export function pngScale(dpi: number, width: number, height: number): number {
+  const scale = Math.max(1, dpi / 96);
+  const side = Math.max(width, height, 1);
+  return Math.min(scale, MAX_PNG_SIDE / side);
+}
+
 const INLINE_PROPS = [
   'fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-opacity', 'stroke-dasharray', 'stroke-linecap',
   'opacity', 'font-family', 'font-size', 'font-weight', 'font-style', 'text-anchor', 'dominant-baseline',
@@ -53,7 +104,7 @@ export function serializeSvg(svg: SVGSVGElement): { text: string; width: number;
 }
 
 /** PNG (base64, no data-URL prefix) from SVG text, at `scale`× resolution. */
-async function svgTextToPng(text: string, width: number, height: number, scale = 2): Promise<string> {
+async function svgTextToPng(text: string, width: number, height: number, scale = pngScale(readImageSettings().dpi, width, height)): Promise<string> {
   const image = new Image();
   image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(text)}`;
   await image.decode();
@@ -87,10 +138,11 @@ export async function saveSvgFigure(container: Element, name: string, format: Im
 /** Saves a rendered Plotly chart. */
 export async function savePlotlyChart(el: HTMLElement, name: string, format: ImageFormat): Promise<boolean> {
   const Plotly = await import('plotly.js-dist-min');
+  const settings = readImageSettings();
   const box = el.getBoundingClientRect();
-  const width = Math.max(400, Math.round(box.width));
-  const height = Math.max(300, Math.round(box.height));
-  const url = await Plotly.toImage(el, { format, width, height, scale: format === 'png' ? 2 : 1 });
+  const width = settings.widthPx || Math.max(400, Math.round(box.width));
+  const height = settings.heightPx || Math.max(300, Math.round(box.height));
+  const url = await Plotly.toImage(el, { format, width, height, scale: format === 'png' ? pngScale(settings.dpi, width, height) : 1 });
   if (format === 'svg') {
     const comma = url.indexOf(',');
     const body = url.slice(comma + 1);
@@ -164,6 +216,7 @@ export function PlotSaveButtons({
 }): ReactElement {
   const [busy, setBusy] = useState<ImageFormat | null>(null);
   const [error, setError] = useState('');
+  const [sizing, setSizing] = useState(false);
   const run = (format: ImageFormat) => {
     const el = target?.current;
     if (!save && !el) return;
@@ -186,7 +239,55 @@ export function PlotSaveButtons({
       <button type="button" className="btn btn-sm btn-ghost" disabled={busy !== null} onClick={() => run('svg')} title="Save the plot as an SVG vector image">
         <BusyLabel busy={busy === 'svg'}>Save SVG</BusyLabel>
       </button>
+      <button type="button" className="btn btn-sm btn-ghost" aria-expanded={sizing} onClick={() => setSizing((v) => !v)} title="Image size and resolution">
+        Size…
+      </button>
+      {sizing && <ImageSettingsForm showSize={kind === 'plotly' && !save} onClose={() => setSizing(false)} />}
       {error && <span role="alert" className="export-error">Could not save: {error}</span>}
+    </div>
+  );
+}
+
+/** Inline image-size form; values are remembered for every plot. */
+export function ImageSettingsForm({ showSize, onClose }: { showSize: boolean; onClose: () => void }): ReactElement {
+  const [settings, setSettings] = useState<ImageSettings>(() => readImageSettings());
+  // Raw text while typing; sizes are validated when the field loses focus.
+  const [width, setWidth] = useState(settings.widthPx ? String(settings.widthPx) : '');
+  const [height, setHeight] = useState(settings.heightPx ? String(settings.heightPx) : '');
+  const update = (next: ImageSettings) => {
+    setSettings(next);
+    writeImageSettings(next);
+  };
+  const commitSide = (text: string, key: 'widthPx' | 'heightPx', show: (v: string) => void) => {
+    const value = clampSide(text);
+    show(value ? String(value) : '');
+    update({ ...settings, [key]: value });
+  };
+  return (
+    <div className="plot-save-size" role="group" aria-label="Image size" onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}>
+      {showSize && (
+        <>
+          <label>
+            Width px
+            <input type="number" min={100} max={5000} step={50} placeholder="as shown" value={width}
+              onChange={(e) => setWidth(e.target.value)} onBlur={(e) => commitSide(e.target.value, 'widthPx', setWidth)} />
+          </label>
+          <label>
+            Height px
+            <input type="number" min={100} max={5000} step={50} placeholder="as shown" value={height}
+              onChange={(e) => setHeight(e.target.value)} onBlur={(e) => commitSide(e.target.value, 'heightPx', setHeight)} />
+          </label>
+        </>
+      )}
+      <label>
+        PNG resolution
+        <select value={settings.dpi} onChange={(e) => update({ ...settings, dpi: Number(e.target.value) })}>
+          {DPI_CHOICES.map((d) => (
+            <option key={d} value={d}>{d} dpi</option>
+          ))}
+        </select>
+      </label>
+      <button type="button" className="btn btn-sm" onClick={() => { commitSide(width, 'widthPx', setWidth); onClose(); }}>Done</button>
     </div>
   );
 }
