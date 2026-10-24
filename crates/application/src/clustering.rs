@@ -896,6 +896,54 @@ impl ClusterService {
         )
     }
 
+    /// The legacy "using all groups" notification for the membership fallback.
+    const NO_ELIGIBLE_GROUPS_WARNING: &str =
+        "No group has enough samples to be eligible; using all groups.";
+
+    /// The groups membership compares against (`input$eligibleGroups` in
+    /// GroupMembership.R): the requested groups that pass `getEligible`
+    /// (all eligible groups when none are requested); with none left, the
+    /// eligible groups, and with no eligible group at all, every non-blank
+    /// group plus the legacy warning. Unknown requested groups are rejected.
+    fn membership_groups(
+        groups: &[String],
+        feature_count: usize,
+        requested: Option<&[String]>,
+    ) -> Result<(Vec<String>, Option<String>), DomainError> {
+        let eligible = get_eligible(groups, feature_count);
+        let requested: Vec<&String> = requested
+            .unwrap_or_default()
+            .iter()
+            .filter(|group| !group.is_empty())
+            .collect();
+        if requested.iter().any(|group| !groups.contains(*group)) {
+            return Err(validation(
+                "membership_projection_group",
+                "projection_groups contains an unknown group",
+            ));
+        }
+        let chosen: Vec<String> = eligible
+            .iter()
+            .filter(|group| requested.contains(group))
+            .cloned()
+            .collect();
+        if !chosen.is_empty() {
+            return Ok((chosen, None));
+        }
+        if !eligible.is_empty() {
+            return Ok((eligible, None));
+        }
+        let mut all: Vec<String> = groups.iter().filter(|g| !g.is_empty()).cloned().collect();
+        all.sort();
+        all.dedup();
+        let warning = if all.is_empty() {
+            None
+        } else {
+            Some(Self::NO_ELIGIBLE_GROUPS_WARNING.to_string())
+        };
+        Ok((all, warning))
+    }
+
     /// `group.mem.probs` over one group file: eligibility via `getEligible`
     /// (`n > max(n_features, n_groups) + 1`), per-row probability cells in
     /// eligible-group order, best group, and the effective method (the
@@ -944,16 +992,9 @@ impl ClusterService {
         }
         let ids = Self::id_values(&data, &req.id_column, &req.path)?;
         let groups = Self::group_labels(&data, &req.group_column, &req.path)?;
-        let mut eligible = get_eligible(&groups, matrix.cols.len());
-        if let Some(selected) = &req.projection_groups {
-            if selected.iter().any(|group| !groups.contains(group)) {
-                return Err(validation(
-                    "membership_projection_group",
-                    "projection_groups contains an unknown group",
-                ));
-            }
-            eligible.retain(|group| selected.contains(group));
-        }
+        let requested = req.projection_groups.as_deref();
+        let (eligible, eligibility_warning) =
+            Self::membership_groups(&groups, matrix.cols.len(), requested)?;
         if data.rows.len().saturating_mul(eligible.len()) > MAX_DISTANCE_CELLS {
             return Err(validation(
                 "cluster_resource_limit",
@@ -989,14 +1030,12 @@ impl ClusterService {
             fallback_reason: (req.method == MembershipMethodDto::Hotellings
                 && effective == MembershipMethod::Mahalanobis)
                 .then(|| "hotellings_computation_failed".to_string()),
+            // `ProjectionIncluded = GroupVal %in% eligible_groups`.
             projection_included: groups
                 .iter()
-                .map(|group| {
-                    req.projection_groups
-                        .as_ref()
-                        .is_none_or(|selected| selected.contains(group))
-                })
+                .map(|group| table.eligible.contains(group))
                 .collect(),
+            eligibility_warning,
             eligible_groups: table.eligible,
             ids: table.rows.iter().map(|r| r.id.clone()).collect(),
             groups: table.rows.iter().map(|r| r.group_val.clone()).collect(),
@@ -1893,42 +1932,78 @@ mod tests {
         assert_eq!(projected.eligible_groups, vec!["A", "C"]);
         assert_eq!(projected.probabilities.len(), 24);
         assert!(projected.probabilities.iter().all(|row| row.len() == 2));
-        assert!(projected
-            .projection_included
-            .iter()
-            .any(|included| !included));
-        assert!(projected
-            .projection_included
-            .iter()
-            .any(|included| *included));
+        // `ProjectionIncluded = GroupVal %in% eligible_groups`.
+        assert_eq!(projected.projection_included.len(), projected.groups.len());
+        let included = &projected.projection_included;
+        for (flag, group) in included.iter().zip(&projected.groups) {
+            assert_eq!(*flag, group == "A" || group == "C");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn membership_rejects_when_no_group_is_eligible() {
-        // 2 rows per group: n = 2 <= max(2, 3) + 1, nothing is eligible.
+    fn membership_falls_back_to_all_groups_when_none_is_eligible() {
+        // 6 rows per group: n = 6 <= max(2, 5) + 1, nothing is eligible, so
+        // the legacy fallback compares against every group with a warning.
         let (service, dir, path) = service_with_merged_group();
-        let err = service
-            .membership_probabilities(&MembershipProbabilitiesRequest {
-                transformation: None,
-                source: AnalysisSourceDto::Elements,
-                pc_count: None,
-                source_group_column: None,
-                umap_seed: None,
-                projection_groups: None,
-                path,
-                extra_paths: vec![],
-                columns: vec!["as".into(), "fe".into()],
-                group_column: "Site".into(),
-                id_column: "anid".into(),
-                method: MembershipMethodDto::Hotellings,
-            })
-            .expect_err("no eligible groups");
-        assert!(matches!(
-            err,
-            DomainError::Validation { ref code, .. } if code == "membership_no_eligible_groups"
-        ));
+        let request = MembershipProbabilitiesRequest {
+            transformation: None,
+            source: AnalysisSourceDto::Elements,
+            pc_count: None,
+            source_group_column: None,
+            umap_seed: None,
+            projection_groups: None,
+            path,
+            extra_paths: vec![],
+            columns: vec!["as".into(), "fe".into()],
+            group_column: "Site".into(),
+            id_column: "anid".into(),
+            method: MembershipMethodDto::Mahalanobis,
+        };
+        let response = service
+            .membership_probabilities(&request)
+            .expect("fallback membership");
+        assert_eq!(response.eligible_groups, vec!["A", "B", "C", "D", "E"]);
+        assert!(response.eligibility_warning.is_some());
+        assert!(response.projection_included.iter().all(|&x| x));
+        assert!(response.probabilities.iter().all(|row| row.len() == 5));
+        // An explicit selection of ineligible groups takes the same path.
+        let mut selected = request;
+        selected.projection_groups = Some(vec!["A".into()]);
+        let response = service
+            .membership_probabilities(&selected)
+            .expect("fallback membership");
+        assert_eq!(response.eligible_groups.len(), 5);
+        assert!(response.eligibility_warning.is_some());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn membership_groups_follow_eligibility_and_selection() {
+        let groups: Vec<String> = ["A"; 8]
+            .into_iter()
+            .chain(["B"; 8])
+            .chain(["C"; 2])
+            .map(String::from)
+            .collect();
+        // n > max(2, 3) + 1 = 4: A and B are eligible, C is not.
+        let f = ClusterService::membership_groups;
+        let all = f(&groups, 2, None).expect("groups");
+        assert_eq!(all, (vec!["A".to_string(), "B".to_string()], None));
+        // Ineligible selected groups are dropped; an all-ineligible or empty
+        // selection falls back to every eligible group.
+        let b_c = ["B".to_string(), "C".to_string()];
+        assert_eq!(f(&groups, 2, Some(&b_c)).expect("groups").0, vec!["B"]);
+        let only_c = f(&groups, 2, Some(&b_c[1..])).expect("groups");
+        assert_eq!(only_c.0, vec!["A", "B"]);
+        assert!(only_c.1.is_none());
+        let empty = f(&groups, 2, Some(&[])).expect("groups");
+        assert_eq!(empty.0, vec!["A", "B"]);
+        assert!(f(&groups, 2, Some(&["Z".to_string()])).is_err());
+        // With more features than any group can support, every group is used.
+        let none = f(&groups, 10, None).expect("groups");
+        assert_eq!(none.0, vec!["A", "B", "C"]);
+        assert!(none.1.is_some());
     }
 
     #[test]

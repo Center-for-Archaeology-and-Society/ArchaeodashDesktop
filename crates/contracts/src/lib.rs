@@ -85,6 +85,65 @@ pub struct ImportPreviewResponse {
     /// Every worksheet in an XLSX source, in workbook order; empty for CSV/TSV.
     #[serde(default)]
     pub sheets: Vec<String>,
+    /// SHA-256 of the source bytes (matches `GroupSummary::source_sha256` of
+    /// groups imported from the same file).
+    #[serde(default)]
+    pub source_sha256: Option<String>,
+    /// Every ready group file in the project, so the client can show name
+    /// clashes and earlier imports of this source for any destination folder.
+    #[serde(default)]
+    pub existing_groups: Vec<ExistingImportGroup>,
+}
+
+/// One group file already in the project, as reported by an import preview.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExistingImportGroup {
+    /// Project-relative path (`/`-separated).
+    pub path: String,
+    /// Folder of the file (`""` for the project root).
+    pub folder: String,
+    pub group_name: String,
+    pub revision_id: String,
+    /// Imported from a source with the same SHA-256 as the previewed one.
+    pub same_source: bool,
+}
+
+/// How an import treats groups already in its destination folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportMode {
+    /// Publish new group files only. Refused when the folder already has a
+    /// file of the same name or groups imported from the same source.
+    NewGroups,
+    /// Replace the folder's groups that were imported from this source (same
+    /// SHA-256) in one journaled transaction; samples keep their identities.
+    ReplaceSource,
+    /// Add the rows to the folder's groups of the same name (new groups for
+    /// the rest) in one journaled transaction, aligning descriptive columns.
+    Append,
+}
+
+/// Optional commit choices added after the first import contract. Absent
+/// fields keep the original behavior (every non-elemental column is
+/// descriptive; clashing file names get `_2`, `_3`, ... suffixes).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportCommitOptions {
+    /// Non-elemental columns to keep as descriptive data; others are dropped.
+    #[serde(default)]
+    pub descriptive_columns: Option<Vec<String>>,
+    /// What to do about groups already in the destination folder.
+    #[serde(default)]
+    pub mode: Option<ImportMode>,
+}
+
+/// Wire form of `imports/commit`: the request plus the optional choices in
+/// one flat JSON object, so older clients' payloads still deserialize.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportCommitCommand {
+    #[serde(flatten)]
+    pub request: ImportCommitRequest,
+    #[serde(flatten)]
+    pub options: ImportCommitOptions,
 }
 
 /// Import value-class policies echoed from `archaeodash_data_io::ImportRecipe`.
@@ -367,6 +426,34 @@ pub struct CopyGroupsRequest {
     /// Move instead of copy: the sources are removed in the same transaction.
     #[serde(default)]
     pub remove_sources: bool,
+}
+
+/// `POST /groups/rename` request: rename one group (profile name and id,
+/// and the file name in the same folder) through a journaled transaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenameGroupRequest {
+    /// Project-relative path of the group file.
+    pub path: String,
+    /// Revision the caller last read; a mismatch is a conflict.
+    pub expected_revision: String,
+    pub new_name: String,
+}
+
+/// `POST /groups/columns` request: add a descriptive column with one value
+/// to every group file in a folder through one journaled transaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddDescriptiveColumnRequest {
+    /// Project-relative folder (`""` for the project root).
+    pub folder: String,
+    /// New descriptive column name.
+    pub column: String,
+    /// Value for every row; `None` leaves the cells empty.
+    #[serde(default)]
+    pub value: Option<String>,
+    /// Replace the column's values when a group already has it; otherwise
+    /// an existing column is refused.
+    #[serde(default)]
+    pub overwrite: bool,
 }
 
 /// `POST /groups/duplicate` request: duplicate one whole group to a new
@@ -826,12 +913,27 @@ pub struct ExploreHistogramRequest {
     /// `hist(..., breaks = bins)` suggestion; defaults to the legacy 30.
     #[serde(default = "default_histogram_bins")]
     pub bins: u32,
+    /// Binning rule; defaults to the `hist.default` pretty breakpoints.
+    #[serde(default)]
+    pub binning: HistogramBinning,
     /// Optional transformation applied to the group matrix first.
     pub transformation: Option<TransformationDefinition>,
 }
 
 fn default_histogram_bins() -> u32 {
     30
+}
+
+/// Histogram binning rule for `POST /explore/histogram`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistogramBinning {
+    /// `hist.default`: `pretty` breakpoints; `bins` is only a suggestion.
+    #[default]
+    Pretty,
+    /// ggplot2 `geom_histogram(bins = n)` (the legacy Explore plot):
+    /// exactly `bins` equal-width bins.
+    EqualWidth,
 }
 
 /// `POST /explore/histogram` response: `pretty` breakpoints (length
@@ -1275,6 +1377,11 @@ pub struct MembershipProbabilitiesResponse {
     pub best_value: Vec<Option<f64>>,
     /// `InGroup` (`false` where `best_group` is null).
     pub in_group: Vec<bool>,
+    /// Set when no requested group was eligible and the legacy fallback
+    /// compared against every group instead (`"Eligible groups were not
+    /// selected; using all groups."`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eligibility_warning: Option<String>,
 }
 
 /// `POST /euclidean/matches` request: nearest matches by Euclidean distance
@@ -1576,6 +1683,14 @@ mod tests {
             }],
             sheet: Some("INAA".into()),
             sheets: vec!["Notes".into(), "INAA".into()],
+            source_sha256: Some("abc".into()),
+            existing_groups: vec![ExistingImportGroup {
+                path: "site/Baca.parquet".into(),
+                folder: "site".into(),
+                group_name: "Baca".into(),
+                revision_id: "rev-1".into(),
+                same_source: true,
+            }],
         };
         let json = serde_json::to_string(&preview).unwrap();
         assert_eq!(
@@ -1602,6 +1717,28 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<ImportCommitRequest>(&json).unwrap(),
             commit
+        );
+
+        // Older payloads (no options) still deserialize as a command, and
+        // the options travel flat next to the request fields.
+        let legacy: ImportCommitCommand = serde_json::from_str(
+            r#"{"source":"s.csv","group_column":"Site","visible_id_column":null,"elemental_columns":null,"recipe":null,"destination_dir":null}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.options, ImportCommitOptions::default());
+        assert_eq!(legacy.request.group_column, "Site");
+        let with_options: ImportCommitCommand = serde_json::from_str(
+            r#"{"source":"s.csv","group_column":"Site","visible_id_column":"rowid","elemental_columns":["as"],"recipe":null,"destination_dir":"site","descriptive_columns":["Site"],"mode":"replace_source"}"#,
+        )
+        .unwrap();
+        assert_eq!(with_options.options.mode, Some(ImportMode::ReplaceSource));
+        assert_eq!(
+            with_options.options.descriptive_columns,
+            Some(vec!["Site".to_string()])
+        );
+        assert_eq!(
+            with_options.request.visible_id_column.as_deref(),
+            Some("rowid")
         );
 
         let single_group = ImportCommitRequest {
@@ -2057,6 +2194,7 @@ mod cluster_membership_dto_tests {
             best_group: vec![Some("Baca".into())],
             best_value: vec![Some(0.25)],
             in_group: vec![false],
+            eligibility_warning: None,
         };
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("null"), "NA probability serializes as null");
@@ -2134,6 +2272,12 @@ mod explore_dto_tests {
         )
         .unwrap();
         assert_eq!(hist.bins, 30);
+        assert_eq!(hist.binning, HistogramBinning::Pretty);
+        let equal: ExploreHistogramRequest = serde_json::from_str(
+            r#"{"path":"g.parquet","column":"as","bins":12,"binning":"equal_width"}"#,
+        )
+        .unwrap();
+        assert_eq!(equal.binning, HistogramBinning::EqualWidth);
 
         let count = ExploreCrosstabResponse {
             path: "groups/Baca.parquet".into(),

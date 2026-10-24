@@ -510,6 +510,8 @@ export interface MembershipProbabilitiesResponse {
   best_group: (string | null)[];
   best_value: (number | null)[];
   in_group: boolean[];
+  /** Set when no requested group was eligible and every group was compared instead. */
+  eligibility_warning?: string | null;
 }
 export interface EuclideanMatchesRequest extends AnalysisInputOptions {
   projection_groups?: string[] | null;
@@ -562,8 +564,15 @@ export interface ExploreHistogramRequest {
   extra_paths?: string[];
   column: string;
   bins?: number;
+  /**
+   * `pretty` (default): `hist.default` breakpoints, `bins` is a suggestion.
+   * `equal_width`: ggplot2 `geom_histogram(bins = n)`, exactly `bins` bars.
+   */
+  binning?: HistogramBinning;
   transformation?: TransformationDefinition | null;
 }
+
+export type HistogramBinning = 'pretty' | 'equal_width';
 
 export interface ExploreHistogramResponse {
   path: string;
