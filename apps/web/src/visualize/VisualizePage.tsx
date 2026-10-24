@@ -27,17 +27,20 @@ export { GroupMultiSelect };
 import { VisualizeScatter, type ScatterPoint, type ScatterTraceSpec } from './VisualizeScatter.tsx';
 import { Multiplot } from './Multiplot.tsx';
 import {
+  PALETTE_THEMES,
   clearSelection,
   ellipsePoints,
-  groupColors,
-  labelFor,
+  emptySelection,
   normalizeFilterValue,
+  paletteColors,
   replaceSelection,
-  rowPassesFilter,
+  rowPassesFilterValues,
   symbolFor,
-  type LabelMode,
+  type PaletteTheme,
   type Selection,
 } from './visualize-model.ts';
+import { moveAcrossSources } from '../clustering/multi-source-move.ts';
+import { ValueMultiSelect } from './ValueMultiSelect.tsx';
 import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
 import { TableCard } from '../ui/TableExport.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
@@ -62,7 +65,47 @@ type AsyncState<T> =
   | { kind: 'error'; message: string }
   | { kind: 'loaded'; data: T };
 
-const ELLIPSE_LEVELS: readonly string[] = ['off', '0.50', '0.90', '0.95', '0.99'] as const;
+/** Stable empty view while a transformed element view loads or fails. */
+const EMPTY_VIEW: ElementView = { columns: [], values: [] };
+
+/** File name the backend gives a new group (`<sanitized name>.parquet`). */
+export function newGroupFileName(name: string): string {
+  return `${name.trim().replace(/[^A-Za-z0-9._-]/g, '_') || 'group'}.parquet`;
+}
+
+/**
+ * Why a typed new-group name cannot be used, or null. A name (or file name)
+ * matching an existing group would silently merge into it, so it is refused.
+ */
+export function newGroupNameProblem(
+  name: string,
+  destinationPath: string,
+  existing: readonly { path: string; name: string }[],
+): string | null {
+  const trimmed = name.trim();
+  if (trimmed === '') return 'Enter a name for the new group.';
+  const clash = existing.find(
+    (g) => g.name.trim().toLowerCase() === trimmed.toLowerCase() || g.path.toLowerCase() === destinationPath.toLowerCase(),
+  );
+  return clash ? `A group “${clash.name}” already exists there; choose it under Target group instead.` : null;
+}
+
+/** Text for a point label: the chosen column's value, or the visible ID. */
+function labelValue(
+  row: GroupRowDto,
+  column: string,
+  combined: { visibleIdColumn: string; descriptiveColumns: readonly string[]; elementalColumns: readonly string[] },
+  rowNumber: number,
+): string {
+  const d = combined.descriptiveColumns.indexOf(column);
+  if (d >= 0) return row.descriptive[d] ?? '';
+  const e = combined.elementalColumns.indexOf(column);
+  if (e >= 0) {
+    const v = row.elemental[e];
+    return v === null || v === undefined ? '' : String(v);
+  }
+  return row.visible_id ?? row.legacy_rowid ?? String(rowNumber);
+}
 
 /** Convert row-major API records into the column-major arrays used by plots. */
 export function transposeElementalRows(
@@ -145,14 +188,20 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
   const [yIdx, setYIdx] = useState(1);
   const [plotMode, setPlotMode] = useState<'single' | 'multiplot'>('single');
   const [filterColumn, setFilterColumn] = useState('');
-  const [filterValue, setFilterValue] = useState('');
-  const [ellipseLevel, setEllipseLevel] = useState('off');
-  const [symbolColumn, setSymbolColumn] = useState('');
-  const [labelMode, setLabelMode] = useState<LabelMode>('anid');
+  const [filterValues, setFilterValues] = useState<ReadonlySet<string>>(() => new Set());
+  // Legacy defaults: viridis, data ellipse on at 0.90, group symbols on,
+  // labels off with the visible ID as label column.
+  const [paletteTheme, setPaletteTheme] = useState<PaletteTheme>('viridis');
+  const [ellipseOn, setEllipseOn] = useState(true);
+  const [ellipseLevel, setEllipseLevel] = useState(0.9);
+  const [useSymbols, setUseSymbols] = useState(true);
+  const [symbolChoice, setSymbolChoice] = useState('');
+  const [showLabels, setShowLabels] = useState(false);
+  const [labelColumn, setLabelColumn] = useState('');
   const [selection, setSelection] = useState<Selection>(clearSelection({ uuids: new Set() }));
   const [assignTarget, setAssignTarget] = useState('');
   const [newGroupName, setNewGroupName] = useState('');
-  const [assignState, setAssignState] = useState<AsyncState<null>>({ kind: 'idle' });
+  const [assignState, setAssignState] = useState<AsyncState<number>>({ kind: 'idle' });
 
   const dataset = useGroupFiles(deps.groups);
   const { ready, options: groupOptions, selectedPaths, setSelectedPaths, orderedPaths, files, combined, rescan } = dataset;
@@ -203,14 +252,14 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
   }, [deps, files, setupInput]);
   const elementView: ElementView =
     setupInput.transformation && transformedView.kind === 'loaded' ? transformedView.data
-      : setupInput.transformation ? { columns: [], values: [] }
+      : setupInput.transformation ? EMPTY_VIEW
         : rawElementView;
 
   // A new set of rows invalidates the current selection.
   useEffect(() => {
     setSelection(clearSelection({ uuids: new Set() }));
   }, [files]);
-  const colors = useMemo(() => groupColors(combined.groupNames.length), [combined]);
+  const colors = useMemo(() => paletteColors(paletteTheme, combined.groupNames.length), [combined, paletteTheme]);
   const colorOf = useCallback(
     (group: string) => colors[combined.groupNames.indexOf(group)] ?? '#888',
     [colors, combined],
@@ -282,17 +331,38 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
 
   const filteredIdx = useMemo(() => {
     const all = combined.rows.map((_, i) => i);
-    if (filterColumn === '' || filterValue === '') return all;
+    if (filterColumn === '' || filterValues.size === 0) return all;
     const colIdx = combined.descriptiveColumns.indexOf(filterColumn);
     if (colIdx < 0) return all;
-    return all.filter((i) => rowPassesFilter(combined.rows[i]!, colIdx, filterValue));
-  }, [combined, filterColumn, filterValue]);
+    return all.filter((i) => rowPassesFilterValues(combined.rows[i]!, colIdx, filterValues));
+  }, [combined, filterColumn, filterValues]);
 
-  const filterValues = useMemo(() => {
+  // Like the legacy app, keep only selected points that are still displayed,
+  // so a filter change never leaves hidden units queued for assignment.
+  useEffect(() => {
+    setSelection((current) => {
+      if (current.uuids.size === 0) return current;
+      const shown = new Set(filteredIdx.map((i) => combined.rows[i]!.analytical_uuid));
+      const kept = [...current.uuids].filter((u) => shown.has(u));
+      return kept.length === current.uuids.size ? current : replaceSelection(kept);
+    });
+  }, [filteredIdx, combined]);
+
+  const filterChoices = useMemo(() => {
     const colIdx = combined.descriptiveColumns.indexOf(filterColumn);
     if (colIdx < 0) return [];
     return [...new Set(combined.rows.map((r) => normalizeFilterValue(r.descriptive[colIdx])))].sort();
   }, [combined, filterColumn]);
+
+  // Symbols default to the current group column (legacy "Use group symbols").
+  const symbolColumn = !useSymbols
+    ? ''
+    : combined.descriptiveColumns.includes(symbolChoice)
+      ? symbolChoice
+      : combined.groupColumn;
+  const labelColumnName = labelColumn !== '' && (combined.descriptiveColumns.includes(labelColumn) || combined.elementalColumns.includes(labelColumn))
+    ? labelColumn
+    : combined.visibleIdColumn;
 
   const symbolLevels = useMemo(() => {
     const colIdx = combined.descriptiveColumns.indexOf(symbolColumn);
@@ -315,6 +385,19 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
     [source, elementView, scores],
   );
 
+  const axisNames = useMemo(
+    () => (source === 'elements' ? elementView.columns : scores.kind === 'loaded' ? scores.data.names : []),
+    [source, elementView, scores],
+  );
+  // Keep the axes valid when the available dimensions shrink (for example
+  // after elements are removed from the Analysis setup).
+  useEffect(() => {
+    const n = axisNames.length;
+    if (n === 0) return;
+    setXIdx((x) => (x < n ? x : 0));
+    setYIdx((y) => (y < n ? y : Math.min(1, n - 1)));
+  }, [axisNames]);
+
   const traces = useMemo((): ScatterTraceSpec[] => {
     const symIdx = combined.descriptiveColumns.indexOf(symbolColumn);
     const byGroup = new Map<string, ScatterPoint[]>(combined.groupNames.map((g) => [g, []]));
@@ -324,25 +407,26 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       if (x === null || y === null) continue;
       const row = combined.rows[rowIdx]!;
       const groupName = combined.groupOf[rowIdx]!;
-      const symbol =
-        symIdx >= 0
-          ? symbolFor(symbolLevels.indexOf(normalizeFilterValue(row.descriptive[symIdx])))
-          : symbolFor(0);
+      const symbolValue = symIdx >= 0 ? normalizeFilterValue(row.descriptive[symIdx]) : '';
+      const symbol = symIdx >= 0 ? symbolFor(symbolLevels.indexOf(symbolValue)) : symbolFor(0);
+      const label = labelValue(row, labelColumnName, combined, rowIdx + 1);
+      const id = row.visible_id ?? row.legacy_rowid ?? `Row ${rowIdx + 1}`;
+      // Legacy hover: group, ID, label column, symbol field, x and y values.
+      const hoverLines = [groupName, `${combined.visibleIdColumn}: ${id}`];
+      if (labelColumnName !== combined.visibleIdColumn) hoverLines.push(`${labelColumnName}: ${label}`);
+      if (symIdx >= 0 && symbolColumn !== combined.groupColumn) hoverLines.push(`${symbolColumn}: ${symbolValue}`);
+      hoverLines.push(`${axisNames[xIdx] ?? 'x'}: ${x}`, `${axisNames[yIdx] ?? 'y'}: ${y}`);
       byGroup.get(groupName)?.push({
         uuid: row.analytical_uuid,
         x,
         y,
-        label: labelFor(row, labelMode, rowIdx + 1),
-        hover:
-          row.visible_id !== null && row.visible_id !== undefined && row.visible_id !== ''
-            ? `${row.visible_id} (${groupName})`
-            : groupName,
+        label,
+        hover: hoverLines.join('<br>'),
         groupName,
         color: colorOf(groupName),
         symbol,
       });
     }
-    const level = ellipseLevel === 'off' ? null : Number(ellipseLevel);
     return [...byGroup.entries()]
       .filter(([, points]) => points.length > 0)
       .map(([name, points]) => ({
@@ -350,13 +434,14 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
         color: colorOf(name),
         symbol: symbolFor(0),
         points,
-        showLabels: labelMode !== 'anid',
-        ellipse:
-          level !== null && points.length >= 3
-            ? ellipsePoints(points.map((p) => p.x), points.map((p) => p.y), level)
-            : undefined,
+        showLabels,
+        ellipse: ellipseOn ? ellipsePoints(points.map((p) => p.x), points.map((p) => p.y), ellipseLevel) : undefined,
       }));
-  }, [combined, filteredIdx, coordinate, xIdx, yIdx, symbolColumn, symbolLevels, labelMode, ellipseLevel, colorOf]);
+  }, [combined, filteredIdx, coordinate, xIdx, yIdx, symbolColumn, symbolLevels, labelColumnName, showLabels, ellipseOn, ellipseLevel, colorOf, axisNames]);
+
+  const rowUuids = useMemo(() => combined.rows.map((r) => r.analytical_uuid), [combined]);
+  const selectUuids = useCallback((uuids: readonly string[]) => setSelection(replaceSelection(uuids)), []);
+  const clearSelected = useCallback(() => setSelection(emptySelection()), []);
 
   const selectedRows = useMemo(
     () => combined.rows.filter((r) => selection.uuids.has(r.analytical_uuid)),
@@ -376,46 +461,68 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
 
   const sameAxis = xIdx === yIdx;
 
+  // New groups land beside the first source with the backend's sanitized-name
+  // convention (`<folder>/<Name>.parquet`); existing targets use their path.
+  const newDestinationPath = (orderedPaths[0] ?? 'groups/group.parquet').replace(/[^/\\]+$/, newGroupFileName(newGroupName));
+  const existingGroups = useMemo(
+    () => ready.map((c) => ({ path: c.path, name: c.group?.group_name ?? c.path })),
+    [ready],
+  );
+  const newNameProblem =
+    assignTarget === '__new__' && newGroupName.trim() !== ''
+      ? newGroupNameProblem(newGroupName, newDestinationPath, existingGroups)
+      : null;
+
   const assign = useCallback(async () => {
     if (selection.uuids.size === 0) return;
-    setAssignState({ kind: 'loading' });
-    try {
-      const isNew = assignTarget === '__new__';
-      const name = newGroupName.trim();
-      // New groups land beside the sources with the backend's sanitized-name
-      // convention (`groups/<Name>.parquet`); existing targets use their path.
-      const firstPath = orderedPaths[0] ?? 'groups/group.parquet';
-      const destinationPath = isNew
-        ? firstPath.replace(/[^/\\]+$/,`${name.replace(/[^A-Za-z0-9._-]/g, '_') || 'group'}.parquet`)
-        : assignTarget;
-      let created = false;
-      for (const [sourcePath, uuids] of selectionBySource(combined, selection.uuids)) {
-        if (sourcePath === destinationPath) continue;
-        const sourceFile = files.find((f) => f.path === sourcePath);
-        if (!sourceFile) continue;
-        await deps.groups.transferUnits({
-          action: 'move',
-          source_path: sourcePath,
-          destination_path: destinationPath,
-          destination_group_name: isNew && !created ? name : null,
-          selected_uuids: uuids,
-          expected_source_revision: sourceFile.data.revision_id,
-        });
-        created = true;
+    const isNew = assignTarget === '__new__';
+    const name = newGroupName.trim();
+    const destinationPath = isNew ? newDestinationPath : assignTarget;
+    if (isNew) {
+      const problem = newGroupNameProblem(name, destinationPath, existingGroups);
+      if (problem) {
+        setAssignState({ kind: 'error', message: problem });
+        return;
       }
+    }
+    const bySource = selectionBySource(combined, selection.uuids);
+    const sourceOf = new Map<string, string>();
+    for (const [sourcePath, uuids] of bySource) for (const u of uuids) sourceOf.set(u, sourcePath);
+    const sources = [...bySource.keys()].filter((p) => p !== destinationPath);
+    if (sources.length === 0) {
+      setAssignState({ kind: 'error', message: 'Every selected unit is already in that group; nothing was moved.' });
+      return;
+    }
+    setAssignState({ kind: 'loading' });
+    const keep = (all: string[]) => all.filter((p) => p === destinationPath || selectedPaths.includes(p));
+    try {
+      const outcome = await moveAcrossSources(
+        deps.groups,
+        {
+          action: 'move',
+          source_path: sources[0]!,
+          destination_path: destinationPath,
+          destination_group_name: isNew ? name : null,
+          selected_uuids: [...sourceOf.keys()],
+          expected_source_revision: '',
+        },
+        { sourceOf, sources, revisions: new Map(files.map((f) => [f.path, f.data.revision_id])) },
+      );
       setSelection(replaceSelection([]));
-      setAssignState({ kind: 'loaded', data: null });
+      setAssignState({ kind: 'loaded', data: outcome.moved });
       // Rescan (a new group may exist, an emptied one may be gone) and keep
       // the current selection plus the destination group.
-      await rescan((all) =>
-        all.filter((p) => p === destinationPath || selectedPaths.includes(p)),
-      );
+      await rescan(keep);
       dataset.reload();
       notifyGroupsChanged();
     } catch (err: unknown) {
       setAssignState({ kind: 'error', message: errorText(err) });
+      // Part of a multi-source move may have committed: refresh revisions.
+      await rescan(keep).catch(() => undefined);
+      dataset.reload();
+      notifyGroupsChanged();
     }
-  }, [deps, combined, files, selection, assignTarget, newGroupName, orderedPaths, selectedPaths, rescan, dataset]);
+  }, [deps, combined, files, selection, assignTarget, newGroupName, newDestinationPath, existingGroups, selectedPaths, rescan, dataset]);
 
   const scoreState =
     source === 'elements' ? null : scores.kind === 'loading' ? 'loading' : scores.kind === 'error' ? scores.message : null;
@@ -468,7 +575,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       <div className="explore-controls">
         <label>
           Filter field
-          <select value={filterColumn} onChange={(e) => { setFilterColumn(e.target.value); setFilterValue(''); }}>
+          <select value={filterColumn} onChange={(e) => { setFilterColumn(e.target.value); setFilterValues(new Set()); }}>
             <option value="">(none)</option>
             {combined.descriptiveColumns.map((c) => (
               <option key={c} value={c}>
@@ -479,53 +586,84 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
         </label>
         {filterColumn !== '' && (
           <label>
-            Filter value
-            <select value={filterValue} onChange={(e) => setFilterValue(e.target.value)}>
-              <option value="">(all)</option>
-              {filterValues.map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </select>
+            Filter values
+            <ValueMultiSelect label="Filter values" values={filterChoices} selected={filterValues} onChange={setFilterValues} />
           </label>
         )}
+        {filterColumn !== '' && (
+          <button type="button" className="btn btn-sm" onClick={() => { setFilterColumn(''); setFilterValues(new Set()); }}>
+            Clear filter
+          </button>
+        )}
         <label>
-          Ellipse
-          <select value={ellipseLevel} onChange={(e) => setEllipseLevel(e.target.value)}>
-            {ELLIPSE_LEVELS.map((l) => (
-              <option key={l} value={l}>
-                {l === 'off' ? 'off' : `${Math.round(Number(l) * 100)}%`}
+          Colors
+          <select value={paletteTheme} onChange={(e) => setPaletteTheme(e.target.value as PaletteTheme)}>
+            {PALETTE_THEMES.map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
               </option>
             ))}
-          </select>
-        </label>
-        <label>
-          Symbols by
-          <select value={symbolColumn} onChange={(e) => setSymbolColumn(e.target.value)}>
-            <option value="">(none)</option>
-            {combined.descriptiveColumns.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Labels
-          <select value={labelMode} onChange={(e) => setLabelMode(e.target.value as LabelMode)}>
-            <option value="anid">None</option>
-            <option value="sampleId">Sample ID</option>
-            <option value="rowNumber">Row number</option>
           </select>
         </label>
         <label>
           Plot mode
           <select value={plotMode} onChange={(e) => setPlotMode(e.target.value as 'single' | 'multiplot')}>
             <option value="single">Single plot</option>
-            <option value="multiplot">Multiplot (all pairs)</option>
+            <option value="multiplot">Multiplot</option>
           </select>
         </label>
+      </div>
+      <div className="explore-controls">
+        <label className="field-check">
+          <input type="checkbox" checked={ellipseOn} onChange={(e) => setEllipseOn(e.target.checked)} /> Data ellipse
+        </label>
+        {ellipseOn && (
+          <label title="Data ellipses, not confidence ellipses: at 0.95 the ellipse encloses roughly 95% of a group's points.">
+            Ellipse level {ellipseLevel.toFixed(2)}
+            <input
+              type="range"
+              aria-label="Ellipse level"
+              min={0.5}
+              max={0.99}
+              step={0.01}
+              value={ellipseLevel}
+              onChange={(e) => setEllipseLevel(Number(e.target.value))}
+            />
+          </label>
+        )}
+        <label className="field-check">
+          <input type="checkbox" checked={useSymbols} onChange={(e) => setUseSymbols(e.target.checked)} /> Symbols
+        </label>
+        {useSymbols && (
+          <label>
+            Symbol field
+            <select value={symbolColumn} onChange={(e) => setSymbolChoice(e.target.value)}>
+              {combined.descriptiveColumns.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label className="field-check">
+          <input type="checkbox" checked={showLabels} onChange={(e) => setShowLabels(e.target.checked)} /> Point labels
+        </label>
+        {showLabels && (
+          <label>
+            Label column
+            <select value={labelColumnName} onChange={(e) => setLabelColumn(e.target.value)}>
+              <option value={combined.visibleIdColumn}>{combined.visibleIdColumn}</option>
+              {[...combined.descriptiveColumns, ...combined.elementalColumns]
+                .filter((c) => c !== combined.visibleIdColumn)
+                .map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+            </select>
+          </label>
+        )}
       </div>
       {symbolLevels.length > 10 && (
         <p className="muted">
@@ -552,9 +690,10 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
           values={elementView.values}
           groupLabels={combined.groupOf}
           groupNames={combined.groupNames}
+          palette={colors}
           rowIndices={filteredIdx}
-          rowUuids={combined.rows.map((r) => r.analytical_uuid)}
-          onSelect={(uuids) => setSelection(replaceSelection(uuids))}
+          rowUuids={rowUuids}
+          onSelect={selectUuids}
         />
       ) : sameAxis ? (
         <p className="muted">Pick two different axes to plot.</p>
@@ -565,8 +704,8 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
           yLabel={axisLabel(yIdx, 'Y')}
           dragMode="lasso"
           symbolLegend={symbolLegend}
-          onSelect={(uuids) => setSelection(replaceSelection(uuids))}
-          onClearSelection={() => setSelection(clearSelection(selection))}
+          onSelect={selectUuids}
+          onClearSelection={clearSelected}
         />
       )}
       <p className="muted" role="status">
@@ -600,7 +739,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
         <button
           type="button"
           className="btn btn-primary"
-          disabled={selection.uuids.size === 0 || assignTarget === '' || assignState.kind === 'loading' || (assignTarget === '__new__' && newGroupName.trim() === '')}
+          disabled={selection.uuids.size === 0 || assignTarget === '' || assignState.kind === 'loading' || (assignTarget === '__new__' && (newGroupName.trim() === '' || newNameProblem !== null))}
           onClick={() => void assign()}
         >
           <BusyLabel busy={assignState.kind === 'loading'} busyText="Assigning…">
@@ -612,7 +751,12 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
         <BusyNote>{assignTarget === '__new__' ? `Creating group “${newGroupName.trim()}” and moving units…` : 'Moving units into the group…'}</BusyNote>
       )}
       {assignState.kind === 'error' && <p role="alert">Assignment failed: {assignState.message}</p>}
-      {assignState.kind === 'loaded' && <p role="status" className="callout callout-success">Assignment committed.</p>}
+      {newNameProblem && <p role="alert">{newNameProblem}</p>}
+      {assignState.kind === 'loaded' && (
+        <p role="status" className="callout callout-success">
+          Moved {assignState.data} unit{assignState.data === 1 ? '' : 's'}.
+        </p>
+      )}
       </section>
       <TableCard
         title="Selected rows"

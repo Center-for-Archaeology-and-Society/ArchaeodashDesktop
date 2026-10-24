@@ -6,6 +6,12 @@ import {
   clearSelection,
   colorFor,
   ellipsePoints,
+  covTrob,
+  dark3Colors,
+  fQuantile2,
+  groupColors,
+  paletteColors,
+  rowPassesFilterValues,
   labelFor,
   normalizeFilterValue,
   replaceSelection,
@@ -69,27 +75,68 @@ test('chi-square quantile for 2 dof matches legacy values', () => {
   assert.throws(() => chiSquare2(1));
 });
 
-test('ellipse outlines a closed path around the data mean', () => {
-  const x = [1, 2, 3, 4, 5];
-  const y = [2, 4, 3, 5, 6];
+test('ellipse outlines a closed 52-point path around a symmetric centre', () => {
+  const x = [0, 2, 0, -2, 0, 1, -1, 1, -1];
+  const y = [1, 0, -1, 0, 0, 0.5, 0.5, -0.5, -0.5];
   const { px, py } = ellipsePoints(x, y, 0.95);
-  assert.equal(px.length, 37);
-  assert.equal(py.length, 37);
-  // Closed path.
-  assert.equal(px[0], px[36]);
-  assert.equal(py[0], py[36]);
-  // Centered near the mean (3, 4).
-  const cx = (Math.min(...px) + Math.max(...px)) / 2;
-  const cy = (Math.min(...py) + Math.max(...py)) / 2;
-  assert.ok(Math.abs(cx - 3) < 1e-9, `ellipse x-center ${cx} near mean 3`);
-  assert.ok(Math.abs(cy - 4) < 1e-9, `ellipse y-center ${cy} near mean 4`);
-  // Higher level strictly encloses lower level.
+  assert.equal(px.length, 52);
+  assert.equal(py.length, 52);
+  assert.ok(Math.abs(px[0]! - px[51]!) < 1e-9);
+  assert.ok(Math.abs(py[0]! - py[51]!) < 1e-9);
+  // Evenly spaced points on an ellipse average to its centre.
+  const cx = px.slice(0, 51).reduce((a, v) => a + v, 0) / 51;
+  const cy = py.slice(0, 51).reduce((a, v) => a + v, 0) / 51;
+  assert.ok(Math.abs(cx) < 1e-6, `x-centre ${cx}`);
+  assert.ok(Math.abs(cy) < 1e-6, `y-centre ${cy}`);
+  // Wider along x, where the data spread more.
+  assert.ok(Math.max(...px) > Math.max(...py));
   const half = ellipsePoints(x, y, 0.5);
   assert.ok(Math.max(...px) > Math.max(...half.px));
 });
 
-test('ellipse of fewer than two points is empty', () => {
+test('ellipse radius uses the F(2, n-1) quantile like stat_ellipse', () => {
+  // qf(0.9, 2, 4) = 4.324555...
+  assert.ok(Math.abs(fQuantile2(0.9, 4) - 4.32455532033676) < 1e-9);
+  // Large n approaches chi-square / 2.
+  assert.ok(Math.abs(2 * fQuantile2(0.95, 1e7) - chiSquare2(0.95)) < 1e-4);
+});
+
+test('ellipse needs three points with distinct x and y', () => {
   assert.deepEqual(ellipsePoints([1], [2], 0.95), { px: [], py: [] });
+  assert.deepEqual(ellipsePoints([1, 2], [2, 3], 0.95), { px: [], py: [] });
+  assert.deepEqual(ellipsePoints([1, 1, 1], [1, 2, 3], 0.95), { px: [], py: [] });
+  // Collinear points have a singular scatter.
+  assert.deepEqual(ellipsePoints([1, 2, 3, 4], [2, 4, 6, 8], 0.9), { px: [], py: [] });
+});
+
+test('covTrob downweights an outlier relative to the mean', () => {
+  const x = [0, 1, 0, 1, 0.5, 20];
+  const y = [0, 0, 1, 1, 0.5, 20];
+  const fit = covTrob(x, y)!;
+  const meanX = x.reduce((s, v) => s + v, 0) / x.length;
+  assert.ok(fit.center[0] < meanX, `robust centre ${fit.center[0]} below mean ${meanX}`);
+});
+
+test('Dark 3 palette matches R hcl.colors for two groups', () => {
+  // hcl.colors(2, "Dark 3") == c("#E16A86", "#00AD9A")
+  const two = dark3Colors(2);
+  assert.equal(two.length, 2);
+  const close = (hex: string, want: string) => {
+    const a = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+    const b = [1, 3, 5].map((i) => parseInt(want.slice(i, i + 2), 16));
+    return a.every((v, i) => Math.abs(v - b[i]!) <= 2);
+  };
+  assert.ok(close(two[0]!, '#E16A86'), two[0]);
+  assert.ok(close(two[1]!, '#00AD9A'), two[1]);
+  assert.deepEqual(paletteColors('viridis', 3), groupColors(3));
+});
+
+test('multi-value filter keeps rows whose value is chosen', () => {
+  const row = { analytical_uuid: 'u', descriptive: ['Baca', null] };
+  assert.ok(rowPassesFilterValues(row, 0, new Set()));
+  assert.ok(rowPassesFilterValues(row, 0, new Set(['Baca', 'Other'])));
+  assert.ok(!rowPassesFilterValues(row, 0, new Set(['Other'])));
+  assert.ok(rowPassesFilterValues(row, 1, new Set(['(Missing)'])));
 });
 
 test('groupColors spreads distinct viridis anchors across few groups', async () => {

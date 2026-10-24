@@ -87,8 +87,34 @@ test('progressive render chunk control exists with many pairs', () => {
       columns={['Ti', 'Sr', 'Zr', 'Ba', 'Ca', 'Mn', 'K', 'P']}
     />,
   );
-  // 8 columns -> 56 ordered pairs; the first chunk of 12 renders, the rest wait.
+  // 8 columns -> 56 ordered pairs; the first chunk of 12 draws, the rest follow.
   // SSR inserts comment nodes between interpolated text — strip them first.
   const flat = html.replace(/<!-- -->/g, '');
-  assert.ok(flat.includes('Continue rendering 44 more panels'), 'continue control present');
+  assert.ok(flat.includes('Drawing panels: 12 of 56'), 'progress shown');
+  assert.ok(flat.includes('>Stop<'), 'stop control present');
+  assert.equal((html.match(/class="multiplot-panel"/g) ?? []).length, 12);
+});
+
+test('X and Y selectors build the legacy Y-by-X facet grid', () => {
+  const html = renderToString(<Multiplot {...baseProps()} initialX={['Ti']} initialY={['Sr', 'Zr']} />);
+  assert.ok(html.includes('X columns') && html.includes('Y columns'), 'both pickers present');
+  // Ti x {Sr, Zr} -> two panels, in Y order.
+  assert.equal((html.match(/class="multiplot-panel"/g) ?? []).length, 2);
+  assert.ok(html.indexOf('Scatter of Sr by Ti') < html.indexOf('Scatter of Zr by Ti'));
+  assert.ok(html.includes('multiplot-legend'), 'shared group legend');
+});
+
+test('static panels draw axis ticks and survive large inputs without spreading', () => {
+  const n = 70_000;
+  const props: MultiplotProps = {
+    columns: ['a', 'b'],
+    values: [Array.from({ length: n }, (_, i) => i), Array.from({ length: n }, (_, i) => n - i)],
+    groupLabels: Array.from({ length: n }, () => 'G'),
+    groupNames: ['G'],
+    rowIndices: Array.from({ length: n }, (_, i) => i),
+    initialX: ['a'],
+    initialY: ['b'],
+  };
+  const html = renderToString(<Multiplot {...props} />);
+  assert.ok(html.includes('>20000<'), 'tick labels rendered');
 });

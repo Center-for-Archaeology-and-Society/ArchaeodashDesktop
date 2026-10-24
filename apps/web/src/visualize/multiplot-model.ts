@@ -105,6 +105,45 @@ export function allPairs(columnCount: number): PlotPair[] {
 }
 
 /**
+ * Legacy facet grid: one panel per (Y, X) combination with Y as rows and X
+ * as columns, in selection order, skipping X = Y (R drops those pairs).
+ */
+export function crossPairs(xIndices: readonly number[], yIndices: readonly number[]): PlotPair[] {
+  const pairs: PlotPair[] = [];
+  for (const y of yIndices) {
+    for (const x of xIndices) {
+      if (x !== y) pairs.push({ xIndex: x, yIndex: y });
+    }
+  }
+  return pairs;
+}
+
+/** Minimum and maximum without spreading large arrays (engine argument limits). */
+export function extent(values: Iterable<number>): [number, number] | null {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const v of values) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  return min <= max ? [min, max] : null;
+}
+
+/** About `count` round tick values covering [min, max] (1/2/5 × 10^k steps). */
+export function niceTicks(min: number, max: number, count = 4): number[] {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return [];
+  if (min === max) return [min];
+  const raw = (max - min) / Math.max(1, count);
+  const power = 10 ** Math.floor(Math.log10(raw));
+  const unit = [1, 2, 5, 10].find((m) => m * power >= raw)! * power;
+  const ticks: number[] = [];
+  for (let t = Math.ceil(min / unit) * unit; t <= max + unit * 1e-9; t += unit) {
+    ticks.push(Math.abs(t) < unit * 1e-9 ? 0 : Number(t.toPrecision(12)));
+  }
+  return ticks;
+}
+
+/**
  * Human-readable sampling status for the interactive ceiling (Section 3.2:
  * preserve the 100k ceiling but display the deterministic sampling
  * status/count). Returns null when nothing was dropped.

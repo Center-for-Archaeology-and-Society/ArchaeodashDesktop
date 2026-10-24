@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { allPairs, samplingPlan, samplingStatusText, svgToDataUrl, uuidsFromSelectedEvent } from './multiplot-model.ts';
+import { allPairs, crossPairs, extent, niceTicks, samplingPlan, samplingStatusText, svgToDataUrl, uuidsFromSelectedEvent } from './multiplot-model.ts';
 
 test('group/facet sampling preserves every row when below the cap', () => {
   const rows = [0, 1, 2, 3];
@@ -137,4 +137,21 @@ test('selection uuids are extracted from plotly_selected customdata only', () =>
   assert.deepEqual(uuidsFromSelectedEvent(event), ['uuid-1', 'uuid-2']);
   assert.deepEqual(uuidsFromSelectedEvent(null), []);
   assert.deepEqual(uuidsFromSelectedEvent({ points: [] }), []);
+});
+
+test('crossPairs is Y-major and skips identical axes', () => {
+  assert.deepEqual(crossPairs([0, 1], [1, 2]), [
+    { xIndex: 0, yIndex: 1 },
+    { xIndex: 0, yIndex: 2 },
+    { xIndex: 1, yIndex: 2 },
+  ]);
+  assert.deepEqual(crossPairs([], [1]), []);
+});
+
+test('extent and niceTicks', () => {
+  assert.deepEqual(extent([3, -1, 7]), [-1, 7]);
+  assert.equal(extent([]), null);
+  assert.deepEqual(niceTicks(0, 10, 4), [0, 5, 10]);
+  assert.deepEqual(niceTicks(0.12, 0.5, 4), [0.2, 0.3, 0.4, 0.5]);
+  assert.deepEqual(niceTicks(2, 2), [2]);
 });

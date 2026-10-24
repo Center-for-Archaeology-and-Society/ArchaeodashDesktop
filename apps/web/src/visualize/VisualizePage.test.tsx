@@ -110,9 +110,11 @@ test('visualize page renders axis/filter/ellipse/symbol/label/assignment control
     'X axis',
     'Y axis',
     'PCA',
-    'Ellipse',
-    'Symbols by',
-    'Labels',
+    'Data ellipse',
+    'Ellipse level',
+    'Symbols',
+    'Point labels',
+    'Colors',
     'Assign selected samples',
     'Target group',
     'Selected rows',
@@ -203,5 +205,14 @@ test('multiplot point size and height controls are exposed', () => {
     />,
   );
   assert.ok(html.includes('Point size'), 'point size control');
-  assert.ok(html.includes('Height'), 'height control');
+  assert.ok(html.includes('Plot height'), 'height control');
+});
+
+test('new group names that match an existing group are refused', async () => {
+  const { newGroupNameProblem, newGroupFileName } = await import('./VisualizePage.tsx');
+  const existing = [{ path: 'groups/Group_A.parquet', name: 'Group A' }];
+  assert.equal(newGroupFileName('Group A'), 'Group_A.parquet');
+  assert.match(newGroupNameProblem('group a', 'groups/x.parquet', existing) ?? '', /already exists/);
+  assert.match(newGroupNameProblem('Group?A', 'groups/Group_A.parquet', existing) ?? '', /already exists/);
+  assert.equal(newGroupNameProblem('Fresh', 'groups/Fresh.parquet', existing), null);
 });
