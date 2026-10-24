@@ -559,7 +559,9 @@ export function LdaResult({
   /** Input columns (scaling rows); defaults to the response's column names. */
   columns?: readonly string[];
 }): ReactElement {
-  const layout = ldaLayout(result);
+  // Memoized: `layout.names` feeds the vector plot's memo, and a fresh tuple
+  // per render would redraw the Plotly chart on every parent render.
+  const layout = useMemo(() => ldaLayout(result), [result]);
   const variables = useMemo(
     () => (result.column_names.length > 0 ? result.column_names : columns ?? []).slice(0, result.scaling.length),
     [result, columns],
@@ -653,12 +655,14 @@ export function LdaView({
     [deps, data, extraPaths, groupColumn, columns, transformation],
   );
 
+  // Stable per data/column: the scatter and strip plots memoize on it.
+  const colorBy = useMemo(
+    () => data.rows.map((r) => r.descriptive[data.descriptive_columns.indexOf(groupColumn)] ?? '(Missing)'),
+    [data, groupColumn],
+  );
   if (!groupColumn) {
     return <p role="alert">LDA needs a descriptive group column; this dataset has none.</p>;
   }
-  const colorBy = data.rows.map(
-    (r) => r.descriptive[data.descriptive_columns.indexOf(groupColumn)] ?? '(Missing)',
-  );
   return (
     <div className="results">
       <label className="field field-inline">
