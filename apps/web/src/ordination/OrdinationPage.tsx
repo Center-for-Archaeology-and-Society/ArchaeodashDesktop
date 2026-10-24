@@ -1,7 +1,9 @@
 /**
- * Ordination route (Section 8.5–8.7): PCA with explained-variance bars and a
- * score scatter/table, UMAP embedding with the fixed legacy seed default, and
- * LDA group-gated on the first descriptive column. Ordinations are ephemeral
+ * Ordination route (Section 8.5–8.7): PCA with explained-variance bars, a
+ * score scatter (group or cos² colouring)/table, the variables plot coloured by
+ * contribution and the min(4, K) contribution table; UMAP embedding with the
+ * fixed legacy seed default; and LDA group-gated on the first descriptive
+ * column, with the LD1/LD2 vector view or its one-dimensional alternative. Ordinations are ephemeral
  * (Section 5): nothing is persisted; recompute re-requests. PCA scores export
  * as ephemeral CSV via the exports service (Section 7.3).
  */
@@ -25,10 +27,12 @@ import { asRowsResponse, defaultGroupColumn, inputPaths } from '../visualize/com
 import { groupColors } from '../visualize/visualize-model.ts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
 import { UMAP_SEED, analysisInput, setupSummary } from '../analysis-setup/setup.ts';
-import { BusyNote } from '../ui/Busy.tsx';
+import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
 import { TableCard, num, type TableSheet } from '../ui/TableExport.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
 import { TabPanels } from '../ui/TabPanels.tsx';
+import { ContributionTableCard, LdaScalingBars, LdaStripPlot, LdaVectorPlot, PcaVariablesPlot } from './OrdinationCharts.tsx';
+import { GRADIENT_SCALE, componentCount, individualCos2, ldaLayout, requestGate } from './ordination-model.ts';
 
 export interface OrdinationDeps {
   readonly groups: GroupsService;
@@ -118,7 +122,8 @@ function ScoreTable({
   );
 }
 
-/** Score scatter with labelled axes (Plotly, SVG renderer), colored by group. */
+/** Score scatter with labelled axes (Plotly, SVG renderer), colored by group
+ *  or, when `colorValues` is given, by a continuous value with a colorbar. */
 function ScatterPlot({
   x,
   y,
@@ -127,6 +132,8 @@ function ScatterPlot({
   groups,
   ids,
   title,
+  colorValues,
+  colorTitle = 'value',
 }: {
   x: number[];
   y: number[];
@@ -138,9 +145,34 @@ function ScatterPlot({
   ids?: readonly string[];
   /** Name for saved images. */
   title?: string;
+  /** Continuous value per point (e.g. cos²); replaces group colouring. */
+  colorValues?: readonly number[];
+  colorTitle?: string;
 }): ReactElement | null {
   const data = useMemo(() => {
     const labels = groups && groups.length === x.length ? groups : x.map(() => 'All rows');
+    if (colorValues && colorValues.length === x.length) {
+      return [
+        {
+          type: 'scatter',
+          mode: 'markers',
+          name: colorTitle,
+          x,
+          y,
+          text: labels.map((g, i) => `${ids?.[i] || `Row ${i + 1}`} · ${g}`),
+          customdata: [...colorValues],
+          hovertemplate: `%{text}<br>${xLabel}: %{x:.3f}<br>${yLabel}: %{y:.3f}<br>${colorTitle}: %{customdata:.3f}<extra></extra>`,
+          marker: {
+            color: [...colorValues],
+            colorscale: GRADIENT_SCALE,
+            showscale: true,
+            colorbar: { title: { text: colorTitle }, thickness: 12 },
+            size: 7,
+            opacity: 0.85,
+          },
+        } as Data,
+      ];
+    }
     const names = [...new Set(labels)];
     const colors = names.length === 1 ? ['#1f8a63'] : groupColors(names.length);
     return names.map((name, gi) => {
@@ -156,7 +188,7 @@ function ScatterPlot({
         marker: { color: colors[gi], size: 7, opacity: 0.85 },
       } as Data;
     });
-  }, [x, y, xLabel, yLabel, groups, ids]);
+  }, [x, y, xLabel, yLabel, groups, ids, colorValues, colorTitle]);
   const layout = useMemo(
     () => ({
       xaxis: { title: { text: xLabel }, zeroline: true },
@@ -180,23 +212,39 @@ function ScatterPlot({
 /** Components shown in the scree chart and variance table. */
 const SCREE_COMPONENTS = 10;
 
-/** Pure PCA result presentation (scree chart, variance table, scores). */
+type PcaColorBy = 'group' | 'cos2';
+
+/** Pure PCA result presentation (scree chart, variance table, scores,
+ *  variables plot, contribution table). */
 export function PcaResult({
   result,
   onRecompute,
   onExportScores,
+  exportBusy = false,
+  exportError,
   groups,
   rows,
   columns,
+  initialColorBy = 'group',
 }: {
   result: PcaResponse;
   onRecompute: () => void;
   onExportScores?: () => void;
+  /** The score export is running. */
+  exportBusy?: boolean;
+  /** Message from the last failed score export. */
+  exportError?: string;
   groups?: readonly string[];
   rows?: RowLabels;
   /** Input columns (loading rows); defaults to the response's column names. */
   columns?: readonly string[];
+  initialColorBy?: PcaColorBy;
 }): ReactElement {
+  const [colorBy, setColorBy] = useState<PcaColorBy>(initialColorBy);
+  const components = Math.min(componentCount(result.scores), result.score_names.length);
+  const scoreX = useMemo(() => result.scores.map((r) => r[0] ?? 0), [result]);
+  const scoreY = useMemo(() => result.scores.map((r) => r[1] ?? 0), [result]);
+  const cos2 = useMemo(() => (colorBy === 'cos2' ? individualCos2(result.scores, 0, 1) : undefined), [result, colorBy]);
   const k = Math.min(SCREE_COMPONENTS, result.explained_variance.length);
   const names = result.score_names.slice(0, k);
   const pct = (v: number | undefined) => `${((v ?? 0) * 100).toFixed(1)}%`;
@@ -233,7 +281,10 @@ export function PcaResult({
     columns: ['Component', 'Variance (%)', 'Cumulative (%)', 'Standard deviation'],
     rows: result.score_names.map((name, i) => [name, num((result.explained_variance[i] ?? NaN) * 100), num((result.cumulative_variance[i] ?? NaN) * 100), num(result.sdev[i])]),
   };
-  const loadingNames = (columns ?? (result as PcaResponse & { column_names?: string[] }).column_names ?? []).slice(0, result.rotation.length);
+  const loadingNames = useMemo(
+    () => (columns ?? (result as PcaResponse & { column_names?: string[] }).column_names ?? []).slice(0, result.rotation.length),
+    [columns, result],
+  );
   const loadingsSheet: TableSheet = {
     name: 'Loadings',
     columns: ['Element', ...result.score_names],
@@ -284,22 +335,54 @@ export function PcaResult({
               Recompute
             </button>
             {onExportScores && (
-              <button type="button" className="btn btn-sm btn-ghost" onClick={onExportScores} title="Scores with every descriptive column (CSV)">
-                Scores with sample data (CSV)
+              <button type="button" className="btn btn-sm btn-ghost" onClick={onExportScores} disabled={exportBusy} title="Scores with every descriptive column (CSV)">
+                <BusyLabel busy={exportBusy}>Scores with sample data (CSV)</BusyLabel>
               </button>
             )}
           </div>
         </header>
-        <ScatterPlot
-          x={result.scores.map((r) => r[0] ?? 0)}
-          y={result.scores.map((r) => r[1] ?? 0)}
-          xLabel={pc1}
-          yLabel={pc2}
-          groups={groups}
-          ids={rows?.ids}
-          title="PCA scores"
-        />
+        {exportError && <p role="alert" className="export-error">Export failed: {exportError}</p>}
+        {components >= 2 ? (
+          <>
+            <label className="field field-inline">
+              Color by
+              <select value={colorBy} onChange={(e) => setColorBy(e.target.value as PcaColorBy)}>
+                <option value="group">Group</option>
+                <option value="cos2">Quality of representation (cos²)</option>
+              </select>
+            </label>
+            {colorBy === 'cos2' && (
+              <p className="card-note">
+                cos² on {result.score_names[0]}–{result.score_names[1]}: the share of each sample&apos;s squared distance from the centre that these two components capture.
+              </p>
+            )}
+            <ScatterPlot
+              x={scoreX}
+              y={scoreY}
+              xLabel={pc1}
+              yLabel={pc2}
+              groups={groups}
+              ids={rows?.ids}
+              title={colorBy === 'cos2' ? 'PCA scores (cos2)' : 'PCA scores'}
+              colorValues={cos2}
+              colorTitle="cos²"
+            />
+          </>
+        ) : (
+          <p role="status">Only one principal component was computed; the score and variable plots need two.</p>
+        )}
       </section>
+      {components >= 2 && componentCount(result.rotation) >= 2 && (
+        <section className="card">
+          <header className="card-header"><h2 className="card-title">Variables</h2></header>
+          <p className="card-note">
+            Arrows to each variable&apos;s coordinates (loading × component standard deviation), coloured by its contribution (%) to {result.score_names[0]} and {result.score_names[1]}, weighted by their eigenvalues.
+            {result.scale ? ' The circle is the unit correlation circle.' : ''}
+          </p>
+          <PcaVariablesPlot rotation={result.rotation} sdev={result.sdev} names={loadingNames} xLabel={pc1} yLabel={pc2} scaled={Boolean(result.scale)} />
+        </section>
+      )}
+      <ContributionTableCard rotation={result.rotation} names={loadingNames} scoreNames={result.score_names} />
       <ScoreTable title="Score table" fileName="PCA scores" scoreNames={result.score_names} scores={result.scores} rows={rows} />
       <TableCard title="Loadings" fileName="PCA loadings" sheets={() => [loadingsSheet]}>
         <table className="data-table numeric">
@@ -330,19 +413,24 @@ function useOrdination<TResp>(
   deps: readonly unknown[],
 ): { state: AsyncState<TResp>; reload: () => void } {
   const [state, setState] = useState<AsyncState<TResp>>({ kind: 'idle' });
+  // Only the latest request may set state: a slower earlier response (stale
+  // inputs or a superseded recompute) is dropped.
+  const [gate] = useState(requestGate);
   const run = useCallback(async () => {
+    const current = gate.begin();
     setState({ kind: 'loading' });
     try {
       const r = await request();
-      setState({ kind: 'loaded', data: r });
+      if (current()) setState({ kind: 'loaded', data: r });
     } catch (err: unknown) {
-      setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+      if (current()) setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
   useEffect(() => {
     void run();
-  }, [run]);
+    return gate.cancel;
+  }, [run, gate]);
   return { state, reload: () => void run() };
 }
 
@@ -371,6 +459,17 @@ function PcaView({ deps, data, extraPaths, groups, rows, columns, transformation
     [data, extraPaths, columns, transformation],
   );
   const { state, reload } = useOrdination<PcaResponse>(() => deps.ordination.pca(request), [deps, request]);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportError, setExportError] = useState('');
+  const exportScores = () => {
+    setExportBusy(true);
+    setExportError('');
+    void Promise.resolve()
+      .then(() => deps.exports.pcaScores(request))
+      .then(downloadExportResult)
+      .catch((cause: unknown) => setExportError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setExportBusy(false));
+  };
   return (
     <>
       {state.kind === 'loading' && <BusyNote>Computing PCA…</BusyNote>}
@@ -382,12 +481,9 @@ function PcaView({ deps, data, extraPaths, groups, rows, columns, transformation
           rows={rows}
           columns={request.columns}
           onRecompute={reload}
-          onExportScores={() =>
-            void deps.exports
-              .pcaScores(request)
-              .then(downloadExportResult)
-              .catch((err: unknown) => console.error(err))
-          }
+          onExportScores={exportScores}
+          exportBusy={exportBusy}
+          exportError={exportError}
         />
       )}
       {state.kind === 'idle' && <p>No PCA yet.</p>}
@@ -437,6 +533,88 @@ export function UmapResult({ result, groups, rows }: { result: UmapResponse; gro
       </section>
       <ScoreTable title="Score table" fileName="UMAP scores" scoreNames={result.score_names} scores={result.embedding} rows={rows} />
     </div>
+  );
+}
+
+/**
+ * Pure LDA result presentation: score scatter and LD1/LD2 vector plot when two
+ * discriminants exist; with one, an LD1 strip plot by group and LD1
+ * coefficient bars instead (IMPLEMENTATION.md §3.2, Section 8.7).
+ */
+export function LdaResult({
+  result,
+  groups,
+  rows,
+  columns,
+}: {
+  result: LdaResponse;
+  groups?: readonly string[];
+  rows?: RowLabels;
+  /** Input columns (scaling rows); defaults to the response's column names. */
+  columns?: readonly string[];
+}): ReactElement {
+  const layout = ldaLayout(result);
+  const variables = useMemo(
+    () => (result.column_names.length > 0 ? result.column_names : columns ?? []).slice(0, result.scaling.length),
+    [result, columns],
+  );
+  const ld1 = useMemo(() => result.scores.map((r) => r[0] ?? 0), [result]);
+  const ld2 = useMemo(() => result.scores.map((r) => r[1] ?? 0), [result]);
+  return (
+    <>
+      <section className="card">
+        <header className="card-header">
+          <h2 className="card-title">Linear discriminants</h2>
+        </header>
+        <p className="card-note">
+          Groups: {result.levels.join(', ')} — priors{' '}
+          {result.prior.map((p) => p.toFixed(3)).join(', ')}
+        </p>
+        {result.warnings.length > 0 && (
+          <p role="status" className="callout callout-info">Warnings: {result.warnings.join('; ')}</p>
+        )}
+        {layout.kind === 'none' && <p role="alert">The LDA returned no discriminants to plot.</p>}
+        {layout.kind === 'one' && (
+          <>
+            <p role="status" className="callout callout-info">
+              Only one linear discriminant ({layout.name}) exists for these groups, so there is no {layout.name}/LD2 plane: showing {layout.name} scores by group and {layout.name} coefficients instead of the scatter and vector plot.
+            </p>
+            <LdaStripPlot values={ld1} groups={groups} ids={rows?.ids} axisName={layout.name} />
+          </>
+        )}
+        {layout.kind === 'two' && (
+          <ScatterPlot
+            x={ld1}
+            y={ld2}
+            xLabel={layout.names[0]}
+            yLabel={layout.names[1]}
+            groups={groups}
+            ids={rows?.ids}
+            title="LDA scores"
+          />
+        )}
+      </section>
+      {layout.kind !== 'none' && (
+        <section className="card">
+          <header className="card-header">
+            <h2 className="card-title">{layout.kind === 'two' ? 'Discriminant vectors' : `${layout.name} coefficients`}</h2>
+          </header>
+          <p className="card-note">Each variable&apos;s scaling coefficients on the discriminants.</p>
+          {layout.kind === 'two' ? (
+            <LdaVectorPlot scaling={result.scaling} names={variables} axisNames={layout.names} />
+          ) : (
+            <LdaScalingBars scaling={result.scaling} names={variables} axisName={layout.name} />
+          )}
+        </section>
+      )}
+      <ScoreTable
+        title="Score table"
+        fileName="LDA scores"
+        scoreNames={result.score_names}
+        scores={result.scores}
+        rows={rows ? { ...rows, groups } : undefined}
+      />
+    </>
   );
 }
 
@@ -490,38 +668,7 @@ export function LdaView({
       {state.kind === 'loading' && <BusyNote>Computing LDA…</BusyNote>}
       {state.kind === 'error' && <p role="alert">Error: {state.message}</p>}
       {state.kind === 'idle' && <p>No LDA yet.</p>}
-      {state.kind === 'loaded' && (
-        <>
-          <section className="card">
-            <header className="card-header">
-              <h2 className="card-title">Linear discriminants</h2>
-            </header>
-            <p className="card-note">
-              Groups: {state.data.levels.join(', ')} — priors{' '}
-              {state.data.prior.map((p) => p.toFixed(3)).join(', ')}
-            </p>
-            {state.data.warnings.length > 0 && (
-              <p role="status" className="callout callout-info">Warnings: {state.data.warnings.join('; ')}</p>
-            )}
-            <ScatterPlot
-              x={state.data.scores.map((r) => r[0] ?? 0)}
-              y={state.data.scores.map((r) => r[1] ?? 0)}
-              xLabel="LD1"
-              yLabel="LD2"
-              groups={colorBy}
-              ids={rows?.ids}
-              title="LDA scores"
-            />
-          </section>
-          <ScoreTable
-            title="Score table"
-            fileName="LDA scores"
-            scoreNames={state.data.score_names}
-            scores={state.data.scores}
-            rows={rows ? { ...rows, groups: colorBy } : undefined}
-          />
-        </>
-      )}
+      {state.kind === 'loaded' && <LdaResult result={state.data} groups={colorBy} rows={rows} columns={columns} />}
     </div>
   );
 }

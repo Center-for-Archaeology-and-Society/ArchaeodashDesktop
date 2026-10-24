@@ -9,7 +9,7 @@ import type {
   PcaResponse,
   UmapResponse,
 } from '@archaeodash/client';
-import { LdaView, OrdinationPage, PcaResult, UmapResult } from './OrdinationPage.tsx';
+import { LdaResult, LdaView, OrdinationPage, PcaResult, UmapResult } from './OrdinationPage.tsx';
 import type { ExportsService } from '@archaeodash/client';
 
 const rows = {
@@ -183,4 +183,59 @@ test('LDA view shows group levels/priors and gates on missing group column', () 
     <LdaView deps={makeDeps()} data={{ ...rows, descriptive_columns: [] }} />,
   );
   assert.ok(noGroup.includes('LDA needs a descriptive group column'));
+});
+
+test('PCA view adds the colour toggle, variables plot, and min(4, K) contribution table', () => {
+  const html = renderToString(<PcaResult result={pca} onRecompute={() => {}} />);
+  assert.ok(html.includes('Color by') && html.includes('cos²'), 'group/cos² colour toggle');
+  assert.ok(html.includes('PCA variables coloured by contribution'), 'variables plot');
+  assert.ok(html.includes('Variable contributions'));
+  assert.ok(html.includes('min(4, number of components) = 2'), 'contribution rule labelled');
+  assert.ok(html.includes('only 2 components available'));
+  const cos2 = renderToString(<PcaResult result={pca} onRecompute={() => {}} initialColorBy="cos2" />);
+  assert.ok(cos2.includes('cos² on '), 'cos² note');
+});
+
+test('PCA score export failure is shown inline', () => {
+  const html = renderToString(
+    <PcaResult result={pca} onRecompute={() => {}} onExportScores={() => {}} exportError="disk full" />,
+  );
+  assert.ok(html.includes('role="alert"') && html.includes('Export failed: <!-- -->disk full'));
+});
+
+test('PCA with one component skips the two-axis plots', () => {
+  const one: PcaResponse = {
+    ...pca,
+    score_names: ['PC1'],
+    sdev: [1.4],
+    explained_variance: [1],
+    cumulative_variance: [1],
+    rotation: [[0.6], [0.8]],
+    scores: [[1], [-1]],
+  };
+  const html = renderToString(<PcaResult result={one} onRecompute={() => {}} />);
+  assert.ok(html.includes('Only one principal component'));
+  assert.ok(!html.includes('PCA variables coloured by contribution'));
+  assert.ok(html.includes('Variable contributions'));
+});
+
+test('LDA with two discriminants shows the score scatter and vector plot', () => {
+  const two: LdaResponse = {
+    ...lda,
+    levels: ['A', 'B', 'C'],
+    prior: [0.3, 0.3, 0.4],
+    scaling: [[1, 0.5], [-0.2, 2]],
+    score_names: ['LD1', 'LD2'],
+    scores: [[0.5, 0.1], [-0.5, 0.2]],
+  };
+  const html = renderToString(<LdaResult result={two} />);
+  assert.ok(html.includes('Scatter of LD2 by LD1'));
+  assert.ok(html.includes('LDA vectors on LD1 and LD2'));
+});
+
+test('LDA with one discriminant renders the one-dimensional alternative, not a fake LD2', () => {
+  const html = renderToString(<LdaResult result={lda} groups={['Baca']} />);
+  assert.ok(html.includes('Only one linear discriminant (<!-- -->LD1<!-- -->)'));
+  assert.ok(html.includes('LD1 scores by group') && html.includes('LD1 coefficients by variable'));
+  assert.ok(!html.includes('Scatter of LD2'), 'no fabricated LD2 axis');
 });
