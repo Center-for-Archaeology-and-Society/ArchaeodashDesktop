@@ -9,9 +9,9 @@ use archaeodash_contracts::{
     ImportPreviewResponse, PartitionPreview,
 };
 use archaeodash_data_io::{
-    default_chem_columns, default_id_column, load_source, partition_by_group, sanitize_group_name,
-    write_group_file, ImportError, ImportRecipe, LoadedSource, Partition, ScanCandidate,
-    SourceFormat,
+    default_chem_columns_for_frame, default_id_column, load_source, partition_by_group,
+    sanitize_group_name, write_group_file, ImportError, ImportRecipe, LoadedSource, Partition,
+    ScanCandidate, SourceFormat,
 };
 use archaeodash_file_store_fs::FsGroupFileStore;
 use sha2::{Digest, Sha256};
@@ -22,6 +22,10 @@ const DEFAULT_DESTINATION_DIR: &str = "groups";
 /// Initial revision for a first import (later revisions go through the
 /// transactional group store, not this use case).
 const INITIAL_REVISION: &str = "rev-1";
+
+/// Visible-ID column used for automatic IDs: the 1-based source row number
+/// that `dataLoader` prepends to every frame.
+pub const AUTOMATIC_ID_COLUMN: &str = "rowid";
 
 fn io_err(e: std::io::Error) -> ImportError {
     ImportError::Io(e.to_string())
@@ -53,6 +57,21 @@ fn import_partitions(
             "choose a group column or provide one group name".into(),
         )),
         (None, None) => Ok(Vec::new()),
+    }
+}
+
+/// Visible-ID role column for a commit. An omitted choice keeps the legacy
+/// default (`anid` when present); an explicit empty choice or `rowid` means
+/// automatic IDs, which use the source row numbers like the legacy loader's
+/// "Use rowid (default)" option.
+fn resolve_visible_id(requested: Option<&str>, frame: &archaeodash_data_io::TextFrame) -> String {
+    match requested.map(str::trim) {
+        Some("") | Some(AUTOMATIC_ID_COLUMN) => AUTOMATIC_ID_COLUMN.to_string(),
+        Some(column) => column.to_string(),
+        None => match default_id_column(&frame.columns) {
+            Some(column) => column,
+            None => "anid".to_string(),
+        },
     }
 }
 
@@ -99,7 +118,7 @@ impl ImportService {
         let loaded = self.load(&req.source, req.sheet.as_deref())?;
         let frame = loaded.frame;
         let id_column = default_id_column(&frame.columns);
-        let elemental_columns = default_chem_columns(&frame.columns);
+        let elemental_columns = default_chem_columns_for_frame(&frame);
         let partitions: Vec<PartitionPreview> = import_partitions(
             &frame,
             req.group_column.as_deref(),
@@ -147,15 +166,11 @@ impl ImportService {
         let source_path = self.resolve(&req.source)?;
         let frame = self.load(&req.source, req.sheet.as_deref())?.frame;
 
-        let visible_id_column = req
-            .visible_id_column
-            .clone()
-            .or_else(|| default_id_column(&frame.columns))
-            .unwrap_or_else(|| "anid".to_string());
+        let visible_id_column = resolve_visible_id(req.visible_id_column.as_deref(), &frame);
         let elemental_columns = req
             .elemental_columns
             .clone()
-            .unwrap_or_else(|| default_chem_columns(&frame.columns));
+            .unwrap_or_else(|| default_chem_columns_for_frame(&frame));
         let recipe = req
             .recipe
             .clone()
@@ -608,6 +623,77 @@ mod tests {
         assert!(matches!(err, ImportError::Parse(msg) if msg.contains("blank")));
         // Nothing was published for the rejected import.
         assert!(!dir.path().join("groups").exists());
+    }
+
+    #[test]
+    fn default_measured_columns_exclude_text_columns() {
+        let dir = tempdir::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("plain.csv"),
+            "anid,Site,Depth,Weight
+A1,Baca,1.5,10
+A2,Zuni,2,11
+",
+        )
+        .expect("write");
+        let service = ImportService::new(dir.path()).expect("service");
+        let preview = service
+            .preview(&ImportPreviewRequest {
+                sheet: None,
+                source: "plain.csv".into(),
+                group_column: None,
+                group_name: None,
+            })
+            .expect("preview");
+        assert_eq!(preview.elemental_columns, vec!["Depth", "Weight"]);
+        let committed = service
+            .commit(&ImportCommitRequest {
+                sheet: None,
+                source: "plain.csv".into(),
+                group_column: "Site".into(),
+                group_name: None,
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+            })
+            .expect("commit");
+        let data = read_group_file(&dir.path().join(&committed.groups[0].path)).expect("read");
+        assert_eq!(data.profile.roles.elemental, vec!["Depth", "Weight"]);
+        assert_eq!(data.profile.roles.descriptive, vec!["Site"]);
+    }
+
+    #[test]
+    fn automatic_ids_use_row_numbers_even_when_anid_exists() {
+        let (service, dir, source) = service_with_source();
+        let base = ImportCommitRequest {
+            sheet: None,
+            source,
+            group_column: String::new(),
+            group_name: Some("All".into()),
+            visible_id_column: Some(String::new()),
+            elemental_columns: Some(vec!["as".into(), "fe".into()]),
+            recipe: None,
+            destination_dir: Some("auto".into()),
+        };
+        let committed = service.commit(&base).expect("automatic ids");
+        let data = read_group_file(&dir.path().join(&committed.groups[0].path)).expect("read");
+        assert_eq!(data.profile.roles.visible_id, "rowid");
+        assert_eq!(data.rows[0].visible.as_deref(), Some("1"));
+        // The anid column is kept as descriptive data instead.
+        assert_eq!(data.profile.roles.descriptive[0], "anid");
+
+        // Omitting the choice keeps the legacy anid default.
+        let legacy = service
+            .commit(&ImportCommitRequest {
+                visible_id_column: None,
+                destination_dir: Some("legacy".into()),
+                ..base
+            })
+            .expect("legacy default");
+        let data = read_group_file(&dir.path().join(&legacy.groups[0].path)).expect("read");
+        assert_eq!(data.profile.roles.visible_id, "anid");
+        assert_eq!(data.rows[0].visible.as_deref(), Some("A1"));
     }
 
     #[test]

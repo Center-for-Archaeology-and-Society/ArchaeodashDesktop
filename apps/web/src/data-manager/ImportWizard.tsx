@@ -9,6 +9,7 @@ import type { ImportPreviewResponse, StagedFile } from '@archaeodash/contracts';
 import { ImportProgress, type ImportStep } from './ImportProgress.tsx';
 import { DEFAULT_VALUE_OPTIONS, ImportValueOptions, recipeFromOptions } from './ImportValueOptions.tsx';
 import type { DataManagerTransport } from './types.ts';
+import { idColumnChoices, measuredColumnChoices, visibleIdForCommit } from './import-request.ts';
 
 export type ImportCommitResult = Awaited<ReturnType<DataManagerTransport['imports']['commit']>>;
 
@@ -121,7 +122,7 @@ export function ImportWizard({ transport, onImported, onClose }: ImportWizardPro
     if (done || !preview || !measured.length || (groupMode === 'column' && !groupColumn) || (groupMode === 'single' && !groupName.trim())) return;
     setMessage('');
     await run('importing', async () => {
-      const result = await transport.imports.commit({ source, group_column: groupMode === 'column' ? groupColumn : '', group_name: groupMode === 'single' ? groupName.trim() : null, visible_id_column: idColumn || null, elemental_columns: measured, recipe: recipeFromOptions(valueOptions), destination_dir: destinationFolder, ...sheetArg(sheet) });
+      const result = await transport.imports.commit({ source, group_column: groupMode === 'column' ? groupColumn : '', group_name: groupMode === 'single' ? groupName.trim() : null, visible_id_column: visibleIdForCommit(idColumn), elemental_columns: measured, recipe: recipeFromOptions(valueOptions), destination_dir: destinationFolder, ...sheetArg(sheet) });
       setDone(result);
       setMessage(`Imported ${result.groups.length} group${result.groups.length === 1 ? '' : 's'} (${result.groups.reduce((sum, item) => sum + item.row_count, 0)} rows).`);
       await onImported?.(result);
@@ -150,10 +151,10 @@ export function ImportWizard({ transport, onImported, onClose }: ImportWizardPro
         <button type="button" disabled={locked || !groupName.trim()} onClick={() => void previewSingleGroup()}>Preview single group</button>
       </div>}
       <label>Visible ID column <select value={idColumn} onChange={event => { setIdColumn(event.target.value); setMeasured(current => current.filter(item => item !== event.target.value)); }} disabled={locked}>
-        <option value="">Automatic IDs</option>{preview.columns.map(column => <option key={column} value={column}>{column}</option>)}
+        <option value="">Automatic IDs (row numbers)</option>{idColumnChoices(preview.columns).map(column => <option key={column} value={column}>{column}</option>)}
       </select></label>
       <fieldset className="import-wizard-columns"><legend>Measured numeric columns</legend>
-        {preview.columns.filter(column => column !== idColumn && (groupMode === 'single' || column !== groupColumn)).map(column => <label key={column}>
+        {measuredColumnChoices(preview.columns, idColumn, groupMode === 'single' ? '' : groupColumn).map(column => <label key={column}>
           <input type="checkbox" checked={measured.includes(column)} disabled={locked} onChange={event => setMeasured(current => event.target.checked ? [...current, column] : current.filter(item => item !== column))} /> {column}
         </label>)}
         <p>Unselected columns are stored as descriptive data. Choose at least one measured column.</p>

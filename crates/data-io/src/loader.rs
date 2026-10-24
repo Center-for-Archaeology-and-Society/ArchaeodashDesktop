@@ -183,6 +183,34 @@ pub fn default_chem_columns(columns: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Columns with at least one cell that coerces to a number, in frame order:
+/// the legacy loader's `mutate_all(as.numeric) %>% remove_empty("cols")`
+/// (`DataLoader.R` `loadchemUI`). Blank cells, `NA` text, and `NaN` count as
+/// missing, exactly like `as.numeric`.
+pub fn numeric_candidate_columns(frame: &TextFrame) -> Vec<String> {
+    frame
+        .columns
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| {
+            frame.rows.iter().any(|row| {
+                row.get(*idx)
+                    .and_then(|cell| cell.as_deref())
+                    .and_then(|cell| parse_r_numeric(cell.trim()))
+                    .is_some_and(|v| !v.is_nan())
+            })
+        })
+        .map(|(_, name)| name.clone())
+        .collect()
+}
+
+/// The measured-column suggestion for a loaded frame: `default_chem_columns`
+/// over the numeric non-empty columns only, so text columns are never
+/// suggested as measured values (`DataLoader.R:211-213`).
+pub fn default_chem_columns_for_frame(frame: &TextFrame) -> Vec<String> {
+    default_chem_columns(&numeric_candidate_columns(frame))
+}
+
 /// `default_id_column`: first case-insensitive `anid` match, if any.
 pub fn default_id_column(columns: &[String]) -> Option<String> {
     columns.iter().find(|c| c.to_lowercase() == "anid").cloned()
@@ -294,6 +322,43 @@ mod tests {
         );
         let relaxed = guess_numeric_columns_fast(&frame, &["rowid"], 1500, 0.5);
         assert_eq!(relaxed, vec!["v".to_string()]);
+    }
+
+    #[test]
+    fn default_measured_columns_skip_text_and_empty_columns() {
+        let frame = TextFrame {
+            columns: vec![
+                "rowid".into(),
+                "anid".into(),
+                "Site".into(),
+                "Depth".into(),
+                "Blank".into(),
+                "Notes".into(),
+            ],
+            rows: vec![
+                vec![
+                    Some("1".into()),
+                    Some("A1".into()),
+                    Some("Baca".into()),
+                    Some("1.5".into()),
+                    None,
+                    Some("NA".into()),
+                ],
+                vec![
+                    Some("2".into()),
+                    Some("A2".into()),
+                    Some("Zuni".into()),
+                    Some("x".into()),
+                    None,
+                    Some("NaN".into()),
+                ],
+            ],
+        };
+        assert_eq!(numeric_candidate_columns(&frame), vec!["rowid", "Depth"]);
+        // No INAA names: every numeric column except rowid/anid.
+        assert_eq!(default_chem_columns_for_frame(&frame), vec!["Depth"]);
+        // The column-name-only rule would have suggested the text columns.
+        assert!(default_chem_columns(&frame.columns).contains(&"Site".to_string()));
     }
 
     #[test]

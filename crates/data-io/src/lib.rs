@@ -20,9 +20,9 @@ pub use group_profile::{
     ScanCandidate, IDENTITY_COLUMN, LEGACY_ROWID_COLUMN, PROFILE_KEY, PROFILE_VERSION,
 };
 pub use loader::{
-    data_loader, default_chem_columns, default_id_column, group_partitions,
-    guess_numeric_columns_fast, load_source, numeric_column, read_text_table, LoadedSource,
-    SourceFormat, TextFrame,
+    data_loader, default_chem_columns, default_chem_columns_for_frame, default_id_column,
+    group_partitions, guess_numeric_columns_fast, load_source, numeric_candidate_columns,
+    numeric_column, read_text_table, LoadedSource, SourceFormat, TextFrame,
 };
 pub use rnum::{compensated_sum, parse_r_numeric, r_format_double, r_round};
 
