@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use archaeodash_contracts::{
     ExportFormat, ExportMeasuredDataRequest, ExportPcaScoresRequest, ExportResult,
-    ExportTransformedRequest, PcaRequest,
+    ExportTableRequest, ExportTableSheet, ExportTransformedRequest, PcaRequest, TableCell,
 };
 use archaeodash_data_io::{csv_field, parse_r_numeric, r_format_double, GroupRow};
 use archaeodash_domain::DomainError;
@@ -436,6 +436,143 @@ impl ExportService {
     }
 }
 
+/// Most cells one table export may hold (all sheets together).
+const TABLE_MAX_CELLS: usize = 20_000_000;
+
+/// A safe file stem from a suggested name: no directories, no control or
+/// reserved characters, no extension, never empty.
+fn table_file_stem(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("");
+    let base = match base.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && ext.len() <= 5 => stem,
+        _ => base,
+    };
+    let cleaned: String = base
+        .chars()
+        .map(|c| {
+            if c.is_control() || "<>:\"|?*".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.').trim();
+    let stem: String = cleaned.chars().take(120).collect();
+    if stem.is_empty() {
+        "table".to_string()
+    } else {
+        stem
+    }
+}
+
+fn table_csv(sheet: &ExportTableSheet) -> String {
+    let rows: Vec<String> = sheet
+        .rows
+        .iter()
+        .map(|row| {
+            (0..sheet.columns.len())
+                .map(|c| match row.get(c).cloned().flatten() {
+                    Some(TableCell::Number(v)) => numeric_cell(Some(v)),
+                    Some(TableCell::Text(t)) => text_cell(Some(&t), false),
+                    None => csv_field(None),
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect();
+    csv_text(&sheet.columns, &rows)
+}
+
+fn write_table_sheet(
+    book: &mut Workbook,
+    name: &str,
+    sheet: &ExportTableSheet,
+) -> Result<(), XlsxError> {
+    let header = Format::new().set_bold();
+    let ws = book.add_worksheet();
+    ws.set_name(name)?;
+    for (c, column) in sheet.columns.iter().enumerate() {
+        ws.write_string_with_format(0, c as u16, column, &header)?;
+    }
+    ws.set_freeze_panes(1, 0)?;
+    for (r, row) in sheet.rows.iter().enumerate() {
+        let excel_row = (r + 1) as u32;
+        for (c, value) in row.iter().take(sheet.columns.len()).enumerate() {
+            match value {
+                Some(TableCell::Number(v)) if v.is_finite() => {
+                    ws.write_number(excel_row, c as u16, *v)?;
+                }
+                Some(TableCell::Text(t)) => xlsx_text(ws, excel_row, c as u16, t)?,
+                _ => {}
+            }
+        }
+    }
+    // Column widths from the content; skipped for very large sheets.
+    if sheet.rows.len() * sheet.columns.len().max(1) <= 200_000 {
+        ws.autofit();
+    }
+    Ok(())
+}
+
+/// Any result table the client shows, as CSV (first sheet) or an XLSX
+/// workbook (one worksheet per sheet). Pure: no project access.
+pub fn export_table(req: &ExportTableRequest) -> Result<ExportResult, DomainError> {
+    if req.sheets.is_empty() {
+        return Err(validation("export_table_empty", "nothing to export"));
+    }
+    let mut cells = 0usize;
+    for sheet in &req.sheets {
+        if sheet.columns.is_empty() {
+            return Err(validation(
+                "export_table_no_columns",
+                "an exported table needs at least one column",
+            ));
+        }
+        if req.format == ExportFormat::Xlsx && sheet.rows.len() + 1 > XLSX_MAX_ROWS {
+            return Err(validation(
+                "export_too_many_rows",
+                format!(
+                    "{} rows do not fit in one Excel sheet (limit {}); export CSV instead",
+                    sheet.rows.len(),
+                    XLSX_MAX_ROWS - 1
+                ),
+            ));
+        }
+        cells = cells.saturating_add(sheet.rows.len().saturating_mul(sheet.columns.len()));
+    }
+    if cells > TABLE_MAX_CELLS {
+        return Err(validation(
+            "export_table_too_large",
+            format!("the table has more than {TABLE_MAX_CELLS} cells"),
+        ));
+    }
+    let stem = table_file_stem(&req.file_name);
+    match req.format {
+        ExportFormat::Csv => Ok(ExportResult {
+            file_name: format!("{stem}.csv"),
+            media_type: "text/csv".to_string(),
+            content: table_csv(&req.sheets[0]),
+            content_encoding: None,
+        }),
+        ExportFormat::Xlsx => {
+            let mut book = Workbook::new();
+            let mut used = Vec::new();
+            for sheet in &req.sheets {
+                let name = sheet_name(&sheet.name, &mut used);
+                write_table_sheet(&mut book, &name, sheet).map_err(xlsx_err)?;
+            }
+            let bytes = book.save_to_buffer().map_err(xlsx_err)?;
+            Ok(ExportResult {
+                file_name: format!("{stem}.xlsx"),
+                media_type: XLSX_MEDIA_TYPE.to_string(),
+                content: base64::engine::general_purpose::STANDARD.encode(bytes),
+                content_encoding: Some("base64".to_string()),
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)] // test code; panics are the failure mode
@@ -498,6 +635,73 @@ mod tests {
             err,
             DomainError::Validation { ref code, .. } if code == "export_empty_name"
         ));
+    }
+
+    #[test]
+    fn table_export_writes_csv_and_xlsx() {
+        let sheet = ExportTableSheet {
+            name: "UMAP scores".into(),
+            columns: vec!["ANID".into(), "Group".into(), "V1".into()],
+            rows: vec![
+                vec![
+                    Some(TableCell::Text("A1".into())),
+                    Some(TableCell::Text("=Baca".into())),
+                    Some(TableCell::Number(1.25)),
+                ],
+                vec![Some(TableCell::Text("A2".into())), None],
+            ],
+        };
+        let csv = export_table(&ExportTableRequest {
+            file_name: "../umap scores.xlsx".into(),
+            format: ExportFormat::Csv,
+            sheets: vec![sheet.clone()],
+        })
+        .expect("csv");
+        assert_eq!(csv.file_name, "umap scores.csv");
+        // Formula guard on text; numbers stay numbers; short rows pad empty.
+        assert_eq!(csv.content, "ANID,Group,V1\nA1,'=Baca,1.25\nA2,\"\",\"\"\n");
+
+        let xlsx = export_table(&ExportTableRequest {
+            file_name: "".into(),
+            format: ExportFormat::Xlsx,
+            sheets: vec![
+                sheet.clone(),
+                ExportTableSheet {
+                    name: "UMAP scores".into(),
+                    ..sheet
+                },
+            ],
+        })
+        .expect("xlsx");
+        assert_eq!(xlsx.file_name, "table.xlsx");
+        let dir = std::env::temp_dir().join(format!(
+            "archaeodash-table-export-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let file = dir.join("t.xlsx");
+        std::fs::write(
+            &file,
+            base64::engine::general_purpose::STANDARD
+                .decode(&xlsx.content)
+                .expect("base64"),
+        )
+        .expect("write");
+        let sheets = archaeodash_data_io::xlsx_sheet_names(&file).expect("sheets");
+        assert_eq!(sheets, ["UMAP scores", "UMAP scores (2)"]);
+        let (frame, _) =
+            archaeodash_data_io::read_xlsx_table(&file, Some("UMAP scores")).expect("read");
+        assert_eq!(frame.columns, ["ANID", "Group", "V1"]);
+        assert_eq!(frame.rows[0][1].as_deref(), Some("=Baca"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let empty = export_table(&ExportTableRequest {
+            file_name: "x".into(),
+            format: ExportFormat::Csv,
+            sheets: vec![],
+        });
+        assert!(empty.is_err());
     }
 
     #[test]

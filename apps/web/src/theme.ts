@@ -22,11 +22,15 @@ function tokensFor(theme: ThemeName) {
   return themes.find((t) => t.name === theme) ?? themes[0]!;
 }
 
-/** Applies the theme to the document root and persists it. */
+/**
+ * Applies the theme to the document root and persists it. Colors come from
+ * the stylesheet's tokens for `html[data-theme]`; inline variables set by
+ * older builds are cleared so they cannot override them.
+ */
 export function applyTheme(theme: ThemeName): void {
   const root = document.documentElement;
-  for (const [key, value] of Object.entries(themeCssVariables(tokensFor(theme)))) {
-    root.style.setProperty(key, value);
+  for (const key of Object.keys(themeCssVariables(tokensFor(theme)))) {
+    root.style.removeProperty(key);
   }
   root.dataset.theme = theme;
   try {

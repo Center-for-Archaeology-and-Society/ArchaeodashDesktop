@@ -39,5 +39,10 @@ export async function createTransport(): Promise<Transport> {
       activity.track(activityLabel(cmd), invoke<T>(cmd, args));
     return new TauriTransport(tracked, listen as never);
   }
+  // `?demo`: synthetic in-memory project for UI review in a plain browser.
+  if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('demo')) {
+    const { demoFetch, demoEventSource } = await import('./demo/demo-fetch.ts');
+    return new HttpTransport(undefined, (input, init) => activity.track(activityLabel(requestKey(input, init)), demoFetch(input, init)), demoEventSource);
+  }
   return new HttpTransport(undefined, (input, init) => activity.track(activityLabel(requestKey(input, init)), fetch(input, init)));
 }

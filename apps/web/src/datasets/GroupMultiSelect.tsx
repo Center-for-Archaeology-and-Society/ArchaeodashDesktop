@@ -10,11 +10,14 @@ export function GroupMultiSelect({
   selected,
   onChange,
   disabled = false,
+  label = 'Dataset',
 }: {
   options: readonly { path: string; name: string }[];
   selected: readonly string[];
   onChange: (paths: string[]) => void;
   disabled?: boolean;
+  /** Accessible name prefix, e.g. "Dataset: All groups (4)". */
+  label?: string;
 }): ReactElement {
   const [open, setOpen] = useState(false);
   const holder = useRef<HTMLDivElement | null>(null);
@@ -42,14 +45,15 @@ export function GroupMultiSelect({
         className="multiselect-button"
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label={`Dataset: ${summary}`}
+        aria-label={`${label}: ${summary}`}
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
         onKeyDown={(e) => {
           if (e.key === 'Escape') setOpen(false);
         }}
       >
-        <span className="multiselect-summary">{summary}</span> ▾
+        <span className="multiselect-summary">{summary}</span>
+        <svg className="multiselect-chevron" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
       </button>
       {open && !disabled && (
         <div
@@ -61,10 +65,10 @@ export function GroupMultiSelect({
           }}
         >
           <div className="multiselect-actions">
-            <button type="button" onClick={() => onChange(options.map((o) => o.path))}>
+            <button type="button" className="btn btn-sm" onClick={() => onChange(options.map((o) => o.path))}>
               All
             </button>
-            <button type="button" onClick={() => onChange([])}>
+            <button type="button" className="btn btn-sm" onClick={() => onChange([])}>
               None
             </button>
           </div>

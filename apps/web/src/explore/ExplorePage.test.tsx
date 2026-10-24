@@ -149,7 +149,7 @@ test('explore missing view renders band table rows from loaded rows, as percenta
     />,
   );
   // Sr first (1 missing of 2 = 50.0%, Bad), then Ti (0%, Good).
-  assert.match(html, /<tr data-band="Bad"><td>Sr<\/td><td>1<\/td><td>50.0<\/td><td>Bad<\/td><\/tr><tr data-band="Good"><td>Ti<\/td>/);
+  assert.match(html, /<tr data-band="Bad"><td>Sr<\/td><td>1<\/td><td>50.0<\/td><td><span class="band band-bad">Bad<\/span><\/td><\/tr><tr data-band="Good"><td>Ti<\/td>/);
 });
 
 test('dataset table offers Excel and CSV export', async () => {

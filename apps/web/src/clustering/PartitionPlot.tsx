@@ -3,7 +3,11 @@ import type { ClusterFitResponse } from '@archaeodash/client';
 const palette = ['#0072B2', '#D55E00', '#009E73', '#CC79A7', '#E69F00', '#56B4E9', '#7B3294', '#444444'];
 
 /** Plot only finite coordinates, keeping identities out of the DOM. */
-export function PartitionPlot({ result }: { result: ClusterFitResponse }): ReactElement {
+export function PartitionPlot({ result, labelOf = (row: number) => `Analytical unit ${row}` }: {
+  result: ClusterFitResponse;
+  /** Sample label (ANID) for a 1-based input row. */
+  labelOf?: (row: number) => string;
+}): ReactElement {
   const [mode, setMode] = useState<'clusters' | 'groups'>('clusters');
   const groupsAvailable = result.plot_groups?.length === result.n_rows;
   const groups = mode === 'groups' && groupsAvailable;
@@ -27,7 +31,7 @@ export function PartitionPlot({ result }: { result: ClusterFitResponse }): React
       <text transform="translate(15 202) rotate(-90)" textAnchor="middle" fill="currentColor">{names?.[1] ?? 'Dimension 2'}</text>
       {[0, 0.5, 1].map(t => <g key={t} fill="currentColor" fontSize={11}><text x={65 + 540 * t} y={374} textAnchor="middle">{(minX + (maxX - minX) * t).toPrecision(4)}</text><text x={58} y={359 - 305 * t} textAnchor="end">{(minY + (maxY - minY) * t).toPrecision(4)}</text></g>)}
       {points.map(p => <g key={p.row} transform={`translate(${sx(p.x)} ${sy(p.y)})`} fill={palette[unique.indexOf(p.label) % palette.length]} stroke="currentColor" strokeWidth={0.4}>
-        <title>{`Analytical unit ${p.row}; ${p.label}; cluster ${p.cluster}`}</title>
+        <title>{`${labelOf(p.row)}; ${p.label}; cluster ${p.cluster}`}</title>
         {!groups || p.cluster % 3 === 1 ? <circle r={4} /> : p.cluster % 3 === 2 ? <rect x={-4} y={-4} width={8} height={8} /> : <path d="M0 -5L5 4L-5 4Z" />}
       </g>)}
     </svg>

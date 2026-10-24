@@ -21,7 +21,7 @@ pub use analysis_jobs::{AnalysisJobRegistry, AnalysisJobs, JobContext};
 pub use clustering::ClusterService;
 pub use combined::{synthetic_group_column, CombinedInput};
 pub use explore::ExploreService;
-pub use exports::{ensure_csv_extension, ExportService};
+pub use exports::{ensure_csv_extension, export_table, ExportService};
 pub use files::SourceFileService;
 pub use groups::GroupService;
 pub use import::ImportService;

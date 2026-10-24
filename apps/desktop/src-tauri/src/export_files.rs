@@ -86,8 +86,13 @@ fn export_bytes(result: &ExportResult) -> Result<Vec<u8>, String> {
 
 /// Save-dialog file type for the suggested name.
 fn dialog_filter(file_name: &str) -> (&'static str, &'static [&'static str]) {
-    if file_name.to_ascii_lowercase().ends_with(".xlsx") {
+    let lower = file_name.to_ascii_lowercase();
+    if lower.ends_with(".xlsx") {
         ("Excel workbook", &["xlsx"])
+    } else if lower.ends_with(".png") {
+        ("PNG image", &["png"])
+    } else if lower.ends_with(".svg") {
+        ("SVG image", &["svg"])
     } else {
         ("CSV", &["csv"])
     }
@@ -202,6 +207,8 @@ mod tests {
         assert!(export_bytes(&bad).is_err());
         assert_eq!(dialog_filter("a.XLSX").1, &["xlsx"]);
         assert_eq!(dialog_filter("a.csv").1, &["csv"]);
+        assert_eq!(dialog_filter("plot.png").1, &["png"]);
+        assert_eq!(dialog_filter("plot.SVG").1, &["svg"]);
     }
 
     #[test]

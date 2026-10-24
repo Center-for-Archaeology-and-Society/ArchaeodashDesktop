@@ -72,6 +72,64 @@ pub(crate) async fn open_project(
     Ok(info)
 }
 
+/// Opens the current project folder in the system file manager (File
+/// Explorer, Finder, or the desktop's default). The path comes from the open
+/// project, never from JavaScript.
+#[tauri::command]
+pub(crate) fn reveal_project(state: tauri::State<'_, super::SharedState>) -> Result<(), String> {
+    let path = state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .project
+        .as_ref()
+        .map(|p| p.path.clone())
+        .ok_or_else(|| "no project is open".to_string())?;
+    open_in_file_manager(&display_path(&path))
+}
+
+/// Strips Windows' extended-length prefixes (`\\?\C:\…`, `\\?\UNC\host\…`),
+/// which File Explorer does not accept.
+fn display_path(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+fn open_in_file_manager(path: &str) -> Result<(), String> {
+    let program = if cfg!(target_os = "windows") {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let mut child = std::process::Command::new(program)
+        .arg(path)
+        .spawn()
+        .map_err(|e| format!("could not open the file manager: {e}"))?;
+    // Reap the helper process; Explorer's exit code is not meaningful.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_path;
+
+    #[test]
+    fn display_path_drops_extended_length_prefixes() {
+        assert_eq!(display_path(r"\\?\C:\Data\Site"), r"C:\Data\Site");
+        assert_eq!(display_path(r"\\?\UNC\host\share\p"), r"\\host\share\p");
+        assert_eq!(display_path("/home/me/site"), "/home/me/site");
+    }
+}
+
 /// Recent projects, most recent first, with whether each folder still exists.
 #[tauri::command]
 pub(crate) fn recent_projects(app: tauri::AppHandle) -> Result<Vec<RecentProject>, String> {

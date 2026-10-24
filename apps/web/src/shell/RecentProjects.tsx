@@ -87,10 +87,19 @@ export interface ProjectMenuProps {
   readonly onOpenRecent: (project: RecentProject) => void;
   readonly onBrowse: () => void;
   readonly onClear?: () => void;
+  /** Opens the current project folder in the system file manager. */
+  readonly onReveal?: () => void;
+}
+
+/** "Show in File Explorer" / "Show in Finder" / "Open project folder". */
+export function revealLabel(userAgent: string = typeof navigator === 'undefined' ? '' : navigator.userAgent): string {
+  if (/Windows/i.test(userAgent)) return 'Show in File Explorer';
+  if (/Mac OS X|Macintosh/i.test(userAgent)) return 'Show in Finder';
+  return 'Open project folder';
 }
 
 /** "▾" menu beside the project button: recent projects, browse, clear. */
-export function ProjectMenu({ recent, currentPath = '', busy = false, onOpenRecent, onBrowse, onClear }: ProjectMenuProps): ReactElement {
+export function ProjectMenu({ recent, currentPath = '', busy = false, onOpenRecent, onBrowse, onClear, onReveal }: ProjectMenuProps): ReactElement {
   const [open, setOpen] = useState(false);
   const holder = useRef<HTMLDivElement | null>(null);
   const button = useRef<HTMLButtonElement | null>(null);
@@ -150,6 +159,11 @@ export function ProjectMenu({ recent, currentPath = '', busy = false, onOpenRece
             );
           })}
           <hr />
+          {onReveal && currentPath && (
+            <button type="button" role="menuitem" className="project-menu-item" onClick={() => choose(onReveal)}>
+              {revealLabel()}
+            </button>
+          )}
           <button type="button" role="menuitem" className="project-menu-item" onClick={() => choose(onBrowse)}>
             Browse for a folder…
           </button>

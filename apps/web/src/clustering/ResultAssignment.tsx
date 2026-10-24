@@ -22,8 +22,10 @@ export function MoveConfirmation({ request, busy, onConfirm, onCancel, multiSour
 }
 
 /** UUIDs stay in component state and requests, never checkbox values or labels. */
-export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfirm, candidates = [], onBatchConfirm, onReviewChange = () => {}, multiSource = false }: {
+export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfirm, candidates = [], onBatchConfirm, onReviewChange = () => {}, multiSource = false, rowLabel }: {
   result: AnalysisResult;
+  /** Sample label (ANID) by hidden identity and input row index. */
+  rowLabel?: (uuid: string | undefined, index: number) => string;
   /** The result spans several group files; moves are split per source. */
   multiSource?: boolean;
   destinations: readonly string[];
@@ -34,7 +36,7 @@ export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfi
   busy: boolean;
   onConfirm: (request: TransferUnitsRequest) => void;
 }): ReactElement | null {
-  const rows = useMemo(() => selectableRows(result, cutK), [result, cutK]);
+  const rows = useMemo(() => selectableRows(result, cutK, rowLabel), [result, cutK, rowLabel]);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [target, setTarget] = useState('');
   const [shown, setShown] = useState(100);
@@ -53,18 +55,18 @@ export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfi
       setError('');
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   }
-  return <section aria-label="Assign analysis results">
-    <h2>Select analytical units to move</h2>
-    <p>{selected.size} of {rows.length} analytical units selected. Repeated nearest matches select the observation once.</p>
+  return <section className="card" aria-label="Assign analysis results">
+    <header className="card-header"><h2 className="card-title">Assign samples to groups</h2></header>
+    <p className="card-note">{selected.size} of {rows.length} samples selected. Repeated nearest matches select the sample once.</p>
     {rows.length === 0 ? <p>No assignable analytical units are available. Recompute the analysis if its identities are unavailable.</p> : <>
       <fieldset disabled={busy || prepared !== null || autoReviewing}>
         <legend>Result selection</legend>
         {onBatchConfirm && <label>Assignment mode <select value={automatic ? 'automatic' : 'manual'} onChange={event => setAutomatic(event.target.value === 'automatic')}><option value="manual">Choose one destination</option><option value="automatic">Use analysis groups</option></select></label>}
         <button type="button" onClick={() => setSelected(new Set(rows.map(row => row.analyticalUuid)))}>Select all {rows.length} analytical units</button>{' '}
         <button type="button" onClick={() => setSelected(new Set())}>Clear selection</button>
-        <table className="data-table"><thead><tr><th>Select</th><th>Analytical unit</th><th>Result</th></tr></thead>
+        <table className="data-table"><thead><tr><th>Select</th><th>Sample</th><th>Result</th></tr></thead>
           <tbody>{rows.slice(0, shown).map((row, index) => <tr key={row.analyticalUuid}>
-            <td><input type="checkbox" aria-label={`Select analytical unit ${index + 1}`} checked={selected.has(row.analyticalUuid)} onChange={event => {
+            <td><input type="checkbox" aria-label={`Select ${row.label || `sample ${index + 1}`}`} checked={selected.has(row.analyticalUuid)} onChange={event => {
               const next = new Set(selected);
               if (event.target.checked) next.add(row.analyticalUuid); else next.delete(row.analyticalUuid);
               setSelected(next);

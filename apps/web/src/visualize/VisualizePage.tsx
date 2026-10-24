@@ -39,6 +39,8 @@ import {
   type Selection,
 } from './visualize-model.ts';
 import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
+import { TableCard } from '../ui/TableExport.tsx';
+import { PageHeader } from '../ui/PageHeader.tsx';
 
 export interface VisualizeDeps {
   readonly groups: GroupsService;
@@ -419,13 +421,14 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
     source === 'elements' ? null : scores.kind === 'loading' ? 'loading' : scores.kind === 'error' ? scores.message : null;
 
   return (
-    <section aria-labelledby="visualize-heading">
-      <h1 id="visualize-heading">Visualize &amp; Assign</h1>
-      <div className="explore-controls">
-        <label>
+    <section className="page" aria-labelledby="visualize-heading">
+      <PageHeader id="visualize-heading" title="Visualize & Assign" description="Plot samples on elements or ordination scores, lasso a selection, and move it to a group.">
+        <label className="field field-inline">
           Dataset
           <GroupMultiSelect options={groupOptions} selected={selectedPaths} onChange={setSelectedPaths} />
         </label>
+      </PageHeader>
+      <div className="explore-controls">
         <label>
           Axes
           <select aria-label="Axis source" value={source} onChange={(e) => setSource(e.target.value as AxisSource)}>
@@ -569,7 +572,8 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       <p className="muted" role="status">
         {selection.uuids.size} selected — double-click the plot to clear.
       </p>
-      <h2>Assign selected units</h2>
+      <section className="card">
+      <header className="card-header"><h2 className="card-title">Assign selected samples</h2></header>
       <div className="explore-controls">
         <label>
           Target group
@@ -595,6 +599,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
         )}
         <button
           type="button"
+          className="btn btn-primary"
           disabled={selection.uuids.size === 0 || assignTarget === '' || assignState.kind === 'loading' || (assignTarget === '__new__' && newGroupName.trim() === '')}
           onClick={() => void assign()}
         >
@@ -607,14 +612,25 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
         <BusyNote>{assignTarget === '__new__' ? `Creating group “${newGroupName.trim()}” and moving units…` : 'Moving units into the group…'}</BusyNote>
       )}
       {assignState.kind === 'error' && <p role="alert">Assignment failed: {assignState.message}</p>}
-      {assignState.kind === 'loaded' && <p role="status">Assignment committed.</p>}
-      <h2>Selected rows</h2>
-      <SelectedRowsTable
-        rows={selectedRows}
-        columns={{ visibleId: combined.visibleIdColumn, legacyRowid: combined.legacyRowidColumn }}
-        descriptiveColumns={combined.descriptiveColumns}
-        elementalColumns={combined.elementalColumns}
-      />
+      {assignState.kind === 'loaded' && <p role="status" className="callout callout-success">Assignment committed.</p>}
+      </section>
+      <TableCard
+        title="Selected rows"
+        fileName="Selected samples"
+        note={`${selectedRows.length} selected.`}
+        sheets={() => [{
+          name: 'Selected samples',
+          columns: [combined.visibleIdColumn, ...combined.descriptiveColumns, ...combined.elementalColumns],
+          rows: selectedRows.map((r) => [r.visible_id ?? r.legacy_rowid ?? '', ...r.descriptive.map((v) => v ?? null), ...r.elemental.map((v) => (v === null ? null : v))]),
+        }]}
+      >
+        <SelectedRowsTable
+          rows={selectedRows}
+          columns={{ visibleId: combined.visibleIdColumn, legacyRowid: combined.legacyRowidColumn }}
+          descriptiveColumns={combined.descriptiveColumns}
+          elementalColumns={combined.elementalColumns}
+        />
+      </TableCard>
     </section>
   );
 }

@@ -1326,6 +1326,37 @@ pub enum ExportFormat {
     Xlsx,
 }
 
+/// One cell of an exported table: a number or text (`null` = empty).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TableCell {
+    Number(f64),
+    Text(String),
+}
+
+/// One sheet of an exported table.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExportTableSheet {
+    /// Sheet name (XLSX); cleaned to Excel's rules.
+    pub name: String,
+    pub columns: Vec<String>,
+    /// Row-major cells; rows may be shorter than `columns` (empty tail).
+    pub rows: Vec<Vec<Option<TableCell>>>,
+}
+
+/// `POST /exports/table` request: any result table the client shows
+/// (scores, cluster results, summaries) as CSV or XLSX. Values are what the
+/// table displays; nothing is read from or written to the project.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExportTableRequest {
+    /// Suggested file name; the extension is set from `format`.
+    pub file_name: String,
+    #[serde(default)]
+    pub format: ExportFormat,
+    /// At least one sheet. CSV writes the first sheet only.
+    pub sheets: Vec<ExportTableSheet>,
+}
+
 /// `POST /exports/transformed` request: the explicitly computed transformed
 /// result of one definition over one group file as CSV (Section 7.3).
 /// Calculated values are ephemeral and never persisted (Section 5).

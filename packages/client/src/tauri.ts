@@ -32,6 +32,7 @@ import type {
   ExploreMissingProfileResponse,
   ExportMeasuredDataRequest,
   ExportPcaScoresRequest,
+  ExportTableRequest,
   ExportResult,
   ExportTransformedRequest,
   EuclideanMatchesRequest,
@@ -124,6 +125,7 @@ export class TauriTransport implements Transport {
       openRecent: (path: string) => this.call<ProjectInfo | null>('open_recent_project', { path }),
       removeRecent: (path: string) => this.call<RecentProject[]>('remove_recent_project', { path }),
       clearRecent: () => this.call<void>('clear_recent_projects'),
+      reveal: () => this.call<void>('reveal_project'),
     };
     this.explore = this.makeExplore();
     this.exports = this.makeExports();
@@ -282,6 +284,7 @@ export class TauriTransport implements Transport {
         this.call('export_transformed', { request }),
       pcaScores: (request: ExportPcaScoresRequest) =>
         this.call('export_pca_scores', { request }),
+      table: (request: ExportTableRequest) => this.call('export_table', { request }),
     };
   }
 

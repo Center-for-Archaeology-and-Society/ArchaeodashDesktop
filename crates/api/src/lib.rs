@@ -634,6 +634,18 @@ async fn exports_measured_data(
         .map_err(domain_error_response)
 }
 
+/// `POST /api/v1/exports/table`: any result table the client shows, as CSV
+/// or XLSX. Pure formatting; nothing is read from or written to the project.
+async fn exports_table(
+    Json(req): Json<archaeodash_contracts::ExportTableRequest>,
+) -> Result<Json<ExportResult>, (StatusCode, Json<ErrorEnvelope>)> {
+    tokio::task::spawn_blocking(move || archaeodash_application::export_table(&req))
+        .await
+        .map_err(|e| domain_error_response(DomainError::Internal(Box::new(e))))?
+        .map(Json)
+        .map_err(domain_error_response)
+}
+
 /// `POST /api/v1/exports/transformed`: the explicitly computed transformed
 /// result as ephemeral CSV (Section 7.3); calculated values are never
 /// persisted into group files (Section 5 storage invariant).
@@ -747,6 +759,7 @@ pub fn root_router(state: AppState) -> Router {
         .route("/api/v1/exports/measured-data", post(exports_measured_data))
         .route("/api/v1/exports/transformed", post(exports_transformed))
         .route("/api/v1/exports/pca-scores", post(exports_pca_scores))
+        .route("/api/v1/exports/table", post(exports_table))
         .route(
             "/api/v1/preferences",
             get(preferences_get).put(preferences_set),

@@ -32,6 +32,7 @@ import type {
   ExploreMissingProfileResponse,
   ExportMeasuredDataRequest,
   ExportPcaScoresRequest,
+  ExportTableRequest,
   ExportResult,
   ExportTransformedRequest,
   FileDownload,
@@ -140,6 +141,8 @@ export interface ProjectsService {
   /** Removes one entry from the recent list and returns the new list. */
   removeRecent?(path: string): Promise<RecentProject[]>;
   clearRecent?(): Promise<void>;
+  /** Opens the current project folder in the system file manager (desktop). */
+  reveal?(): Promise<void>;
 }
 
 export interface ClusteringService {
@@ -162,6 +165,8 @@ export interface ExportsService {
   measuredData(request: ExportMeasuredDataRequest): Promise<ExportResult>;
   transformed(request: ExportTransformedRequest): Promise<ExportResult>;
   pcaScores(request: ExportPcaScoresRequest): Promise<ExportResult>;
+  /** Any result table the client shows, as CSV or XLSX (optional for older adapters). */
+  table?(request: ExportTableRequest): Promise<ExportResult>;
 }
 
 export interface PreferencesService {

@@ -12,12 +12,13 @@ import {
   allPairs,
   samplingPlan,
   samplingStatusText,
-  svgToDataUrl,
   uuidsFromSelectedEvent,
   type PlotPair,
   type SamplingPlan,
 } from './multiplot-model.ts';
 import { colorFor, groupColors } from './visualize-model.ts';
+import { plotTheme } from '../charts/PlotlyChart.tsx';
+import { PlotSaveButtons, combineSvgParts, saveSvgPart, serializeSvg, svgFromDataUrl, type ImageFormat, type SvgPart } from '../ui/PlotSave.tsx';
 
 export const MIN_HEIGHT = 500;
 export const MAX_HEIGHT = 2000;
@@ -79,15 +80,6 @@ export function panelPoints(
     })),
     drawn: [...byGroup.values()].reduce((n, pts) => n + pts.length, 0),
   };
-}
-
-function downloadAnchor(name: string, href: string): void {
-  const a = document.createElement('a');
-  a.href = href;
-  a.download = name;
-  document.body.append(a);
-  a.click();
-  a.remove();
 }
 
 /** Static SVG panel (no Plotly): deterministic full-fidelity render. */
@@ -194,12 +186,14 @@ export function InteractivePanel({
         hovertemplate: `${t.name}<extra></extra>`,
         marker: { color: t.color, size: pointSize },
       } as Data));
+      const theme = plotTheme();
       const layout = {
+        ...theme,
         dragmode: 'lasso',
         width,
         height,
-        xaxis: { title: { text: xLabel } },
-        yaxis: { title: { text: yLabel } },
+        xaxis: { ...(theme.xaxis as object), title: { text: xLabel } },
+        yaxis: { ...(theme.yaxis as object), title: { text: yLabel } },
         showlegend: traces.length > 1,
       } as Layout;
       const config = { responsive: false, displayModeBar: true } as const;
@@ -251,33 +245,26 @@ export function Multiplot(props: MultiplotProps): ReactElement {
   );
   const visiblePairs = renderCount === null ? pairs : pairs.slice(0, renderCount);
 
-  const savePlots = (): void => {
+  /** Saves every drawn panel as one image (grid layout). */
+  const savePlots = async (format: ImageFormat): Promise<unknown> => {
     const holder = gridRef.current;
-    if (!holder) return;
+    if (!holder) throw new Error('There is no plot to save.');
+    const parts: SvgPart[] = [];
     if (mode === 'static') {
-      const serializer = new XMLSerializer();
-      const panels = holder.querySelectorAll('svg.multiplot-panel');
-      panels.forEach((svg, i) => {
-        downloadAnchor(`multiplot_panel_${i + 1}.svg`, svgToDataUrl(serializer, svg));
-      });
-      return;
-    }
-    void (async () => {
+      holder.querySelectorAll<SVGSVGElement>('svg.multiplot-panel').forEach((svg) => parts.push(serializeSvg(svg)));
+    } else {
       const Plotly = (await import('plotly.js-dist-min')) as PlotlyModule;
-      const figures = holder.querySelectorAll('div.multiplot-panel-plotly');
-      let i = 0;
-      for (const fig of figures) {
-        i += 1;
+      for (const fig of holder.querySelectorAll('div.multiplot-panel-plotly')) {
         const url = await Plotly.toImage(fig as unknown as Parameters<typeof Plotly.toImage>[0], {
           format: 'svg',
           width: PANEL_WIDTH,
           height,
         });
-        downloadAnchor(`multiplot_panel_${i}.svg`, url);
+        parts.push({ text: svgFromDataUrl(url), width: PANEL_WIDTH, height });
       }
-    })().catch(() => {
-      /* plotly load failure leaves the existing plots untouched */
-    });
+    }
+    if (parts.length === 0) throw new Error('There is no plot to save.');
+    return saveSvgPart(combineSvgParts(parts, Math.min(4, parts.length)), 'Multiplot', format);
   };
 
   const samplingStatus = mode === 'interactive' ? samplingStatusText(plan) : null;
@@ -319,9 +306,7 @@ export function Multiplot(props: MultiplotProps): ReactElement {
             onChange={(e) => setHeight(Number(e.target.value))}
           />
         </label>
-        <button type="button" onClick={savePlots}>
-          Save plots (SVG)
-        </button>
+        <PlotSaveButtons name="Multiplot" save={savePlots} />
       </div>
       {samplingStatus !== null && <p role={plan.errorText === null ? 'status' : 'alert'}>{samplingStatus}</p>}
       {pairs.length === 0 && <p className="muted">Pick at least two predictors for a multiplot.</p>}

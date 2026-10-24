@@ -36,6 +36,10 @@ export interface DataManagerProps {
   readonly projectName?: string;
   /** Called after the sidebar itself changed project data (import, duplicate, merge, delete). */
   readonly onDataChanged?: () => void;
+  /** Opens the project folder in the system file manager (desktop). */
+  readonly onRevealProject?: () => void;
+  /** Label for that action, e.g. "Show in File Explorer". */
+  readonly revealLabel?: string;
 }
 
 type Pending =
@@ -72,7 +76,7 @@ export async function loadGroupFiles(groups: DataManagerTransport['groups']): Pr
   );
 }
 
-export function DataManager({ transport, projectName = '', onDataChanged }: DataManagerProps): ReactElement {
+export function DataManager({ transport, projectName = '', onDataChanged, onRevealProject, revealLabel = 'Open project folder' }: DataManagerProps): ReactElement {
   const [entries, setEntries] = useState<GroupFileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -312,26 +316,34 @@ export function DataManager({ transport, projectName = '', onDataChanged }: Data
         <span className="fm-project" title={projectName || undefined}>
           <FolderIcon open />
           <span className="fm-project-name" aria-label="Current project">{projectName || 'Project'}</span>
-        </span>
-        <div className="fm-toolbar" role="toolbar" aria-label="File actions">
-          <button type="button" className="fm-tool fm-tool-primary" disabled={busy} onClick={() => setImportOpen(true)}>Import…</button>
-          <button type="button" className="fm-tool" disabled={busy || loading} onClick={() => { setStatus(''); void refresh(); }} aria-label="Refresh" title="Refresh">⟳</button>
-          <span className="fm-tool-sep" aria-hidden="true" />
-          <button type="button" className="fm-tool" disabled={!canDuplicate} aria-pressed={pending?.kind === 'duplicate'} onClick={() => single && setPending({ kind: 'duplicate', name: `${single.name} copy` })}>Duplicate</button>
-          <button type="button" className="fm-tool" disabled={!canMerge} aria-pressed={pending?.kind === 'merge'} onClick={() => setPending({ kind: 'merge', name: 'Merged' })}>Merge</button>
-          <button type="button" className="fm-tool fm-tool-danger" disabled={!canDelete} aria-pressed={pending?.kind === 'delete'} onClick={() => setPending({ kind: 'delete' })}>Delete</button>
-          {transport.exports && (
-            <button
-              type="button"
-              className="fm-tool"
-              disabled={!canExport}
-              aria-pressed={pending?.kind === 'export'}
-              title="Export the highlighted groups (or all groups in analyses) to Excel or CSV"
-              onClick={() => setPending({ kind: 'export', format: 'xlsx' })}
-            >
-              Export…
+          {onRevealProject && (
+            <button type="button" className="fm-reveal" onClick={onRevealProject} title={revealLabel} aria-label={revealLabel}>
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="M9 2h5v5M14 2 7.5 8.5M12 9.5V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
             </button>
           )}
+        </span>
+        <div className="fm-toolbar" role="toolbar" aria-label="File actions">
+          <span className="fm-tool-group">
+            <button type="button" className="fm-tool fm-tool-primary" disabled={busy} onClick={() => setImportOpen(true)}>Import…</button>
+            {transport.exports && (
+              <button
+                type="button"
+                className="fm-tool"
+                disabled={!canExport}
+                aria-pressed={pending?.kind === 'export'}
+                title="Export the highlighted groups (or all groups in analyses) to Excel or CSV"
+                onClick={() => setPending({ kind: 'export', format: 'xlsx' })}
+              >
+                Export…
+              </button>
+            )}
+            <button type="button" className="fm-tool fm-tool-icon" disabled={busy || loading} onClick={() => { setStatus(''); void refresh(); }} aria-label="Refresh" title="Refresh">⟳</button>
+          </span>
+          <span className="fm-tool-group">
+            <button type="button" className="fm-tool" disabled={!canDuplicate} aria-pressed={pending?.kind === 'duplicate'} onClick={() => single && setPending({ kind: 'duplicate', name: `${single.name} copy` })}>Duplicate</button>
+            <button type="button" className="fm-tool" disabled={!canMerge} aria-pressed={pending?.kind === 'merge'} onClick={() => setPending({ kind: 'merge', name: 'Merged' })}>Merge</button>
+            <button type="button" className="fm-tool fm-tool-danger" disabled={!canDelete} aria-pressed={pending?.kind === 'delete'} onClick={() => setPending({ kind: 'delete' })}>Delete</button>
+          </span>
         </div>
       </header>
 

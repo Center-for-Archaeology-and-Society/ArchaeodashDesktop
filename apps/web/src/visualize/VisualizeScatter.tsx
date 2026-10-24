@@ -8,6 +8,8 @@
  */
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import type { Data, Layout } from 'plotly.js-dist-min';
+import { plotTheme } from '../charts/PlotlyChart.tsx';
+import { PlotSaveButtons } from '../ui/PlotSave.tsx';
 
 export interface ScatterPoint {
   readonly uuid: string;
@@ -91,6 +93,7 @@ export function VisualizeScatter({
   symbolLegend = NO_SYMBOL_LEGEND,
 }: VisualizeScatterProps): ReactElement {
   const holder = useRef<HTMLDivElement | null>(null);
+  const frame = useRef<HTMLDivElement | null>(null);
   const callbacks = useRef<ScatterCallbacks>({ onSelect, onClearSelection });
   const [renderState, setRenderState] = useState<'loading' | 'complete' | 'error'>(
     interactive ? 'loading' : 'complete',
@@ -172,13 +175,15 @@ export function VisualizeScatter({
           marker: { color: '#777', symbol: entry.symbol, size: 8 },
         } as unknown as Data);
       }
+      const theme = plotTheme();
       const layout = {
+        ...theme,
         dragmode: dragMode,
-        xaxis: { title: { text: xLabel } },
-        yaxis: { title: { text: yLabel } },
+        xaxis: { ...(theme.xaxis as object), title: { text: xLabel } },
+        yaxis: { ...(theme.yaxis as object), title: { text: yLabel } },
         showlegend: true,
       } as Layout;
-      const config = { responsive: true, displayModeBar: true } as const;
+      const config = { responsive: true, displayModeBar: true, displaylogo: false, modeBarButtonsToRemove: ['toImage' as const] };
       const graph = holder.current;
       if (!graph) return;
       await Plotly.react(graph, wrapped, layout, config);
@@ -195,7 +200,10 @@ export function VisualizeScatter({
   }, [traces, xLabel, yLabel, dragMode, interactive, symbolLegend]);
 
   return (
-    <>
+    <div className="chart-frame" ref={frame}>
+      <div className="chart-toolbar">
+        <PlotSaveButtons target={frame} name={`${yLabel} vs ${xLabel}`} kind="plotly" />
+      </div>
       <div
         ref={holder}
         className="visualize-scatter"
@@ -206,6 +214,6 @@ export function VisualizeScatter({
       {renderState === 'error' && (
         <p role="alert">The scatter plot could not be rendered. Try changing the axes or reloading the view.</p>
       )}
-    </>
+    </div>
   );
 }

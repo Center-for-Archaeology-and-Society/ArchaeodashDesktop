@@ -12,6 +12,7 @@ import { AppShell } from './shell/AppShell.tsx';
 import { AnalysisSetupProvider } from './analysis-setup/AnalysisSetupContext.tsx';
 import { GroupInclusionProvider } from './datasets/GroupInclusion.tsx';
 import { DataCacheProvider } from './datasets/DataCache.tsx';
+import { ExportsProvider } from './ui/TableExport.tsx';
 import {
   HelpPage,
   HomePage,
@@ -86,6 +87,7 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
   }, [transport]);
 
   return (
+    <ExportsProvider service={transport.exports}>
     <AnalysisSetupProvider service={transport.transformations} generation={projectGeneration}>
     <GroupInclusionProvider key={projectPath} projectKey={projectPath || 'default'}>
     <DataCacheProvider key={`${projectPath}:${projectGeneration}`}>
@@ -117,6 +119,7 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
     </DataCacheProvider>
     </GroupInclusionProvider>
     </AnalysisSetupProvider>
+    </ExportsProvider>
   );
 }
 

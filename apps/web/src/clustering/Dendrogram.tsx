@@ -9,10 +9,12 @@ const colors = [
 ];
 
 /** Accessible horizontal hclust dendrogram for Ward.D2 and DIANA fits. */
-export function Dendrogram({ result, cutK = 2, leafSize = 12 }: {
+export function Dendrogram({ result, cutK = 2, leafSize = 12, labelOf = (row: number) => `Analytical unit ${row}` }: {
   result: ClusterFitResponse;
   cutK?: number;
   leafSize?: number;
+  /** Sample label (ANID) for a 1-based input row. */
+  labelOf?: (row: number) => string;
 }): ReactElement {
   const id = useId();
   const layout = layoutDendrogram(result, cutK);
@@ -38,7 +40,7 @@ export function Dendrogram({ result, cutK = 2, leafSize = 12 }: {
         <text x={16} y={(plotTop + plotBottom) / 2} textAnchor="middle" transform={`rotate(-90 16 ${(plotTop + plotBottom) / 2})`} fill="currentColor" fontSize={12}>Leaf order</text>
         {layout.segments.map((s, i) => <line key={i} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={s.group == null ? 'currentColor' : colors[s.group % colors.length]} strokeWidth={1.4} />)}
         {layout.leaves.map(({ row, y, group }) => <text key={row} x={plotRight + 8} y={y} dominantBaseline="middle" fill="currentColor" fontSize={size}>
-          <tspan fill={colors[group % colors.length]}>● </tspan>Analytical unit {row} · Cluster {group + 1}
+          <tspan fill={colors[group % colors.length]}>● </tspan>{labelOf(row)} · Cluster {group + 1}
         </text>)}
       </svg>
   </figure>;

@@ -4,12 +4,13 @@
  * screens, and the theme selector. Semantic nav with accessible names.
  */
 import { useCallback, useRef, useState, type ReactElement } from 'react';
-import { NavLink, Outlet } from 'react-router';
+import { NavLink } from 'react-router';
+import { KeepAliveOutlet } from './KeepAliveOutlet.tsx';
 import { navRoutes } from './nav.ts';
 import { DataManager, type DataManagerTransport } from '../data-manager/DataManager.tsx';
 import type { ProjectInfo, RecentProject } from '@archaeodash/contracts';
 import type { ProjectsService } from '@archaeodash/client';
-import { ProjectMenu, RecentProjectList, useRecentProjects } from './RecentProjects.tsx';
+import { ProjectMenu, RecentProjectList, revealLabel, useRecentProjects } from './RecentProjects.tsx';
 import { ActivityIndicator } from './ActivityIndicator.tsx';
 import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
 
@@ -54,6 +55,12 @@ export function AppShell({
   const projectOpen = !projects || Boolean(projectPath);
   const { recent, refresh: refreshRecent, setRecent } = useRecentProjects(projects);
   const hasRecent = Boolean(projects?.recent && projects.openRecent);
+  // The desktop app has no hosted accounts or hosted projects.
+  const routes = projects ? navRoutes.filter((route) => route.path !== '/account' && route.path !== '/projects') : navRoutes;
+  const reveal = projects?.reveal;
+  const revealProject = reveal && projectPath
+    ? () => { void reveal().catch((error: unknown) => setProjectError(error instanceof Error ? error.message : String(error))); }
+    : undefined;
 
   /** Runs one project-opening action; the recent list refreshes after it. */
   const runOpen = async (open: () => Promise<ProjectInfo | null>) => {
@@ -121,12 +128,13 @@ export function AppShell({
                 onOpenRecent={openRecent}
                 onBrowse={() => void openProject()}
                 onClear={projects.clearRecent ? clearRecent : undefined}
+                onReveal={revealProject}
               />
             )}
           </span>
         )}
         <ul className="nav-list">
-          {navRoutes.map((route) =>
+          {routes.map((route) =>
             route.children === undefined ? (
               <li key={route.path}>
                 <NavLink to={route.path} end={route.path === '/'} className="nav-link">
@@ -196,6 +204,8 @@ export function AppShell({
               transport={dataManager}
               projectName={projectName}
               onDataChanged={bumpDataVersion}
+              onRevealProject={revealProject}
+              revealLabel={revealLabel()}
             />
           ) : (
             <>
@@ -236,7 +246,7 @@ export function AppShell({
             </section>
           ) : (
             <div key={`${projectGeneration}:${projectPath}:${dataVersion}`}>
-              <Outlet />
+              <KeepAliveOutlet />
             </div>
           )}
         </main>

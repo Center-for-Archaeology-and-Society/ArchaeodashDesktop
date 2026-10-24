@@ -45,6 +45,9 @@ import { useCachedResult, useDataCache } from '../datasets/DataCache.tsx';
 import { analysisInput } from '../analysis-setup/setup.ts';
 import { missingProfile } from './missing.ts';
 import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
+import { TableCard, num, type TableSheet } from '../ui/TableExport.tsx';
+import { PageHeader } from '../ui/PageHeader.tsx';
+import { TabPanels } from '../ui/TabPanels.tsx';
 export interface ExploreDeps {
   readonly groups: GroupsService;
   readonly explore: ExploreService;
@@ -382,8 +385,14 @@ export function exploreKey(kind: string, revKey: string, request: unknown): stri
 export function MissingView({ combined, columns }: { combined: CombinedRows; columns: string[] }): ReactElement {
   const rows = useMemo(() => missingProfile(combined, columns), [combined, columns]);
   if (rows.length === 0) return <p>Choose a dataset first.</p>;
+  const sheet: TableSheet = {
+    name: 'Missing values',
+    columns: ['Feature', 'Missing', 'Missing (%)', 'Band'],
+    rows: rows.map((r) => [r.feature, r.num_missing, num(r.pct_missing * 100), r.band]),
+  };
   return (
-    <table className="data-table">
+    <TableCard title="Missing values" fileName="Missing values" sheets={() => [sheet]} note={`${combined.rows.length} rows. Bands: Good ≤ 5%, OK ≤ 40%, Bad ≤ 80%, else Remove.`}>
+    <table className="data-table missing-table">
       <thead>
         <tr>
           <th>Feature</th>
@@ -398,11 +407,12 @@ export function MissingView({ combined, columns }: { combined: CombinedRows; col
             <td>{row.feature}</td>
             <td>{row.num_missing}</td>
             <td>{Number.isNaN(row.pct_missing) ? 'NA' : (row.pct_missing * 100).toFixed(1)}</td>
-            <td>{row.band}</td>
+            <td><span className={`band band-${row.band.toLowerCase()}`}>{row.band}</span></td>
           </tr>
         ))}
       </tbody>
     </table>
+    </TableCard>
   );
 }
 
@@ -474,10 +484,30 @@ function HistogramView({
     () => deps.explore.histogram(request),
   );
 
-  const maxCount = state.kind === 'loaded' ? Math.max(...state.data.counts, 1) : 1;
+  const bars = useMemo<Data[]>(() => {
+    if (state.kind !== 'loaded') return [];
+    const { breaks, counts } = state.data;
+    return [{
+      type: 'bar',
+      x: counts.map((_, i) => ((breaks[i] ?? 0) + (breaks[i + 1] ?? 0)) / 2),
+      y: counts,
+      width: counts.map((_, i) => (breaks[i + 1] ?? 0) - (breaks[i] ?? 0)),
+      text: counts.map((c, i) => `${breaks[i]}–${breaks[i + 1]}: ${c}`),
+      textposition: 'none',
+      hovertemplate: '%{text}<extra></extra>',
+      marker: { color: '#1f8a63', line: { color: 'rgba(255,255,255,0.6)', width: 1 } },
+    } as Data];
+  }, [state]);
+  const histLayout = useMemo(() => ({ bargap: 0, xaxis: { title: { text: column } }, yaxis: { title: { text: 'Count' } }, showlegend: false }), [column]);
+  const binSheet = (): TableSheet[] => state.kind !== 'loaded' ? [] : [{
+    name: `Histogram ${column}`,
+    columns: ['From', 'To', 'Count'],
+    rows: state.data.counts.map((c, i) => [num(state.data.breaks[i]), num(state.data.breaks[i + 1]), c]),
+  }];
   return (
-    <div>
-      <label>
+    <div className="results">
+      <div className="toolbar-row">
+      <label className="field field-inline">
         Field
         <select value={column} onChange={(e) => setColumn(e.target.value)}>
           {columns.map((c) => (
@@ -487,7 +517,7 @@ function HistogramView({
           ))}
         </select>
       </label>
-      <label>
+      <label className="field field-inline">
         Bins (2–100)
         <input
           type="number"
@@ -497,19 +527,13 @@ function HistogramView({
           onChange={(e) => setBins(Math.min(100, Math.max(2, Number(e.target.value) || DEFAULT_BINS)))}
         />
       </label>
+      </div>
       {state.kind === 'loading' && <BusyNote>Computing histogram…</BusyNote>}
       {state.kind === 'error' && <p role="alert">Error: {state.message}</p>}
       {state.kind === 'loaded' && (
-        <div className="histogram" role="img" aria-label={`Histogram of ${column}`}>
-          {state.data.counts.map((count, i) => (
-            <div
-              key={i}
-              className="histogram-bar"
-              style={{ height: `${(count / maxCount) * 100}%` }}
-              title={`${state.data.breaks[i]}–${state.data.breaks[i + 1]}: ${count}`}
-            />
-          ))}
-        </div>
+        <TableCard bare title={`Histogram of ${column}`} fileName={`Histogram ${column}`} sheets={binSheet}>
+          <PlotlyChart data={bars} layout={histLayout} ariaLabel={`Histogram of ${column}`} saveName={`Histogram ${column}`} height={340} />
+        </TableCard>
       )}
     </div>
   );
@@ -555,9 +579,16 @@ function CrosstabView({
     () => deps.explore.crosstab(request),
   );
 
+  const crossSheet = (): TableSheet[] => {
+    if (state.kind !== 'loaded') return [];
+    return state.data.kind === 'count'
+      ? [{ name: 'Crosstab', columns: [groupColumn, valueColumn, 'count'], rows: state.data.rows.map((r) => [r.group ?? '(Missing)', r.value ?? '(Missing)', r.count]) }]
+      : [{ name: 'Crosstab', columns: [groupColumn, state.data.result_column], rows: state.data.rows.map((r) => [r.group ?? '(Missing)', num(r.result)]) }];
+  };
   return (
-    <div>
-      <label>
+    <div className="results">
+      <div className="toolbar-row">
+      <label className="field field-inline">
         Group field
         <select value={groupColumn} onChange={(e) => setGroupColumn(e.target.value)}>
           {data.descriptive_columns.map((c) => (
@@ -567,7 +598,7 @@ function CrosstabView({
           ))}
         </select>
       </label>
-      <label>
+      <label className="field field-inline">
         Second field
         <select value={valueColumn} onChange={(e) => setValueColumn(e.target.value)}>
           {data.descriptive_columns.concat(data.elemental_columns).map((c) => (
@@ -577,7 +608,7 @@ function CrosstabView({
           ))}
         </select>
       </label>
-      <label>
+      <label className="field field-inline">
         Summary
         <select value={method} onChange={(e) => setMethod(e.target.value as typeof method)}>
           <option value="count">count</option>
@@ -586,12 +617,15 @@ function CrosstabView({
           <option value="sd">sd</option>
         </select>
       </label>
+      </div>
       {state.kind === 'loading' && <BusyNote>Computing crosstab…</BusyNote>}
       {state.kind === 'error' && <p role="alert">Error: {state.message}</p>}
-      {state.kind === 'loaded' && state.data.kind === 'count' && (
+      {state.kind === 'loaded' && (
+        <TableCard title={`${valueColumn} by ${groupColumn}`} fileName={`Crosstab ${valueColumn} by ${groupColumn}`} sheets={crossSheet}>
+      {state.data.kind === 'count' && (
         <CrosstabCountTable rows={state.data.rows} groupLabel={groupColumn} valueLabel={valueColumn} />
       )}
-      {state.kind === 'loaded' && state.data.kind === 'summary' && (
+      {state.data.kind === 'summary' && (
         <table className="data-table">
           <thead>
             <tr>
@@ -608,6 +642,8 @@ function CrosstabView({
             ))}
           </tbody>
         </table>
+      )}
+        </TableCard>
       )}
     </div>
   );
@@ -738,8 +774,8 @@ function ProfileView({
 
   return (
     <div>
-      <div className="explore-controls">
-        <label>
+      <div className="toolbar-row">
+        <label className="field field-inline">
           Color by
           <select value={groupColumn} onChange={(e) => setGroupColumn(e.target.value)}>
             <option value="">(none)</option>
@@ -750,14 +786,14 @@ function ProfileView({
             ))}
           </select>
         </label>
-        <label>
+        <label className="field-check">
           <input type="checkbox" checked={logScale} onChange={(e) => setLogScale(e.target.checked)} /> Log scale
         </label>
       </div>
       {state.kind === 'loading' && <BusyNote>Computing profile…</BusyNote>}
       {state.kind === 'error' && <p role="alert">Error: {state.message}</p>}
       {state.kind === 'loaded' && traces.length > 0 && (
-        <PlotlyChart data={traces} layout={layout} ariaLabel="Compositional profile" height={480} />
+        <section className="card"><PlotlyChart data={traces} layout={layout} ariaLabel="Compositional profile" saveName="Compositional profile" height={480} /></section>
       )}
       <p className="muted">One line per sample across the measured elements.</p>
     </div>
@@ -802,10 +838,9 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
   useExploreWarmup(deps, load.kind === 'loaded' && files.length > 0 && savesSettled, input, plotColumns, profileGroupColumn, revKey, combined.rows.length);
 
   return (
-    <section aria-labelledby="explore-heading">
-      <h1 id="explore-heading">Explore</h1>
-      <div className="explore-controls">
-        <label>
+    <section className="page" aria-labelledby="explore-heading">
+      <PageHeader id="explore-heading" title="Explore" description="Browse and edit the samples, check missing values, and look at distributions before analysis.">
+        <label className="field field-inline">
           Dataset
           <GroupMultiSelect
             options={dataset.options}
@@ -813,10 +848,10 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
             onChange={dataset.setSelectedPaths}
           />
         </label>
-        <button type="button" onClick={dataset.reload}>
+        <button type="button" className="btn" onClick={dataset.reload}>
           Reload
         </button>
-      </div>
+      </PageHeader>
       <div role="tablist" aria-label="Explore views" className="pills">
         {VIEWS.map(([key, label]) => (
           <button
@@ -838,27 +873,23 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
       )}
       {load.kind === 'loaded' && files.length > 0 && (
         <div key={viewKey}>
-          {view === 'table' && (
-            <DataTable files={files} deps={deps} autosave={autosave} onReload={dataset.reload} />
-          )}
           {view !== 'table' && view !== 'missing' && !savesSettled && <BusyNote>Saving table edits…</BusyNote>}
-          {view === 'missing' && <MissingView combined={combined} columns={plotColumns} />}
-          {savesSettled && view === 'histogram' && (
-            <HistogramView deps={deps} input={input} columns={plotColumns} revKey={revKey} />
-          )}
-          {savesSettled && view === 'crosstab' && (
-            <CrosstabView deps={deps} input={input} data={data} defaultGroupColumn={defaultGroupColumn(combined)} revKey={revKey} />
-          )}
-          {savesSettled && view === 'profile' && (
-            <ProfileView
-              deps={deps}
-              input={input}
-              columns={plotColumns}
-              revKey={revKey}
-              groupColumns={combined.descriptiveColumns}
-              defaultGroupColumn={profileGroupColumn}
-            />
-          )}
+          <TabPanels active={view} panels={{
+            table: () => <DataTable files={files} deps={deps} autosave={autosave} onReload={dataset.reload} />,
+            missing: () => <MissingView combined={combined} columns={plotColumns} />,
+            histogram: () => <HistogramView deps={deps} input={input} columns={plotColumns} revKey={revKey} />,
+            crosstab: () => <CrosstabView deps={deps} input={input} data={data} defaultGroupColumn={defaultGroupColumn(combined)} revKey={revKey} />,
+            profile: () => (
+              <ProfileView
+                deps={deps}
+                input={input}
+                columns={plotColumns}
+                revKey={revKey}
+                groupColumns={combined.descriptiveColumns}
+                defaultGroupColumn={profileGroupColumn}
+              />
+            ),
+          }} />
         </div>
       )}
     </section>

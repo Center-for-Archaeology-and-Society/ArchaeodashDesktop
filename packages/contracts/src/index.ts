@@ -606,6 +606,22 @@ export interface ExportMeasuredDataRequest {
 
 export type ExportFormat = 'csv' | 'xlsx';
 
+/** One exported cell: number, text, or null (empty). */
+export type TableCell = number | string | null;
+
+export interface ExportTableSheet {
+  name: string;
+  columns: string[];
+  rows: TableCell[][];
+}
+
+/** Any result table as CSV (first sheet) or XLSX (one worksheet per sheet). */
+export interface ExportTableRequest {
+  file_name: string;
+  format?: ExportFormat;
+  sheets: ExportTableSheet[];
+}
+
 export interface ExportTransformedRequest {
   path: string;
   /** Extra group files read together with `path` (see `OrdinationRequestBase`). */

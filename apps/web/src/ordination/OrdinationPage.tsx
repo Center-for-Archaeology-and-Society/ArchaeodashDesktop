@@ -26,6 +26,9 @@ import { groupColors } from '../visualize/visualize-model.ts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
 import { UMAP_SEED, analysisInput, setupSummary } from '../analysis-setup/setup.ts';
 import { BusyNote } from '../ui/Busy.tsx';
+import { TableCard, num, type TableSheet } from '../ui/TableExport.tsx';
+import { PageHeader } from '../ui/PageHeader.tsx';
+import { TabPanels } from '../ui/TabPanels.tsx';
 
 export interface OrdinationDeps {
   readonly groups: GroupsService;
@@ -47,36 +50,71 @@ const VIEWS: readonly [OrdinationView, string][] = [
   ['lda', 'LDA'],
 ];
 
+/** Sample labels and groups aligned with the ordinated rows. */
+export interface RowLabels {
+  /** Name of the ID column (ANID). */
+  readonly idColumn: string;
+  readonly ids: readonly string[];
+  readonly groups?: readonly string[];
+}
+
+const ROWS_SHOWN = 200;
+
+/** Score sheet: ID, group, then one column per score. */
+export function scoreSheet(name: string, scoreNames: readonly string[], scores: readonly number[][], rows?: RowLabels): TableSheet {
+  return {
+    name,
+    columns: [rows?.idColumn ?? 'Row', 'Group', ...scoreNames],
+    rows: scores.map((row, i) => [rows?.ids[i] || `Row ${i + 1}`, rows?.groups?.[i] ?? null, ...row.map(num)]),
+  };
+}
+
 function ScoreTable({
+  title,
+  fileName,
   scoreNames,
   scores,
-  rowPrefix,
+  rows,
 }: {
+  title: string;
+  fileName: string;
   scoreNames: string[];
   scores: number[][];
-  rowPrefix: string;
+  rows?: RowLabels;
 }): ReactElement {
+  const [shown, setShown] = useState(ROWS_SHOWN);
+  const sheet = useMemo(() => scoreSheet(title, scoreNames, scores, rows), [title, scoreNames, scores, rows]);
   return (
-    <table className="data-table">
-      <thead>
-        <tr>
-          <th>Row</th>
-          {scoreNames.map((name) => (
-            <th key={name}>{name}</th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {scores.map((row, i) => (
-          <tr key={i}>
-            <td>{`${rowPrefix} ${i + 1}`}</td>
-            {row.map((value, j) => (
-              <td key={j}>{Number.isFinite(value) ? value.toFixed(4) : 'NA'}</td>
+    <TableCard
+      title={title}
+      fileName={fileName}
+      sheets={() => [sheet]}
+      note={`${scores.length} rows${scores.length > shown ? `; showing ${shown}` : ''}.`}
+    >
+      <table className="data-table numeric">
+        <thead>
+          <tr>
+            {sheet.columns.map((name) => (
+              <th key={name}>{name}</th>
             ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {sheet.rows.slice(0, shown).map((row, i) => (
+            <tr key={i}>
+              {row.map((value, j) => (
+                <td key={j}>{typeof value === 'number' ? value.toFixed(4) : value ?? 'NA'}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {shown < scores.length && (
+        <button type="button" className="btn btn-sm" onClick={() => setShown((n) => n + ROWS_SHOWN)}>
+          Show {ROWS_SHOWN} more rows
+        </button>
+      )}
+    </TableCard>
   );
 }
 
@@ -87,6 +125,8 @@ function ScatterPlot({
   xLabel,
   yLabel,
   groups,
+  ids,
+  title,
 }: {
   x: number[];
   y: number[];
@@ -94,11 +134,15 @@ function ScatterPlot({
   yLabel: string;
   /** Group name per point; omitted or mismatched draws one series. */
   groups?: readonly string[];
+  /** Sample ID (ANID) per point, for hover text. */
+  ids?: readonly string[];
+  /** Name for saved images. */
+  title?: string;
 }): ReactElement | null {
   const data = useMemo(() => {
     const labels = groups && groups.length === x.length ? groups : x.map(() => 'All rows');
     const names = [...new Set(labels)];
-    const colors = names.length === 1 ? ['#1e8f66'] : groupColors(names.length);
+    const colors = names.length === 1 ? ['#1f8a63'] : groupColors(names.length);
     return names.map((name, gi) => {
       const idx = labels.flatMap((g, i) => (g === name ? [i] : []));
       return {
@@ -107,12 +151,12 @@ function ScatterPlot({
         name,
         x: idx.map((i) => x[i]),
         y: idx.map((i) => y[i]),
-        text: idx.map((i) => `${name} · row ${i + 1}`),
+        text: idx.map((i) => `${ids?.[i] || `Row ${i + 1}`} · ${name}`),
         hovertemplate: `%{text}<br>${xLabel}: %{x:.3f}<br>${yLabel}: %{y:.3f}<extra></extra>`,
         marker: { color: colors[gi], size: 7, opacity: 0.85 },
       } as Data;
     });
-  }, [x, y, xLabel, yLabel, groups]);
+  }, [x, y, xLabel, yLabel, groups, ids]);
   const layout = useMemo(
     () => ({
       xaxis: { title: { text: xLabel }, zeroline: true },
@@ -127,6 +171,7 @@ function ScatterPlot({
       data={data}
       layout={layout}
       ariaLabel={`Scatter of ${yLabel} by ${xLabel}`}
+      saveName={title ?? `${yLabel} vs ${xLabel}`}
       className="plotly-chart plot-point-scatter"
     />
   );
@@ -141,11 +186,16 @@ export function PcaResult({
   onRecompute,
   onExportScores,
   groups,
+  rows,
+  columns,
 }: {
   result: PcaResponse;
   onRecompute: () => void;
   onExportScores?: () => void;
   groups?: readonly string[];
+  rows?: RowLabels;
+  /** Input columns (loading rows); defaults to the response's column names. */
+  columns?: readonly string[];
 }): ReactElement {
   const k = Math.min(SCREE_COMPONENTS, result.explained_variance.length);
   const names = result.score_names.slice(0, k);
@@ -157,7 +207,6 @@ export function PcaResult({
         name: 'Explained',
         x: names,
         y: result.explained_variance.slice(0, k).map((v) => v * 100),
-        marker: { color: '#48c895' },
         hovertemplate: '%{x}: %{y:.1f}%<extra></extra>',
       } as Data,
       {
@@ -166,7 +215,6 @@ export function PcaResult({
         name: 'Cumulative',
         x: names,
         y: result.cumulative_variance.slice(0, k).map((v) => v * 100),
-        line: { color: '#163126' },
         hovertemplate: '%{x}: %{y:.1f}% cumulative<extra></extra>',
       } as Data,
     ],
@@ -180,13 +228,27 @@ export function PcaResult({
     }),
     [],
   );
+  const varianceSheet: TableSheet = {
+    name: 'Explained variance',
+    columns: ['Component', 'Variance (%)', 'Cumulative (%)', 'Standard deviation'],
+    rows: result.score_names.map((name, i) => [name, num((result.explained_variance[i] ?? NaN) * 100), num((result.cumulative_variance[i] ?? NaN) * 100), num(result.sdev[i])]),
+  };
+  const loadingNames = (columns ?? (result as PcaResponse & { column_names?: string[] }).column_names ?? []).slice(0, result.rotation.length);
+  const loadingsSheet: TableSheet = {
+    name: 'Loadings',
+    columns: ['Element', ...result.score_names],
+    rows: result.rotation.map((row, i) => [loadingNames[i] ?? `Column ${i + 1}`, ...row.map(num)]),
+  };
   const pc1 = `${result.score_names[0] ?? 'PC1'} (${pct(result.explained_variance[0])})`;
   const pc2 = `${result.score_names[1] ?? 'PC2'} (${pct(result.explained_variance[1])})`;
   return (
-    <div>
-      <h2>Explained variance</h2>
+    <div className="results">
       <div className="ordination-scree">
-        <PlotlyChart data={scree} layout={screeLayout} ariaLabel="Explained variance per component" height={300} />
+        <section className="card">
+          <header className="card-header"><h2 className="card-title">Explained variance</h2></header>
+          <PlotlyChart data={scree} layout={screeLayout} ariaLabel="Explained variance per component" saveName="PCA explained variance" height={300} />
+        </section>
+        <TableCard title="Variance" fileName="PCA explained variance" sheets={() => [varianceSheet, loadingsSheet]}>
         <table className="data-table variance-table">
           <thead>
             <tr>
@@ -205,6 +267,7 @@ export function PcaResult({
             ))}
           </tbody>
         </table>
+        </TableCard>
       </div>
       {result.scale === null || result.scale === undefined ? (
         <p className="muted">
@@ -213,28 +276,51 @@ export function PcaResult({
           Manager&apos;s Analysis setup.
         </p>
       ) : null}
-      <h2>Scores</h2>
-      <ScatterPlot
-        x={result.scores.map((r) => r[0] ?? 0)}
-        y={result.scores.map((r) => r[1] ?? 0)}
-        xLabel={pc1}
-        yLabel={pc2}
-        groups={groups}
-      />
-      <details>
-        <summary>Score table</summary>
-        <ScoreTable scoreNames={result.score_names} scores={result.scores} rowPrefix="Row" />
-      </details>
-      <div className="table-actions">
-        <button type="button" onClick={onRecompute}>
-          Recompute
-        </button>
-        {onExportScores && (
-          <button type="button" onClick={onExportScores}>
-            Export PCA scores (CSV)
-          </button>
-        )}
-      </div>
+      <section className="card">
+        <header className="card-header">
+          <h2 className="card-title">Scores</h2>
+          <div className="card-actions">
+            <button type="button" className="btn btn-sm btn-ghost" onClick={onRecompute}>
+              Recompute
+            </button>
+            {onExportScores && (
+              <button type="button" className="btn btn-sm btn-ghost" onClick={onExportScores} title="Scores with every descriptive column (CSV)">
+                Scores with sample data (CSV)
+              </button>
+            )}
+          </div>
+        </header>
+        <ScatterPlot
+          x={result.scores.map((r) => r[0] ?? 0)}
+          y={result.scores.map((r) => r[1] ?? 0)}
+          xLabel={pc1}
+          yLabel={pc2}
+          groups={groups}
+          ids={rows?.ids}
+          title="PCA scores"
+        />
+      </section>
+      <ScoreTable title="Score table" fileName="PCA scores" scoreNames={result.score_names} scores={result.scores} rows={rows} />
+      <TableCard title="Loadings" fileName="PCA loadings" sheets={() => [loadingsSheet]}>
+        <table className="data-table numeric">
+          <thead>
+            <tr>
+              {loadingsSheet.columns.map((c) => (
+                <th key={c}>{c}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {loadingsSheet.rows.map((row, i) => (
+              <tr key={i}>
+                {row.map((v, j) => (
+                  <td key={j}>{typeof v === 'number' ? v.toFixed(4) : v ?? 'NA'}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </TableCard>
     </div>
   );
 }
@@ -266,13 +352,15 @@ interface OrdinationInput {
   readonly data: GroupRowsResponse;
   readonly extraPaths: readonly string[];
   readonly groups?: readonly string[];
+  /** Sample IDs and groups per row, for tables and hover text. */
+  readonly rows?: RowLabels;
   /** Columns to ordinate (Analysis setup); defaults to every measured column. */
   readonly columns?: readonly string[];
   /** Analysis setup transform applied on demand before ordinating. */
   readonly transformation?: TransformationDefinition;
 }
 
-function PcaView({ deps, data, extraPaths, groups, columns, transformation }: { deps: OrdinationDeps } & OrdinationInput): ReactElement {
+function PcaView({ deps, data, extraPaths, groups, rows, columns, transformation }: { deps: OrdinationDeps } & OrdinationInput): ReactElement {
   const request = useMemo(
     () => ({
       path: data.path,
@@ -291,6 +379,8 @@ function PcaView({ deps, data, extraPaths, groups, columns, transformation }: { 
         <PcaResult
           result={state.data}
           groups={groups}
+          rows={rows}
+          columns={request.columns}
           onRecompute={reload}
           onExportScores={() =>
             void deps.exports
@@ -305,7 +395,7 @@ function PcaView({ deps, data, extraPaths, groups, columns, transformation }: { 
   );
 }
 
-function UmapView({ deps, data, extraPaths, groups, columns, transformation }: { deps: OrdinationDeps } & OrdinationInput): ReactElement {
+function UmapView({ deps, data, extraPaths, groups, rows, columns, transformation }: { deps: OrdinationDeps } & OrdinationInput): ReactElement {
   const { state } = useOrdination<UmapResponse>(
     () =>
       deps.ordination.umap({
@@ -320,29 +410,32 @@ function UmapView({ deps, data, extraPaths, groups, columns, transformation }: {
   if (state.kind === 'loading') return <BusyNote>Computing UMAP…</BusyNote>;
   if (state.kind === 'error') return <p role="alert">Error: {state.message}</p>;
   if (state.kind !== 'loaded') return <p>No UMAP yet.</p>;
-  return <UmapResult result={state.data} groups={groups} />;
+  return <UmapResult result={state.data} groups={groups} rows={rows} />;
 }
 
 /** Pure UMAP result presentation (seed echo, embedding scatter, score table). */
-export function UmapResult({ result, groups }: { result: UmapResponse; groups?: readonly string[] }): ReactElement {
+export function UmapResult({ result, groups, rows }: { result: UmapResponse; groups?: readonly string[]; rows?: RowLabels }): ReactElement {
   return (
-    <div>
-      <p className="muted">
-        seed {result.seed}, n_neighbors {result.n_neighbors}, n_epochs {result.n_epochs}
-        {result.warnings.length > 0 && ` — warnings: ${result.warnings.join('; ')}`}
-      </p>
-      <ScatterPlot
-        x={result.embedding.map((r) => r[0] ?? 0)}
-        y={result.embedding.map((r) => r[1] ?? 0)}
-        xLabel="V1"
-        yLabel="V2"
-        groups={groups}
-      />
-      <details>
-        <summary>Score table</summary>
-        <ScoreTable scoreNames={result.score_names} scores={result.embedding} rowPrefix="Row" />
-      </details>
-      <p className="muted">Re-run uses the same seed: the embedding is reproducible.</p>
+    <div className="results">
+      <section className="card">
+        <header className="card-header">
+          <h2 className="card-title">UMAP embedding</h2>
+        </header>
+        <p className="card-note">
+          seed {result.seed}, n_neighbors {result.n_neighbors}, n_epochs {result.n_epochs}
+          {result.warnings.length > 0 && ` — warnings: ${result.warnings.join('; ')}`}. Re-running with the same seed gives the same embedding.
+        </p>
+        <ScatterPlot
+          x={result.embedding.map((r) => r[0] ?? 0)}
+          y={result.embedding.map((r) => r[1] ?? 0)}
+          xLabel="V1"
+          yLabel="V2"
+          groups={groups}
+          ids={rows?.ids}
+          title="UMAP embedding"
+        />
+      </section>
+      <ScoreTable title="Score table" fileName="UMAP scores" scoreNames={result.score_names} scores={result.embedding} rows={rows} />
     </div>
   );
 }
@@ -357,6 +450,7 @@ export function LdaView({
   defaultGroupColumn,
   columns,
   transformation,
+  rows,
 }: { deps: OrdinationDeps; defaultGroupColumn?: string } & Omit<OrdinationInput, 'extraPaths'> & {
   extraPaths?: readonly string[];
 }): ReactElement {
@@ -382,8 +476,8 @@ export function LdaView({
     (r) => r.descriptive[data.descriptive_columns.indexOf(groupColumn)] ?? '(Missing)',
   );
   return (
-    <div>
-      <label>
+    <div className="results">
+      <label className="field field-inline">
         Group column
         <select value={groupColumn} onChange={(e) => setGroupColumn(e.target.value)}>
           {data.descriptive_columns.map((c) => (
@@ -398,24 +492,34 @@ export function LdaView({
       {state.kind === 'idle' && <p>No LDA yet.</p>}
       {state.kind === 'loaded' && (
         <>
-          <p className="muted">
-            Groups: {state.data.levels.join(', ')} — priors{' '}
-            {state.data.prior.map((p) => p.toFixed(3)).join(', ')}
-          </p>
-          {state.data.warnings.length > 0 && (
-            <p role="status">Warnings: {state.data.warnings.join('; ')}</p>
-          )}
-          <ScatterPlot
-            x={state.data.scores.map((r) => r[0] ?? 0)}
-            y={state.data.scores.map((r) => r[1] ?? 0)}
-            xLabel="LD1"
-            yLabel="LD2"
-            groups={colorBy}
+          <section className="card">
+            <header className="card-header">
+              <h2 className="card-title">Linear discriminants</h2>
+            </header>
+            <p className="card-note">
+              Groups: {state.data.levels.join(', ')} — priors{' '}
+              {state.data.prior.map((p) => p.toFixed(3)).join(', ')}
+            </p>
+            {state.data.warnings.length > 0 && (
+              <p role="status" className="callout callout-info">Warnings: {state.data.warnings.join('; ')}</p>
+            )}
+            <ScatterPlot
+              x={state.data.scores.map((r) => r[0] ?? 0)}
+              y={state.data.scores.map((r) => r[1] ?? 0)}
+              xLabel="LD1"
+              yLabel="LD2"
+              groups={colorBy}
+              ids={rows?.ids}
+              title="LDA scores"
+            />
+          </section>
+          <ScoreTable
+            title="Score table"
+            fileName="LDA scores"
+            scoreNames={state.data.score_names}
+            scores={state.data.scores}
+            rows={rows ? { ...rows, groups: colorBy } : undefined}
           />
-          <details>
-            <summary>Score table</summary>
-            <ScoreTable scoreNames={state.data.score_names} scores={state.data.scores} rowPrefix="Row" />
-          </details>
         </>
       )}
     </div>
@@ -434,12 +538,19 @@ export function OrdinationPage({ deps }: { deps: OrdinationDeps }): ReactElement
     () => analysisInput(analysisSetup.setup, data.elemental_columns),
     [analysisSetup.setup, data.elemental_columns],
   );
+  const rowLabels = useMemo<RowLabels>(
+    () => ({
+      idColumn: combined.visibleIdColumn,
+      ids: combined.rows.map((r) => r.visible_id ?? r.legacy_rowid ?? ''),
+      groups: combined.groupOf,
+    }),
+    [combined],
+  );
 
   return (
-    <section aria-labelledby="ordination-heading">
-      <h1 id="ordination-heading">Ordination</h1>
-      <div className="explore-controls">
-        <label>
+    <section className="page" aria-labelledby="ordination-heading">
+      <PageHeader id="ordination-heading" title="Ordination" description="Principal components, UMAP, and linear discriminants of the selected groups, using the Data Manager’s Analysis setup.">
+        <label className="field field-inline">
           Dataset
           <GroupMultiSelect
             options={dataset.options}
@@ -447,7 +558,7 @@ export function OrdinationPage({ deps }: { deps: OrdinationDeps }): ReactElement
             onChange={dataset.setSelectedPaths}
           />
         </label>
-      </div>
+      </PageHeader>
       <div role="tablist" aria-label="Ordination views" className="pills">
         {VIEWS.map(([key, label]) => (
           <button
@@ -480,10 +591,10 @@ export function OrdinationPage({ deps }: { deps: OrdinationDeps }): ReactElement
         <p role="alert">Ordination needs at least two selected elements measured in these groups. Change the Analysis setup in the Data Manager.</p>
       )}
       {load.kind === 'loaded' && files.length > 0 && analysisSetup.loaded && input.columns.length >= 2 && (
-        <div key={viewKey}>
-          {view === 'pca' && <PcaView deps={deps} data={data} extraPaths={extraPaths} groups={combined.groupOf} columns={input.columns} transformation={input.transformation} />}
-          {view === 'umap' && <UmapView deps={deps} data={data} extraPaths={extraPaths} groups={combined.groupOf} columns={input.columns} transformation={input.transformation} />}
-          {view === 'lda' && (
+        <TabPanels key={viewKey} active={view} panels={{
+          pca: () => <PcaView deps={deps} data={data} extraPaths={extraPaths} groups={combined.groupOf} rows={rowLabels} columns={input.columns} transformation={input.transformation} />,
+          umap: () => <UmapView deps={deps} data={data} extraPaths={extraPaths} groups={combined.groupOf} rows={rowLabels} columns={input.columns} transformation={input.transformation} />,
+          lda: () => (
             <LdaView
               deps={deps}
               data={data}
@@ -491,9 +602,10 @@ export function OrdinationPage({ deps }: { deps: OrdinationDeps }): ReactElement
               defaultGroupColumn={defaultGroupColumn(combined)}
               columns={input.columns}
               transformation={input.transformation}
+              rows={rowLabels}
             />
-          )}
-        </div>
+          ),
+        }} />
       )}
     </section>
   );

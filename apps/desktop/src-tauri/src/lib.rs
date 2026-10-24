@@ -511,6 +511,18 @@ async fn preferences_set(
     run_blocking(&state, move |s| s.preferences.preferences_set(request)).await
 }
 
+/// `export_table`: any result table as CSV or XLSX (no project access).
+#[tauri::command]
+async fn export_table(
+    request: archaeodash_contracts::ExportTableRequest,
+) -> Result<archaeodash_contracts::ExportResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        archaeodash_application::export_table(&request).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("background task failed: {e}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[allow(clippy::expect_used)] // app entry point: a failed runtime start must abort startup
 pub fn run() {
@@ -594,6 +606,8 @@ pub fn run() {
             export_transformed,
             export_pca_scores,
             export_files::save_export_file,
+            export_table,
+            projects::reveal_project,
             preferences_get,
             preferences_set
         ])

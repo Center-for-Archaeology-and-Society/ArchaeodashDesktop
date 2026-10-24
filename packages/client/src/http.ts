@@ -26,6 +26,7 @@ import type {
   ExploreMissingProfileResponse,
   ExportMeasuredDataRequest,
   ExportPcaScoresRequest,
+  ExportTableRequest,
   ExportResult,
   ExportTransformedRequest,
   EuclideanMatchesRequest,
@@ -366,6 +367,8 @@ export class HttpTransport implements Transport {
         this.request('POST', '/api/v1/exports/transformed', { body: request }),
       pcaScores: (request: ExportPcaScoresRequest) =>
         this.request('POST', '/api/v1/exports/pca-scores', { body: request }),
+      table: (request: ExportTableRequest) =>
+        this.request('POST', '/api/v1/exports/table', { body: request }),
     };
   }
 

@@ -12,7 +12,11 @@ const isIdentity = (value: unknown): value is string =>
   typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
 
 /** Return rows that can be safely addressed by identity in an assignment. */
-export function selectableRows(result: AnalysisResult, cutK = 2): SelectableRow[] {
+export function selectableRows(
+  result: AnalysisResult,
+  cutK = 2,
+  rowLabel: (uuid: string | undefined, index: number) => string = (_uuid, i) => `Analytical unit ${i + 1}`,
+): SelectableRow[] {
   if (result.kind === 'diagnostics') return [];
   if (result.kind === 'fit') {
     const data = result.data;
@@ -20,14 +24,14 @@ export function selectableRows(result: AnalysisResult, cutK = 2): SelectableRow[
     if (!Array.isArray(ids) || ids.length !== data.n_rows || ids.some(id => !isIdentity(id)) || new Set(ids).size !== ids.length) return [];
     if (data.cluster) {
       if (data.cluster.length !== data.n_rows || data.cluster.some(label => !Number.isInteger(label) || label < 1) || (data.silhouette && data.silhouette.length !== data.n_rows)) return [];
-      return ids.map((analyticalUuid, i) => ({ analyticalUuid, label: `Analytical unit ${i + 1}`, detail: `Cluster ${data.cluster![i]}` }));
+      return ids.map((analyticalUuid, i) => ({ analyticalUuid, label: rowLabel(analyticalUuid, i), detail: `Cluster ${data.cluster![i]}` }));
     }
     const layout = layoutDendrogram(data, cutK);
     if (!layout || layout.leaves.length !== data.n_rows) return [];
     const groups = new Array<number>(data.n_rows);
     for (const leaf of layout.leaves) groups[leaf.row - 1] = leaf.group + 1;
     if (groups.some(group => !Number.isInteger(group))) return [];
-    return ids.map((analyticalUuid, i) => ({ analyticalUuid, label: `Analytical unit ${i + 1}`, detail: `Cluster ${groups[i]}` }));
+    return ids.map((analyticalUuid, i) => ({ analyticalUuid, label: rowLabel(analyticalUuid, i), detail: `Cluster ${groups[i]}` }));
   }
   if (result.kind === 'membership') {
     const data = result.data;

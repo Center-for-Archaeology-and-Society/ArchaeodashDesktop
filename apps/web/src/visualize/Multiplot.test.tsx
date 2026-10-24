@@ -29,7 +29,7 @@ test('multiplot renders the render-mode toggle with static as the default', () =
   assert.ok(html.includes('Interactive (Plotly)'), 'interactive option present');
   assert.ok(html.includes('multiplot-panel'), 'static SVG panels render by default');
   assert.ok(!html.includes('multiplot-panel-plotly'), 'no plotly placeholders in static mode');
-  assert.ok(html.includes('Save plots (SVG)'), 'plot save control present');
+  assert.ok(html.includes('Save PNG') && html.includes('Save SVG'), 'plot save control present');
 });
 
 test('interactive mode is SSR-safe: placeholder panels, no window access, no uuid leak', () => {

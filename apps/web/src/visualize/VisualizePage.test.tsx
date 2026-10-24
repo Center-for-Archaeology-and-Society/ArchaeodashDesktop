@@ -113,7 +113,7 @@ test('visualize page renders axis/filter/ellipse/symbol/label/assignment control
     'Ellipse',
     'Symbols by',
     'Labels',
-    'Assign selected units',
+    'Assign selected samples',
     'Target group',
     'Selected rows',
   ]) {
@@ -186,7 +186,7 @@ test('multiplot renders static SVG panels for all disjoint pairs without interac
   // 3 columns -> 6 ordered pairs.
   assert.equal((html.match(/multiplot-panel/g) ?? []).length, 6, 'one panel per ordered pair');
   assert.ok(html.includes('Scatter of Sr by Ti'), 'aria labels name the axes');
-  assert.ok(html.includes('Save plots (SVG)'), 'plot save control present');
+  assert.ok(html.includes('Save PNG') && html.includes('Save SVG'), 'plot save control present');
   // Null cells render nothing but panels still exist.
   assert.ok(!html.includes('NaN'));
   assert.ok(!html.includes('Sampled'), 'static mode renders all selected rows');

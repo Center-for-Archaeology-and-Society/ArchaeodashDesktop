@@ -3,6 +3,7 @@ import type { BatchTransferUnitsRequest, GroupCandidate } from '@archaeodash/cli
 import type { AnalysisResult } from './AnalysisPage.tsx';
 import { KEEP_IN_SOURCE, buildAutomaticAssignmentRequest, recommendedAssignments } from './automatic-assignment.ts';
 import { BusyLabel } from '../ui/Busy.tsx';
+import { TableExport } from '../ui/TableExport.tsx';
 
 type Mapping = { groupLabel: string; destinationPath: string; newGroupName?: string };
 export function BatchConfirmation({ request, selectedCount, busy, onConfirm, onCancel, multiSource = false }: {
@@ -15,11 +16,12 @@ export function BatchConfirmation({ request, selectedCount, busy, onConfirm, onC
     {multiSource
       ? <p>Move up to {moving} analytical units from the selected groups, one transaction per source group; units already in their destination stay put. {selectedCount - moving} selected units stay in their own group.</p>
       : <p>Move {moving} analytical units from {request.source_path} in one transaction. {selectedCount - moving} selected units stay in the source group.</p>}
+    <TableExport fileName="Planned assignments" sheets={() => [{ name: 'Planned assignments', columns: ['Destination', 'Group', 'Units'], rows: request.targets.map(t => [t.destination_path, t.destination_group_name ?? 'Existing group', t.selected_uuids.length]) }]} />
     <table className="data-table"><thead><tr><th>Destination</th><th>Group</th><th>Units</th></tr></thead>
       <tbody>{request.targets.map(target => <tr key={target.destination_path}><td>{target.destination_path}</td><td>{target.destination_group_name ?? 'Existing group'}</td><td>{target.selected_uuids.length}</td></tr>)}</tbody>
     </table>
     <p>Original measured values remain unchanged. An empty source group file is removed.</p>
-    <button type="button" disabled={busy} onClick={() => onConfirm(request)}><BusyLabel busy={busy} busyText="Assigning…">Confirm assignments</BusyLabel></button>{' '}
+    <button type="button" className="btn btn-primary" disabled={busy} onClick={() => onConfirm(request)}><BusyLabel busy={busy} busyText="Assigning…">Confirm assignments</BusyLabel></button>{' '}
     <button type="button" disabled={busy} onClick={onCancel}>Cancel</button>
   </section>;
 }
