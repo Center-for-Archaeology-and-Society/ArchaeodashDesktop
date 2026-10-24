@@ -101,3 +101,11 @@ test('saved setup names sanitize like the backend and cannot take the reserved k
   assert.match(setupNameProblem('analysis setup'), /reserved/);
   assert.match(setupNameProblem(ANALYSIS_SETUP_NAME), /reserved/);
 });
+
+test('saved setup names are checked as they are saved (trimmed)', () => {
+  // saveAs stores name.trim(); a padded reserved name must still be refused.
+  assert.match(setupNameProblem('analysis_setup '), /reserved/);
+  assert.match(setupNameProblem(' analysis_setup'), /reserved/);
+  // A padded copy of an existing name must collide, so Replace is asked first.
+  assert.equal(setupStorageKey('Log set '), setupStorageKey('Log set'));
+});

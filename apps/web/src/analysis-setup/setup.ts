@@ -23,9 +23,12 @@ export function sanitizeName(name: string): string {
   return safe || 'group';
 }
 
-/** Storage key of a saved setup name; names with the same key overwrite each other. */
+/**
+ * Storage key of a saved setup name; names with the same key overwrite each
+ * other. Names are saved trimmed, so the key is of the trimmed name.
+ */
 export function setupStorageKey(name: string): string {
-  return Array.from(sanitizeName(name)).slice(0, MAX_NAME_LEN).join('');
+  return Array.from(sanitizeName(name.trim())).slice(0, MAX_NAME_LEN).join('');
 }
 
 /** Why a name cannot be used for a saved setup, or '' when it can. */
