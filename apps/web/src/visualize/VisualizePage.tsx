@@ -203,9 +203,21 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
   const [assignTarget, setAssignTarget] = useState('');
   const [newGroupName, setNewGroupName] = useState('');
   const [assignState, setAssignState] = useState<AsyncState<number>>({ kind: 'idle' });
+  // Path of a group this page is creating; once it appears in the group list
+  // it becomes the target, so the next assignment adds to it instead of
+  // tripping the "already exists" check on the same new name.
+  const [createdTarget, setCreatedTarget] = useState<string | null>(null);
 
   const dataset = useGroupFiles(deps.groups);
   const { ready, options: groupOptions, selectedPaths, setSelectedPaths, orderedPaths, files, combined, rescan } = dataset;
+  useEffect(() => {
+    if (createdTarget === null) return;
+    const created = ready.find((c) => c.path.toLowerCase() === createdTarget.toLowerCase());
+    if (!created) return;
+    setAssignTarget(created.path);
+    setNewGroupName('');
+    setCreatedTarget(null);
+  }, [ready, createdTarget]);
   const loadState = dataset.load;
   const analysisSetup = useAnalysisSetup();
   const setupInput = useMemo(
@@ -497,6 +509,9 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       return;
     }
     setAssignState({ kind: 'loading' });
+    // Set before the move: a multi-source move can create the group and then
+    // fail part-way, and the group should still become the target.
+    if (isNew) setCreatedTarget(destinationPath);
     const keep = (all: string[]) => all.filter((p) => p === destinationPath || selectedPaths.includes(p));
     try {
       const outcome = await moveAcrossSources(
