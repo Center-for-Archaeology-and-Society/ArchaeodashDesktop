@@ -716,7 +716,9 @@ pub fn calc_e_distance_cancellable(
             "No numeric analysis columns found for this dataset source.",
         ));
     }
-    let p = chem.cols.len();
+    use crate::cluster::DistanceMetric;
+    use crate::pairwise::{par_row_blocks, tile_distances, TILE_ROWS};
+
     #[derive(Clone)]
     struct Candidate {
         sequence: usize,
@@ -727,53 +729,81 @@ pub fn calc_e_distance_cancellable(
     let compare = |a: &Candidate, b: &Candidate| {
         cmp_distance(a.distance, b.distance).then_with(|| a.sequence.cmp(&b.sequence))
     };
+    let cap = limit;
+    // Keeps `rows` sorted by (distance, sequence) and at most `cap` long.
+    let offer = |rows: &mut Vec<Candidate>, candidate: Candidate| {
+        let pos = rows
+            .binary_search_by(|current| compare(current, &candidate))
+            .unwrap_or_else(|p| p);
+        if pos < cap {
+            rows.insert(pos, candidate);
+            if rows.len() > cap {
+                rows.pop();
+            }
+        }
+    };
     let projection: std::collections::HashSet<&str> =
         projection.iter().map(String::as_str).collect();
     let in_projection: Vec<bool> = groups
         .iter()
         .map(|g| projection.contains(g.as_str()))
         .collect();
-    // The old full matrix/table order is i-major then j-major. Keep that
-    // sequence as a stable tie-break while retaining at most `limit` rows per
-    // observation rowid key.
-    let cap = limit;
-    let mut candidates: std::collections::BTreeMap<String, Vec<Candidate>> =
-        std::collections::BTreeMap::new();
-    let mut sequence = 0usize;
-    for i in 0..n {
-        if i % 16 == 0 {
+    // Integer keys for the rowid self-exclusion test.
+    let mut key_ids: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    let row_keys: Vec<usize> = rowids
+        .iter()
+        .map(|r| {
+            let next = key_ids.len();
+            *key_ids.entry(r.as_str()).or_insert(next)
+        })
+        .collect();
+    // The old full matrix/table order is i-major then j-major, so
+    // `sequence = i * n + j` stays the stable tie-break. Each row keeps its own
+    // top `limit`; merging those per rowid key gives the same top `limit` as
+    // one pass over every pair.
+    const ROW_BLOCK: usize = 16;
+    let per_block = par_row_blocks(n, ROW_BLOCK, |rows| {
+        let mut tile = vec![0.0f64; TILE_ROWS];
+        let mut best: Vec<Vec<Candidate>> = rows.clone().map(|_| Vec::new()).collect();
+        let mut j0 = 0;
+        while j0 < n {
             cancel.check()?;
-        }
-        for j in 0..n {
-            if rowids[i] == rowids[j] || !in_projection[j] {
-                sequence = sequence.wrapping_add(1);
-                continue;
-            }
-            let mut acc = 0.0_f64;
-            for k in 0..p {
-                let diff = chem.cols[k][i] - chem.cols[k][j];
-                acc += diff * diff;
-            }
-            let candidate = Candidate {
-                sequence,
-                i,
-                j,
-                distance: acc.sqrt(),
-            };
-            let rows = candidates.entry(rowids[i].clone()).or_default();
-            let pos = rows
-                .binary_search_by(|current| compare(current, &candidate))
-                .unwrap_or_else(|p| p);
-            if pos < cap {
-                rows.insert(pos, candidate);
-                if rows.len() > cap {
-                    rows.pop();
+            let j1 = (j0 + TILE_ROWS).min(n);
+            let tile = &mut tile[..j1 - j0];
+            for (r, i) in rows.clone().enumerate() {
+                tile_distances(&chem.cols, DistanceMetric::Euclidean, i, j0..j1, tile);
+                for (jj, &distance) in tile.iter().enumerate() {
+                    let j = j0 + jj;
+                    if row_keys[i] == row_keys[j] || !in_projection[j] {
+                        continue;
+                    }
+                    offer(
+                        &mut best[r],
+                        Candidate {
+                            sequence: i.wrapping_mul(n).wrapping_add(j),
+                            i,
+                            j,
+                            distance,
+                        },
+                    );
                 }
             }
-            sequence = sequence.wrapping_add(1);
+            j0 = j1;
+        }
+        Ok(best)
+    })?;
+    cancel.check()?;
+    let mut candidates: std::collections::BTreeMap<String, Vec<Candidate>> =
+        std::collections::BTreeMap::new();
+    for (i, row_best) in per_block.into_iter().flatten().enumerate() {
+        if row_best.is_empty() {
+            continue;
+        }
+        let rows = candidates.entry(rowids[i].clone()).or_default();
+        for candidate in row_best {
+            offer(rows, candidate);
         }
     }
-    cancel.check()?;
     let mut out: Vec<EuclideanMatch> = candidates
         .values()
         .flat_map(|rows| rows.iter())

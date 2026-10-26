@@ -530,15 +530,21 @@ fn kmns_start(
 }
 
 /// Deduplicates rows in first-occurrence order (R `unique` on a data frame).
+/// Rows are compared with `==`, so `-0.0` matches `0.0` and a row holding
+/// `NaN` never matches; hashing keeps this linear for large inputs.
 fn unique_rows(x: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let mut seen: Vec<Vec<f64>> = Vec::new();
-    'outer: for row in x {
-        for seen_row in &seen {
-            if row.iter().zip(seen_row.iter()).all(|(a, b)| a == b) {
-                continue 'outer;
-            }
+    let mut keys: std::collections::HashSet<Vec<u64>> = std::collections::HashSet::new();
+    for row in x {
+        if row.iter().any(|v| v.is_nan()) {
+            seen.push(row.to_vec());
+            continue;
         }
-        seen.push(row.to_vec());
+        // `v + 0.0` folds -0.0 into 0.0 so equal values share one key.
+        let key: Vec<u64> = row.iter().map(|v| (v + 0.0).to_bits()).collect();
+        if keys.insert(key) {
+            seen.push(row.to_vec());
+        }
     }
     seen
 }
@@ -630,13 +636,22 @@ pub fn kmeans_cancellable(
         ));
     }
 
+    // Draw every start's centres in R's order first, then run the
+    // independent starts in parallel; the best is still chosen in start order.
     let mut rng = RMt19937::new(seed);
+    let inits: Vec<Vec<Vec<f64>>> = (0..nstart)
+        .map(|_| {
+            r_sample_int(&mut rng, mm, centers)
+                .iter()
+                .map(|&i| cn[i - 1].clone())
+                .collect()
+        })
+        .collect();
+    let fits = crate::pairwise::par_row_blocks(nstart, 1, |start| {
+        kmns_start(&rows, n, p, centers, &inits[start.start], iter_max, cancel)
+    })?;
     let mut best: Option<Kmeans> = None;
-    for _ in 0..nstart {
-        cancel.check()?;
-        let idx = r_sample_int(&mut rng, mm, centers);
-        let init: Vec<Vec<f64>> = idx.iter().map(|&i| cn[i - 1].clone()).collect();
-        let fit = kmns_start(&rows, n, p, centers, &init, iter_max, cancel)?;
+    for fit in fits {
         if best
             .as_ref()
             .is_none_or(|b| fit.tot_withinss < b.tot_withinss)
@@ -1829,9 +1844,230 @@ pub fn silhouette_mean_cancellable(
     Ok(total / clustering.len() as f64)
 }
 
+/// Row silhouette widths for several 1-based clusterings `(labels, k)` of the
+/// rows of `x`, computing each pairwise distance on the fly (in parallel) so
+/// memory stays linear in the row count. Each distance is computed once and
+/// shared by every clustering. Results match [`silhouette_widths`] over the
+/// dense `metric` matrix bit for bit (same per-row accumulation order).
+pub fn silhouette_widths_streaming_cancellable(
+    x: &ColumnMatrix,
+    metric: DistanceMetric,
+    clusterings: &[(&[i32], usize)],
+    cancel: &CancellationToken,
+) -> Result<Vec<Vec<f64>>, DomainError> {
+    use crate::pairwise::{par_row_blocks, tile_distances, TILE_ROWS};
+
+    cancel.check()?;
+    validate_metric(metric)?;
+    let n = x.n_rows();
+    let mut out: Vec<Vec<f64>> = clusterings.iter().map(|_| vec![f64::NAN; n]).collect();
+    // Clusterings with 1 < k < n get a block of `k` per-row sum slots.
+    let mut active: Vec<(usize, usize, usize)> = Vec::new(); // (index, k, offset)
+    let mut total = 0usize;
+    for (index, &(labels, k)) in clusterings.iter().enumerate() {
+        if labels.len() != n {
+            return Err(DomainError::validation(
+                "silhouette_input",
+                "clustering labels must align with the input rows",
+            ));
+        }
+        if k <= 1 || k >= n {
+            continue;
+        }
+        if labels.iter().any(|&l| l < 1 || l as usize > k) {
+            return Err(DomainError::validation(
+                "silhouette_input",
+                "cluster labels must lie in 1..=k",
+            ));
+        }
+        active.push((index, k, total));
+        total += k;
+    }
+    if active.is_empty() {
+        return Ok(out);
+    }
+    let na = active.len();
+    // slots[j * na + a]: the sum slot row j feeds for active clustering a.
+    let mut slots = vec![0usize; n * na];
+    let mut counts = vec![0usize; total];
+    for (a, &(index, _, offset)) in active.iter().enumerate() {
+        for (j, &label) in clusterings[index].0.iter().enumerate() {
+            let slot = offset + (label - 1) as usize;
+            slots[j * na + a] = slot;
+            counts[slot] += 1;
+        }
+    }
+
+    const ROW_BLOCK: usize = 32;
+    let blocks = par_row_blocks(n, ROW_BLOCK, |rows| {
+        let height = rows.len();
+        let mut sums = vec![0.0f64; height * total];
+        let mut tile = vec![0.0f64; TILE_ROWS];
+        let mut j0 = 0;
+        while j0 < n {
+            cancel.check()?;
+            let j1 = (j0 + TILE_ROWS).min(n);
+            let tile = &mut tile[..j1 - j0];
+            for (r, i) in rows.clone().enumerate() {
+                tile_distances(&x.cols, metric, i, j0..j1, tile);
+                let row_sums = &mut sums[r * total..(r + 1) * total];
+                for (jj, &d) in tile.iter().enumerate() {
+                    let j = j0 + jj;
+                    if j == i {
+                        continue;
+                    }
+                    for &slot in &slots[j * na..(j + 1) * na] {
+                        row_sums[slot] += d;
+                    }
+                }
+            }
+            j0 = j1;
+        }
+        // Widths per (row, active clustering), as in `silhouette_widths`.
+        let mut widths = Vec::with_capacity(height * na);
+        for (r, i) in rows.enumerate() {
+            for (a, &(_, k, offset)) in active.iter().enumerate() {
+                let di = &mut sums[r * total + offset..r * total + offset + k];
+                let count = &counts[offset..offset + k];
+                let ci = slots[i * na + a] - offset;
+                if count[ci] == 1 {
+                    widths.push(0.0);
+                    continue;
+                }
+                for (c, (sum, &members)) in di.iter_mut().zip(count).enumerate() {
+                    let others = if c == ci { members - 1 } else { members };
+                    *sum /= others as f64;
+                }
+                let ai = di[ci];
+                let mut bi = if ci == 0 { di[1] } else { di[0] };
+                for (c, &value) in di.iter().enumerate().skip(1) {
+                    if c != ci && bi > value {
+                        bi = value;
+                    }
+                }
+                widths.push(if bi == ai {
+                    0.0
+                } else {
+                    (bi - ai) / bi.max(ai)
+                });
+            }
+        }
+        Ok(widths)
+    })?;
+    let mut i = 0;
+    for block in blocks {
+        for row in block.chunks(na) {
+            for (a, &width) in row.iter().enumerate() {
+                out[active[a].0][i] = width;
+            }
+            i += 1;
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod silhouette_tests {
-    use super::{silhouette_mean, silhouette_widths};
+    use super::{
+        metric_matrix, silhouette_mean, silhouette_widths, silhouette_widths_streaming_cancellable,
+        unique_rows, DistanceMetric,
+    };
+    use crate::{CancellationToken, ColumnMatrix};
+
+    /// Deterministic pseudo-random matrix (no RNG dependency needed).
+    fn sample_matrix(n: usize, p: usize) -> ColumnMatrix {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let cols = (0..p)
+            .map(|_| {
+                (0..n)
+                    .map(|_| {
+                        state ^= state << 13;
+                        state ^= state >> 7;
+                        state ^= state << 17;
+                        (state % 10_000) as f64 / 97.0
+                    })
+                    .collect()
+            })
+            .collect();
+        ColumnMatrix {
+            names: (0..p).map(|j| format!("c{j}")).collect(),
+            cols,
+        }
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)] // test code; panics are the failure mode
+    fn streaming_widths_match_dense_bit_for_bit() {
+        // 700 rows spans several row blocks and distance tiles.
+        let x = sample_matrix(700, 5);
+        let n = x.n_rows();
+        let labels: Vec<Vec<i32>> = [2usize, 3, 7]
+            .iter()
+            .map(|&k| (0..n).map(|i| ((i * 31 + i / 7) % k) as i32 + 1).collect())
+            .collect();
+        // Includes a trivial k = 1 clustering, which must stay NaN.
+        let ones = vec![1i32; n];
+        let mut clusterings: Vec<(&[i32], usize)> = labels
+            .iter()
+            .zip([2usize, 3, 7])
+            .map(|(l, k)| (l.as_slice(), k))
+            .collect();
+        clusterings.push((ones.as_slice(), 1));
+        let cancel = CancellationToken::default();
+        for metric in [
+            DistanceMetric::Euclidean,
+            DistanceMetric::Manhattan,
+            DistanceMetric::Maximum,
+            DistanceMetric::Minkowski { p: 3.0 },
+        ] {
+            let dense = metric_matrix(&x, metric, &cancel).expect("dense");
+            let streamed =
+                silhouette_widths_streaming_cancellable(&x, metric, &clusterings, &cancel)
+                    .expect("streamed");
+            for (&(l, k), widths) in clusterings.iter().zip(&streamed) {
+                let expected = silhouette_widths(&dense, l, k);
+                assert_eq!(expected.len(), widths.len());
+                for (a, b) in expected.iter().zip(widths) {
+                    assert!(
+                        a.to_bits() == b.to_bits(),
+                        "{metric:?} k={k}: dense {a} vs streamed {b}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn streaming_widths_stop_when_cancelled() {
+        let x = sample_matrix(50, 2);
+        let labels: Vec<i32> = (0..50).map(|i| i % 2 + 1).collect();
+        let cancel = CancellationToken::default();
+        cancel.cancel();
+        assert!(silhouette_widths_streaming_cancellable(
+            &x,
+            DistanceMetric::Euclidean,
+            &[(labels.as_slice(), 2)],
+            &cancel
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn unique_rows_keeps_first_occurrence_and_treats_signed_zero_as_equal() {
+        let rows = vec![
+            vec![1.0, 0.0],
+            vec![2.0, 3.0],
+            vec![1.0, -0.0],
+            vec![f64::NAN, 1.0],
+            vec![f64::NAN, 1.0],
+            vec![2.0, 3.0],
+        ];
+        let unique = unique_rows(&rows);
+        assert_eq!(unique.len(), 4);
+        assert_eq!(unique[0], vec![1.0, 0.0]);
+        assert_eq!(unique[1], vec![2.0, 3.0]);
+        assert!(unique[2][0].is_nan() && unique[3][0].is_nan());
+    }
 
     #[test]
     fn trivial_clusterings_have_nan_mean() {

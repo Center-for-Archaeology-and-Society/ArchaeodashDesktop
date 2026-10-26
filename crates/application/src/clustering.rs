@@ -29,10 +29,18 @@ use super::transforms::TransformService;
 /// Legacy `set.seed(seed + k)` base seed of the diagnostic series (golden
 /// capture procedure 9).
 const DEFAULT_KMEANS_SEED: i64 = 20260914;
-/// Keep pairwise algorithms below predictable memory bounds (an f64 matrix
-/// alone uses 8 bytes per cell, with several temporary matrices in PAM).
+/// Row cap for analyses that compute pairwise distances on the fly
+/// (k-means silhouettes and diagnostics, Euclidean matching): memory stays
+/// linear in the row count and the work is spread over all cores.
+const MAX_ANALYSIS_ROWS: usize = 100_000;
+/// Methods that hold the full n x n matrix (PAM, hierarchical, DIANA, UMAP)
+/// stay below predictable memory bounds (an f64 matrix alone uses 8 bytes per
+/// cell, with several temporary matrices in PAM).
 const MAX_DISTANCE_CELLS: usize = 1_000_000;
-const MAX_INPUT_CELLS: usize = 4_000_000;
+/// Numeric analysis matrix cap (rows x analysis columns).
+const MAX_INPUT_CELLS: usize = 10_000_000;
+/// Group-file read cap (rows x every stored column, descriptive included).
+const MAX_READ_CELLS: u64 = 20_000_000;
 const MAX_ORDINATION_FEATURES: usize = 512;
 
 fn checked_seed(seed: i64, context: &str) -> Result<i32, DomainError> {
@@ -42,6 +50,30 @@ fn checked_seed(seed: i64, context: &str) -> Result<i32, DomainError> {
             format!("{context}: seed must fit a signed 32-bit integer"),
         )
     })
+}
+
+/// How an analysis uses pairwise distances, which sets its row limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pairwise {
+    /// No pairwise work; only the input cell cap applies.
+    None,
+    /// Distances computed on the fly: up to `MAX_ANALYSIS_ROWS` rows.
+    Streamed,
+    /// The full n x n matrix is held in memory: `MAX_DISTANCE_CELLS` cells.
+    Dense,
+}
+
+/// `12345` -> `"12,345"` for user-facing limit messages.
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn validation(code: &str, message: impl Into<String>) -> DomainError {
@@ -102,7 +134,7 @@ impl ClusterService {
         archaeodash_data_io::check_group_read_limits(
             &path,
             1_000_000,
-            MAX_INPUT_CELLS as u64,
+            MAX_READ_CELLS,
             128 * 1024 * 1024,
         )
         .map_err(|error| match error {
@@ -128,7 +160,7 @@ impl ClusterService {
         n: usize,
         p: usize,
         context: &str,
-        needs_distances: bool,
+        pairwise: Pairwise,
     ) -> Result<(), DomainError> {
         let cells = n.saturating_mul(p);
         if cells > MAX_INPUT_CELLS {
@@ -137,10 +169,25 @@ impl ClusterService {
                 format!("{context}: input has {cells} cells; limit is {MAX_INPUT_CELLS}"),
             ));
         }
-        if needs_distances && n.saturating_mul(n) > MAX_DISTANCE_CELLS {
+        if pairwise != Pairwise::None && n > MAX_ANALYSIS_ROWS {
             return Err(validation(
                 "cluster_resource_limit",
-                format!("{context}: {n} rows exceed the pairwise distance limit"),
+                format!(
+                    "{context}: {} rows exceed the {} row limit",
+                    thousands(n),
+                    thousands(MAX_ANALYSIS_ROWS)
+                ),
+            ));
+        }
+        if pairwise == Pairwise::Dense && n.saturating_mul(n) > MAX_DISTANCE_CELLS {
+            return Err(validation(
+                "cluster_resource_limit",
+                format!(
+                    "{context}: {} rows exceed the {} row limit for PAM, hierarchical, and                      DIANA clustering, which hold the full pairwise distance matrix;                      k-means supports up to {} rows",
+                    thousands(n),
+                    thousands(MAX_DISTANCE_CELLS.isqrt()),
+                    thousands(MAX_ANALYSIS_ROWS)
+                ),
             ));
         }
         Ok(())
@@ -597,7 +644,13 @@ impl ClusterService {
         input.require_inputs(&req.columns, req.transformation.as_ref())?;
         input.require_columns(req.source_group_column.as_deref())?;
         let data = input.data;
-        Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, true)?;
+        let pam = req.diagnostic_method == archaeodash_contracts::ClusterDiagnosticMethodDto::Pam;
+        let pairwise = if pam {
+            Pairwise::Dense
+        } else {
+            Pairwise::Streamed
+        };
+        Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, pairwise)?;
         let matrix = Self::source_matrix(
             &data,
             &req.columns,
@@ -611,7 +664,7 @@ impl ClusterService {
         )?;
         Self::require_complete(&matrix, &req.path)?;
         let n = matrix.n_rows();
-        Self::validate_dimensions(n, matrix.cols.len(), &req.path, true)?;
+        Self::validate_dimensions(n, matrix.cols.len(), &req.path, pairwise)?;
         if n < 3 {
             return Err(validation(
                 "cluster_k_range",
@@ -632,21 +685,30 @@ impl ClusterService {
                 ),
             ));
         }
-        let rows = Self::rows(&matrix);
         let metric = Self::distance_metric(req.metric, req.minkowski_p)?;
-        let dist = Self::metric_distances(&rows, metric, cancel)?;
+        if !pam && metric != DistanceMetric::Euclidean {
+            return Err(validation(
+                "cluster_metric_method",
+                "k-means diagnostics use Euclidean distance",
+            ));
+        }
+        // Only PAM's within-cluster pair sums need the dense matrix; the
+        // silhouettes below stream their distances.
+        let dist = if pam {
+            Some(Self::metric_distances(
+                &Self::rows(&matrix),
+                metric,
+                cancel,
+            )?)
+        } else {
+            None
+        };
         let mut wss = Vec::with_capacity(max_k);
-        let mut silhouette = Vec::with_capacity(max_k.saturating_sub(1));
+        let mut labelings: Vec<(Vec<i32>, usize)> = Vec::with_capacity(max_k.saturating_sub(1));
         for k in 1..=max_k {
             cancel.check()?;
-            let (labels, total) = match req.diagnostic_method {
-                archaeodash_contracts::ClusterDiagnosticMethodDto::Kmeans => {
-                    if metric != DistanceMetric::Euclidean {
-                        return Err(validation(
-                            "cluster_metric_method",
-                            "k-means diagnostics use Euclidean distance",
-                        ));
-                    }
+            let (labels, total) = match (req.diagnostic_method, &dist) {
+                (archaeodash_contracts::ClusterDiagnosticMethodDto::Kmeans, _) => {
                     let fit = archaeodash_analysis::kmeans_cancellable(
                         &matrix,
                         k,
@@ -657,21 +719,44 @@ impl ClusterService {
                     )?;
                     (fit.cluster, fit.tot_withinss)
                 }
-                archaeodash_contracts::ClusterDiagnosticMethodDto::Pam => {
+                (archaeodash_contracts::ClusterDiagnosticMethodDto::Pam, Some(dist)) => {
                     let fit = archaeodash_analysis::pam_with_metric_cancellable(
                         &matrix, k, metric, cancel,
                     )?;
-                    let total = Self::within_pair_ss(&dist, &fit.clustering, k);
+                    let total = Self::within_pair_ss(dist, &fit.clustering, k);
                     (fit.clustering, total)
+                }
+                (archaeodash_contracts::ClusterDiagnosticMethodDto::Pam, None) => {
+                    return Err(validation(
+                        "cluster_diagnostics_state",
+                        "PAM diagnostics require the distance matrix",
+                    ));
                 }
             };
             wss.push(total);
             if k >= 2 {
-                let mean =
-                    archaeodash_analysis::silhouette_mean_cancellable(&dist, &labels, k, cancel)?;
-                silhouette.push(if mean.is_nan() { None } else { Some(mean) });
+                labelings.push((labels, k));
             }
         }
+        // One distance pass shared by every k (`silhouette_mean`: the mean
+        // row width, NaN for trivial clusterings).
+        let refs: Vec<(&[i32], usize)> = labelings
+            .iter()
+            .map(|(labels, k)| (labels.as_slice(), *k))
+            .collect();
+        let silhouette = archaeodash_analysis::silhouette_widths_streaming_cancellable(
+            &matrix, metric, &refs, cancel,
+        )?
+        .into_iter()
+        .map(|widths| {
+            let mean = widths.iter().sum::<f64>() / n as f64;
+            if mean.is_nan() {
+                None
+            } else {
+                Some(mean)
+            }
+        })
+        .collect();
         Ok(ClusterDiagnosticsResponse {
             path: req.path.clone(),
             revision_id: data.profile.revision_id.clone(),
@@ -723,7 +808,12 @@ impl ClusterService {
                 .chain(req.plot_group_column.as_deref()),
         )?;
         let data = input.data;
-        Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, true)?;
+        let pairwise = if req.method == ClusterMethod::Kmeans {
+            Pairwise::Streamed
+        } else {
+            Pairwise::Dense
+        };
+        Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, pairwise)?;
         let matrix = Self::source_matrix(
             &data,
             &req.columns,
@@ -737,7 +827,7 @@ impl ClusterService {
         )?;
         Self::require_complete(&matrix, &req.path)?;
         let n = matrix.n_rows();
-        Self::validate_dimensions(n, matrix.cols.len(), &req.path, true)?;
+        Self::validate_dimensions(n, matrix.cols.len(), &req.path, pairwise)?;
 
         let plot_coordinates: Vec<[f64; 2]> = (0..n)
             .map(|i| {
@@ -886,14 +976,19 @@ impl ClusterService {
         metric: DistanceMetric,
         cancel: &CancellationToken,
     ) -> Result<Vec<Option<f64>>, DomainError> {
-        let rows = Self::rows(matrix);
-        let dist = Self::metric_distances(&rows, metric, cancel)?;
-        Ok(
-            archaeodash_analysis::silhouette_widths_cancellable(&dist, clustering, k, cancel)?
-                .into_iter()
-                .map(|w| if w.is_nan() { None } else { Some(w) })
-                .collect(),
-        )
+        let widths = archaeodash_analysis::silhouette_widths_streaming_cancellable(
+            matrix,
+            metric,
+            &[(clustering, k)],
+            cancel,
+        )?
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+        Ok(widths
+            .into_iter()
+            .map(|w| if w.is_nan() { None } else { Some(w) })
+            .collect())
     }
 
     /// The legacy "using all groups" notification for the membership fallback.
@@ -971,7 +1066,12 @@ impl ClusterService {
                 .chain(req.source_group_column.as_deref()),
         )?;
         let data = input.data;
-        Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, false)?;
+        Self::validate_dimensions(
+            data.rows.len(),
+            req.columns.len(),
+            &req.path,
+            Pairwise::None,
+        )?;
         let matrix = Self::source_matrix(
             &data,
             &req.columns,
@@ -997,7 +1097,7 @@ impl ClusterService {
         let requested = req.projection_groups.as_deref();
         let (eligible, eligibility_warning) =
             Self::membership_groups(&groups, matrix.cols.len(), requested)?;
-        if data.rows.len().saturating_mul(eligible.len()) > MAX_DISTANCE_CELLS {
+        if data.rows.len().saturating_mul(eligible.len()) > MAX_INPUT_CELLS {
             return Err(validation(
                 "cluster_resource_limit",
                 format!("{}: membership result exceeds the cell limit", req.path),
@@ -1092,16 +1192,12 @@ impl ClusterService {
                 .chain(req.source_group_column.as_deref()),
         )?;
         let data = input.data;
-        Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, false)?;
-        if data.rows.len().saturating_mul(data.rows.len()) > MAX_DISTANCE_CELLS {
-            return Err(validation(
-                "cluster_resource_limit",
-                format!(
-                    "{}: Euclidean matching exceeds the pair-comparison quota",
-                    req.path
-                ),
-            ));
-        }
+        Self::validate_dimensions(
+            data.rows.len(),
+            req.columns.len(),
+            &req.path,
+            Pairwise::Streamed,
+        )?;
         let matrix = Self::source_matrix(
             &data,
             &req.columns,
@@ -2222,16 +2318,49 @@ mod tests {
 
     #[test]
     fn resource_limits_accept_boundary_and_reject_overage() {
-        assert!(ClusterService::validate_dimensions(1_000, 1, "boundary", true).is_ok());
-        assert!(matches!(
-            ClusterService::validate_dimensions(1_001, 1, "over", true),
-            Err(DomainError::Validation { ref code, .. }) if code == "cluster_resource_limit"
-        ));
-        assert!(ClusterService::validate_dimensions(1, MAX_INPUT_CELLS, "boundary", false).is_ok());
-        assert!(matches!(
-            ClusterService::validate_dimensions(1, MAX_INPUT_CELLS + 1, "over", false),
-            Err(DomainError::Validation { ref code, .. }) if code == "cluster_resource_limit"
-        ));
+        let over = |result: Result<(), DomainError>| {
+            matches!(
+                result,
+                Err(DomainError::Validation { ref code, .. }) if code == "cluster_resource_limit"
+            )
+        };
+        // Dense-matrix methods (PAM, hierarchical, DIANA).
+        assert!(ClusterService::validate_dimensions(1_000, 1, "boundary", Pairwise::Dense).is_ok());
+        assert!(over(ClusterService::validate_dimensions(
+            1_001,
+            1,
+            "over",
+            Pairwise::Dense
+        )));
+        // Streamed methods (k-means, Euclidean matching).
+        assert!(ClusterService::validate_dimensions(
+            MAX_ANALYSIS_ROWS,
+            1,
+            "boundary",
+            Pairwise::Streamed
+        )
+        .is_ok());
+        assert!(over(ClusterService::validate_dimensions(
+            MAX_ANALYSIS_ROWS + 1,
+            1,
+            "over",
+            Pairwise::Streamed
+        )));
+        assert!(ClusterService::validate_dimensions(
+            1,
+            MAX_INPUT_CELLS,
+            "boundary",
+            Pairwise::None
+        )
+        .is_ok());
+        assert!(over(ClusterService::validate_dimensions(
+            1,
+            MAX_INPUT_CELLS + 1,
+            "over",
+            Pairwise::None
+        )));
+        assert_eq!(thousands(100_000), "100,000");
+        assert_eq!(thousands(999), "999");
     }
 
     #[test]
