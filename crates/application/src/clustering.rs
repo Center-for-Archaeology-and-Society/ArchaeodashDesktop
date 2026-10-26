@@ -33,7 +33,7 @@ const DEFAULT_KMEANS_SEED: i64 = 20260914;
 /// (k-means silhouettes and diagnostics, Euclidean matching): memory stays
 /// linear in the row count and the work is spread over all cores.
 const MAX_ANALYSIS_ROWS: usize = 100_000;
-/// Methods that hold the full n x n matrix (PAM, hierarchical, DIANA, UMAP)
+/// Methods that hold the full n x n matrix (PAM, hierarchical, DIANA)
 /// stay below predictable memory bounds (an f64 matrix alone uses 8 bytes per
 /// cell, with several temporary matrices in PAM).
 const MAX_DISTANCE_CELLS: usize = 1_000_000;
@@ -262,13 +262,14 @@ impl ClusterService {
             )));
         }
         if source == AnalysisSourceDto::Umap
-            && data.rows.len().saturating_mul(data.rows.len()) > MAX_DISTANCE_CELLS
+            && data.rows.len() > archaeodash_analysis::UMAP_MAX_ROWS
         {
             return Err(validation(
                 "cluster_resource_limit",
                 format!(
-                "{context}: UMAP input exceeds the pairwise limit of {MAX_DISTANCE_CELLS} cells"
-            ),
+                    "{context}: UMAP supports up to {} rows",
+                    thousands(archaeodash_analysis::UMAP_MAX_ROWS)
+                ),
             ));
         }
         match (source, pc_count) {

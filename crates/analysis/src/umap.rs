@@ -20,11 +20,14 @@
 //! parity test. The eigensolver runs under `Parallelism::Serial` so same-seed
 //! runs are bit-identical across repeated calls.
 //!
-//! Scale ceiling: the naive method's brute-force neighbor search is O(V^2)
-//! and the spectral init is a dense eigendecomposition; R switches to
-//! `knn.from.data.reps` at 2048+ rows, which is not ported. Inputs of 2048+
-//! rows are rejected with `umap_input_too_large` instead of silently
-//! degrading (Section 12 interactive budget).
+//! Scale: the neighbor search is exact brute force, computed in parallel
+//! distance tiles with O(V * k) memory (identical results to the dense
+//! matrix). Connected components under 2048 rows keep R's dense spectral
+//! init; larger ones use a sparse Krylov-Schur eigensolve with a PCA
+//! fallback. R itself switches to approximate `knn.from.data.reps` neighbors
+//! at 2048+ rows, so large inputs are not R-parity cases in any event.
+//! Inputs above `UMAP_MAX_ROWS` (100,000) are rejected with
+//! `umap_input_too_large`.
 
 use std::collections::BTreeMap;
 
@@ -153,38 +156,66 @@ pub fn knn_brute_force(data: &[Vec<f64>], k: usize) -> (Vec<Vec<usize>>, Vec<Vec
     (indexes, distances)
 }
 
+/// Exact k-nn graph with the same result as [`knn_brute_force`] (self first,
+/// then ascending distance, ties by row index), computed in parallel
+/// distance tiles that keep only each row's `k` best candidates, so memory is
+/// O(V * k) instead of O(V^2). Each distance is summed in column order, so
+/// it matches the dense matrix bit for bit.
 #[allow(clippy::type_complexity)]
 fn knn_brute_force_cancellable(
-    data: &[Vec<f64>],
+    m: &ColumnMatrix,
     k: usize,
     cancel: &CancellationToken,
 ) -> Result<(Vec<Vec<usize>>, Vec<Vec<f64>>), DomainError> {
-    let v = data.len();
-    let mut dist = vec![vec![0.0f64; v]; v];
-    for i in 0..v {
-        if i % 16 == 0 {
+    use crate::cluster::DistanceMetric;
+    use crate::pairwise::{par_row_blocks, tile_distances, TILE_ROWS};
+
+    let v = m.n_rows();
+    const ROW_BLOCK: usize = 32;
+    let blocks = par_row_blocks(v, ROW_BLOCK, |rows| {
+        let mut tile = vec![0.0f64; TILE_ROWS];
+        // Sorted (distance, index); the dense sort ranks self as -1.
+        let mut best: Vec<Vec<(f64, usize)>> = rows
+            .clone()
+            .map(|i| {
+                let mut list = Vec::with_capacity(k + 1);
+                list.push((-1.0, i));
+                list
+            })
+            .collect();
+        let mut j0 = 0;
+        while j0 < v {
             cancel.check()?;
+            let j1 = (j0 + TILE_ROWS).min(v);
+            let tile = &mut tile[..j1 - j0];
+            for (r, i) in rows.clone().enumerate() {
+                tile_distances(&m.cols, DistanceMetric::Euclidean, i, j0..j1, tile);
+                let list = &mut best[r];
+                for (jj, &d) in tile.iter().enumerate() {
+                    let j = j0 + jj;
+                    // A full list keeps an equal distance at the lower index
+                    // (stable sort over ascending indexes).
+                    if j == i || (list.len() == k && d >= list[k - 1].0) {
+                        continue;
+                    }
+                    let pos = list.partition_point(|&(e, _)| e <= d);
+                    list.insert(pos, (d, j));
+                    list.truncate(k);
+                }
+            }
+            j0 = j1;
         }
-        for j in (i + 1)..v {
-            let d = euclidean(&data[i], &data[j]);
-            dist[i][j] = d;
-            dist[j][i] = d;
-        }
-    }
-    let mut indexes = vec![vec![0usize; k]; v];
-    let mut distances = vec![vec![0.0f64; k]; v];
-    for i in 0..v {
-        cancel.check()?;
-        let mut order: Vec<usize> = (0..v).collect();
-        order.sort_by(|&x, &y| {
-            let dx = if x == i { -1.0 } else { dist[i][x] };
-            let dy = if y == i { -1.0 } else { dist[i][y] };
-            dx.partial_cmp(&dy).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        for (j, &idx) in order.iter().enumerate().take(k) {
-            indexes[i][j] = idx;
-            distances[i][j] = if idx == i { 0.0 } else { dist[i][idx] };
-        }
+        Ok(best)
+    })?;
+    let mut indexes = Vec::with_capacity(v);
+    let mut distances = Vec::with_capacity(v);
+    for (i, list) in blocks.into_iter().flatten().enumerate() {
+        indexes.push(list.iter().map(|&(_, j)| j).collect());
+        distances.push(
+            list.iter()
+                .map(|&(d, j)| if j == i { 0.0 } else { d })
+                .collect(),
+        );
     }
     Ok((indexes, distances))
 }
@@ -474,16 +505,28 @@ fn normal_noise(n: usize, rng: &mut ChaCha12Rng) -> Vec<f64> {
 /// `10 / (quantile(col1, 0.99) - quantile(col1, 0.01))`. The legacy code
 /// would silently scale by `Inf` on a degenerate column-1 range; here a
 /// non-finite expansion keeps the centered embedding and records the warning.
+///
+/// Components of [`SPARSE_SPECTRAL_ROWS`]+ rows use the sparse eigensolver
+/// instead of the dense one (same eigenvectors, up to sign and solver
+/// tolerance) and fall back to PCA of `data` rather than a random layout.
 fn one_embedding(
     v: usize,
     d: usize,
     edges: &[(usize, usize, f64)],
+    data: &ColumnMatrix,
     rng: &mut ChaCha12Rng,
     warnings: &mut Vec<String>,
-) -> Vec<Vec<f64>> {
-    let mut embedding = match laplacian_dense(edges, v).and_then(|l| smallest_eigenpairs(&l, d + 1))
-    {
-        Some((_, vectors)) => {
+    cancel: &CancellationToken,
+) -> Result<Vec<Vec<f64>>, DomainError> {
+    let spectral = if v < SPARSE_SPECTRAL_ROWS {
+        laplacian_dense(edges, v)
+            .and_then(|l| smallest_eigenpairs(&l, d + 1))
+            .map(|(_, vectors)| vectors)
+    } else {
+        sparse_smallest_eigenvectors(edges, v, d + 1, cancel)?
+    };
+    let mut embedding = match spectral {
+        Some(vectors) => {
             // R keeps `[, seq_len(d)]` of RSpectra `eigs(k = d + 1, which =
             // "SM")` output. RSpectra returns those d+1 smallest-modulus
             // eigenpairs in DESCENDING modulus order (probed: 0.00874,
@@ -499,12 +542,24 @@ fn one_embedding(
             }
             kept
         }
-        None => {
-            warnings.push(
-                "failed creating initial embedding; using random embedding instead".to_string(),
-            );
-            random_embedding(d, v, rng)
-        }
+        None => match (v >= SPARSE_SPECTRAL_ROWS)
+            .then(|| pca_embedding(data, d))
+            .flatten()
+        {
+            Some(layout) => {
+                warnings.push(
+                    "spectral initial embedding did not converge; using PCA embedding instead"
+                        .to_string(),
+                );
+                layout
+            }
+            None => {
+                warnings.push(
+                    "failed creating initial embedding; using random embedding instead".to_string(),
+                );
+                random_embedding(d, v, rng)
+            }
+        },
     };
     center_columns(&mut embedding);
     let col0: Vec<f64> = embedding.iter().map(|row| row[0]).collect();
@@ -518,24 +573,198 @@ fn one_embedding(
             }
         }
     }
-    embedding
+    Ok(embedding)
+}
+
+/// Component size at which the spectral init switches from the dense
+/// eigendecomposition (R's path, O(V^3)) to the sparse Krylov-Schur solver.
+/// Below it, results stay identical to the R-parity implementation.
+pub const SPARSE_SPECTRAL_ROWS: usize = 2048;
+
+/// Largest supported UMAP input.
+pub const UMAP_MAX_ROWS: usize = 100_000;
+
+/// First `d` PCA scores (unscaled `prcomp`), zero-padded when the data has
+/// fewer than `d` components; `None` when PCA fails.
+fn pca_embedding(data: &ColumnMatrix, d: usize) -> Option<Vec<Vec<f64>>> {
+    let fitted = crate::pca::pca(data, false).ok()?;
+    let layout: Vec<Vec<f64>> = fitted
+        .scores
+        .iter()
+        .map(|row| (0..d).map(|c| row.get(c).copied().unwrap_or(0.0)).collect())
+        .collect();
+    (layout.len() == data.n_rows() && layout.iter().flatten().all(|x| x.is_finite()))
+        .then_some(layout)
+}
+
+/// `I + D^{-1/2} W D^{-1/2}` (that is, `2I - L`) as a matrix-free operator.
+/// Its largest eigenvalues are the smallest of the normalized Laplacian `L`,
+/// and all are non-negative, so largest magnitude means largest value.
+#[derive(Debug)]
+struct ShiftedNormalizedAdjacency {
+    offsets: Vec<usize>,
+    targets: Vec<usize>,
+    weights: Vec<f64>,
+}
+
+impl faer::matrix_free::LinOp<f64> for ShiftedNormalizedAdjacency {
+    fn apply_scratch(&self, _rhs_ncols: usize, _par: faer::Par) -> faer::dyn_stack::StackReq {
+        faer::dyn_stack::StackReq::EMPTY
+    }
+
+    fn nrows(&self) -> usize {
+        self.offsets.len() - 1
+    }
+
+    fn ncols(&self) -> usize {
+        self.offsets.len() - 1
+    }
+
+    fn apply(
+        &self,
+        mut out: faer::MatMut<'_, f64>,
+        rhs: faer::MatRef<'_, f64>,
+        _par: faer::Par,
+        _stack: &mut faer::dyn_stack::MemStack,
+    ) {
+        for c in 0..rhs.ncols() {
+            for i in 0..self.nrows() {
+                let mut sum = rhs[(i, c)];
+                for e in self.offsets[i]..self.offsets[i + 1] {
+                    sum += self.weights[e] * rhs[(self.targets[e], c)];
+                }
+                out[(i, c)] = sum;
+            }
+        }
+    }
+
+    fn conj_apply(
+        &self,
+        out: faer::MatMut<'_, f64>,
+        rhs: faer::MatRef<'_, f64>,
+        par: faer::Par,
+        stack: &mut faer::dyn_stack::MemStack,
+    ) {
+        // Real symmetric: the conjugate (transpose) is the operator itself.
+        self.apply(out, rhs, par, stack);
+    }
+}
+
+/// The `k` smallest-eigenvalue eigenvectors of the normalized Laplacian of
+/// `edges`, ascending (the order [`smallest_eigenpairs`] returns), from a
+/// sparse Krylov-Schur solve. `Ok(None)` on the legacy singular-degree case
+/// or when the solver does not converge.
+fn sparse_smallest_eigenvectors(
+    edges: &[(usize, usize, f64)],
+    v: usize,
+    k: usize,
+    cancel: &CancellationToken,
+) -> Result<Option<Vec<Vec<f64>>>, DomainError> {
+    use faer::dyn_stack::{MemBuffer, MemStack};
+    use faer::matrix_free::eigen::{
+        partial_self_adjoint_eigen, partial_self_adjoint_eigen_scratch, PartialEigenParams,
+    };
+
+    cancel.check()?;
+    let mut deg = vec![0.0f64; v];
+    let mut seen = vec![false; v];
+    let mut counts = vec![0usize; v];
+    for &(f, t, w) in edges {
+        deg[f] += w;
+        seen[f] = true;
+        if f != t {
+            counts[f] += 1;
+        }
+    }
+    if seen.iter().any(|&s| !s) || k >= v {
+        return Ok(None);
+    }
+    let mut offsets = vec![0usize; v + 1];
+    for i in 0..v {
+        offsets[i + 1] = offsets[i] + counts[i];
+    }
+    let mut fill = offsets.clone();
+    let mut targets = vec![0usize; offsets[v]];
+    let mut weights = vec![0.0f64; offsets[v]];
+    for &(f, t, w) in edges {
+        if f != t {
+            targets[fill[f]] = t;
+            weights[fill[f]] = w / (deg[f] * deg[t]).sqrt();
+            fill[f] += 1;
+        }
+    }
+    let op = ShiftedNormalizedAdjacency {
+        offsets,
+        targets,
+        weights,
+    };
+    // Fixed start vector, independent of the SGD stream, so a seed always
+    // gives the same layout.
+    let mut start_rng = ChaCha12Rng::seed_from_u64(0x5eed_5eed);
+    let mut v0 = faer::Col::<f64>::zeros(v);
+    for i in 0..v {
+        v0[i] = start_rng.random_range(-1.0..1.0);
+    }
+    let norm = v0.norm_l2();
+    for i in 0..v {
+        v0[i] /= norm;
+    }
+    let params = PartialEigenParams {
+        max_dim: (4 * k).max(32).min(v),
+        max_restarts: 500,
+        ..PartialEigenParams::default()
+    };
+    let par = faer::Par::Seq;
+    let mut buffer = MemBuffer::new(partial_self_adjoint_eigen_scratch(&op, k, par, params));
+    let mut vectors = faer::Mat::<f64>::zeros(v, k);
+    let mut values = vec![0.0f64; k];
+    let info = partial_self_adjoint_eigen(
+        vectors.as_mut(),
+        &mut values,
+        &op,
+        v0.as_ref(),
+        1e-6,
+        par,
+        MemStack::new(&mut buffer),
+        params,
+    );
+    cancel.check()?;
+    if info.n_converged_eigen < k
+        || values.iter().any(|x| !x.is_finite())
+        || vectors
+            .col_iter()
+            .any(|col| col.iter().any(|x| !x.is_finite()))
+    {
+        return Ok(None);
+    }
+    // Largest eigenvalue of 2I - L first = smallest of L first.
+    let mut order: Vec<usize> = (0..k).collect();
+    order.sort_by(|&a, &b| values[b].total_cmp(&values[a]));
+    Ok(Some(
+        (0..v)
+            .map(|i| order.iter().map(|&c| vectors[(i, c)]).collect())
+            .collect(),
+    ))
 }
 
 /// Legacy `make.spectral.embedding` (via `make.initial.embedding` with
 /// `init = "spectral"`): per-component scaled spectral placement on the
 /// 20-spaced offset grid for disconnected graphs, then the `rnorm(V * d, 0,
 /// 0.001)` jitter in R's column-major fill order.
+#[allow(clippy::type_complexity)]
 fn initial_embedding(
     v: usize,
     d: usize,
     edges: &[(usize, usize, f64)],
+    data: &ColumnMatrix,
     rng: &mut ChaCha12Rng,
-) -> (Vec<Vec<f64>>, Vec<String>) {
+    cancel: &CancellationToken,
+) -> Result<(Vec<Vec<f64>>, Vec<String>), DomainError> {
     let mut warnings = Vec::new();
     let (n_components, components) = connected_components(edges, v);
     let mut layout;
     if n_components <= 1 {
-        layout = one_embedding(v, d, edges, rng, &mut warnings);
+        layout = one_embedding(v, d, edges, data, rng, &mut warnings, cancel)?;
     } else {
         // Components sorted by size descending, stable by ascending label
         // (R's `sort(table(components), decreasing = TRUE)`).
@@ -565,22 +794,41 @@ fn initial_embedding(
             sa.cmp(&sb).then(a.iter().max().cmp(&b.iter().max()))
         });
         if grid.len() < n_components {
-            return (random_embedding(d, v, rng), warnings);
+            return Ok((random_embedding(d, v, rng), warnings));
+        }
+        // One pass each: members per component (ascending rows) and edges per
+        // component (original order, re-indexed). Edges never cross
+        // components, so this matches filtering the edge list per component.
+        let mut members_of: Vec<Vec<usize>> = vec![Vec::new(); n_components];
+        let mut local = vec![0usize; v];
+        for (i, &c) in components.iter().enumerate() {
+            local[i] = members_of[c].len();
+            members_of[c].push(i);
+        }
+        let mut edges_of: Vec<Vec<(usize, usize, f64)>> = vec![Vec::new(); n_components];
+        for &(f, t, w) in edges {
+            if components[f] == components[t] {
+                edges_of[components[f]].push((local[f], local[t], w));
+            }
         }
         layout = vec![vec![0.0f64; d]; v];
         for (ci, &(label, _)) in counts.iter().enumerate() {
-            let members: Vec<usize> = (0..v).filter(|&i| components[i] == label).collect();
-            let reindex: std::collections::HashMap<usize, usize> = members
-                .iter()
-                .enumerate()
-                .map(|(new, &old)| (old, new))
-                .collect();
-            let sub: Vec<(usize, usize, f64)> = edges
-                .iter()
-                .filter(|&&(f, t, _)| reindex.contains_key(&f) && reindex.contains_key(&t))
-                .map(|&(f, t, w)| (reindex[&f], reindex[&t], w))
-                .collect();
-            let mut emb = one_embedding(members.len(), d, &sub, rng, &mut warnings);
+            let members = &members_of[label];
+            let sub = &edges_of[label];
+            let sub_data = ColumnMatrix {
+                names: data.names.clone(),
+                cols: if members.len() >= SPARSE_SPECTRAL_ROWS {
+                    data.cols
+                        .iter()
+                        .map(|col| members.iter().map(|&i| col[i]).collect())
+                        .collect()
+                } else {
+                    // Only the sparse path's PCA fallback reads the data.
+                    Vec::new()
+                },
+            };
+            let mut emb =
+                one_embedding(members.len(), d, sub, &sub_data, rng, &mut warnings, cancel)?;
             center_columns(&mut emb);
             let col0: Vec<f64> = emb.iter().map(|row| row[0]).collect();
             let q01 = quantile_type7(col0.clone(), 0.01);
@@ -606,7 +854,7 @@ fn initial_embedding(
             row[c] += noise[c * v + i] * 0.001;
         }
     }
-    (layout, warnings)
+    Ok((layout, warnings))
 }
 
 /// Legacy `make.epochs.per.sample`: `epochs / (epochs * w / max(w))` for
@@ -665,6 +913,8 @@ fn optimize_embedding(
     let mut eon2s = epns.clone();
     let mut adjust = vec![false; n];
     let mut nns = vec![0.0f64; n];
+    let dims = layout.first().map_or(0, Vec::len);
+    let mut codiff = vec![0.0f64; dims];
     for epoch in 0..config.n_epochs {
         cancel.check()?;
         let alpha = config.alpha * (1.0 - epoch as f64 / config.n_epochs as f64);
@@ -684,8 +934,6 @@ fn optimize_embedding(
             }
             let (j, k) = pairs[i];
             // Primary link attraction.
-            let d = layout[j].len();
-            let mut codiff = vec![0.0f64; d];
             for (c, slot) in codiff.iter_mut().enumerate() {
                 *slot = layout[j][c] - layout[k][c];
             }
@@ -702,7 +950,6 @@ fn optimize_embedding(
             let n_neg = nns[i].max(0.0) as usize;
             for _ in 0..n_neg {
                 let k2 = rng.random_range(0.0..v).floor() as usize;
-                let mut codiff = vec![0.0f64; layout[j].len()];
                 for (c, slot) in codiff.iter_mut().enumerate() {
                     *slot = layout[j][c] - layout[k2][c];
                 }
@@ -793,7 +1040,7 @@ pub fn find_ab_params(spread: f64, min_dist: f64) -> (f64, f64) {
 ///
 /// # Errors
 /// Rejects empty or non-finite inputs, `n_neighbors` outside `2..n`, and
-/// inputs at or above the 2048-row brute-force ceiling.
+/// inputs above [`UMAP_MAX_ROWS`].
 /// Default deterministic seed replacing the legacy unseeded `set.seed`
 /// stream; the class-D golden fixtures pin seeds 20260914-20260916.
 pub const DEFAULT_SEED: u64 = 20260914;
@@ -840,16 +1087,13 @@ pub fn umap_cancellable(
             "number of neighbors must be smaller than number of items",
         ));
     }
-    if v >= 2048 {
+    if v > UMAP_MAX_ROWS {
         return Err(validation(
             "umap_input_too_large",
-            "UMAP brute-force neighbor search covers fewer than 2048 rows",
+            "UMAP supports up to 100,000 rows",
         ));
     }
-    let data: Vec<Vec<f64>> = (0..v)
-        .map(|i| m.cols.iter().map(|col| col[i]).collect())
-        .collect();
-    let (indexes, distances) = knn_brute_force_cancellable(&data, k, cancel)?;
+    let (indexes, distances) = knn_brute_force_cancellable(m, k, cancel)?;
     let graph = fuzzy_simplicial_set(
         &indexes,
         &distances,
@@ -858,7 +1102,8 @@ pub fn umap_cancellable(
         config.bandwidth,
     );
     let mut rng = ChaCha12Rng::seed_from_u64(seed);
-    let (mut layout, warnings) = initial_embedding(v, config.n_components, &graph, &mut rng);
+    let (mut layout, warnings) =
+        initial_embedding(v, config.n_components, &graph, m, &mut rng, cancel)?;
     if config.n_epochs > 0 {
         let gmax = graph
             .iter()
@@ -1005,6 +1250,133 @@ mod tests {
         assert!(matches!(
             err,
             DomainError::Validation { ref code, .. } if code == "umap_neighbors"
+        ));
+    }
+
+    /// Deterministic test data: `clusters` blobs in `p` dimensions, values
+    /// rounded to one decimal so distance ties and duplicate rows occur.
+    fn blobs(n: usize, p: usize, clusters: usize) -> ColumnMatrix {
+        let mut rng = ChaCha12Rng::seed_from_u64(7);
+        let cols = (0..p)
+            .map(|j| {
+                (0..n)
+                    .map(|i| {
+                        let centre = ((i % clusters) * 10 + j) as f64;
+                        (10.0 * (centre + rng.random_range(-1.0..1.0))).round() / 10.0
+                    })
+                    .collect()
+            })
+            .collect();
+        ColumnMatrix {
+            names: (0..p).map(|j| format!("c{j}")).collect(),
+            cols,
+        }
+    }
+
+    #[test]
+    fn tiled_knn_matches_dense_brute_force_exactly() {
+        // 700 rows spans several row blocks and distance tiles.
+        let m = blobs(700, 3, 4);
+        let rows: Vec<Vec<f64>> = (0..m.n_rows())
+            .map(|i| m.cols.iter().map(|c| c[i]).collect())
+            .collect();
+        let (dense_idx, dense_dist) = knn_brute_force(&rows, 15);
+        let (idx, dist) =
+            knn_brute_force_cancellable(&m, 15, &CancellationToken::default()).expect("knn");
+        assert_eq!(idx, dense_idx);
+        for (a, b) in dist.iter().flatten().zip(dense_dist.iter().flatten()) {
+            assert_eq!(a.to_bits(), b.to_bits());
+        }
+    }
+
+    #[test]
+    fn sparse_spectral_matches_dense_eigenvalues() {
+        let m = blobs(600, 3, 1);
+        let (idx, dist) =
+            knn_brute_force_cancellable(&m, 15, &CancellationToken::default()).expect("knn");
+        let graph = fuzzy_simplicial_set(&idx, &dist, 1.0, 1.0, 1.0);
+        let v = m.n_rows();
+        assert_eq!(connected_components(&graph, v).0, 1);
+        let l = laplacian_dense(&graph, v).expect("laplacian");
+        let (dense_values, _) = smallest_eigenpairs(&l, 3).expect("dense");
+        let vectors = sparse_smallest_eigenvectors(&graph, v, 3, &CancellationToken::default())
+            .expect("not cancelled")
+            .expect("converged");
+        for (c, &expected) in dense_values.iter().enumerate() {
+            // Rayleigh quotient and residual of the sparse vector under L.
+            let x: Vec<f64> = vectors.iter().map(|row| row[c]).collect();
+            let lx: Vec<f64> = (0..v)
+                .map(|i| (0..v).map(|j| l[(i, j)] * x[j]).sum())
+                .collect();
+            let xx: f64 = x.iter().map(|a| a * a).sum();
+            let lambda = x.iter().zip(&lx).map(|(a, b)| a * b).sum::<f64>() / xx;
+            let residual = lx
+                .iter()
+                .zip(&x)
+                .map(|(a, b)| (a - lambda * b).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            assert!(
+                (lambda - expected).abs() < 1e-6,
+                "eigenvalue {c}: {lambda} vs {expected}"
+            );
+            assert!(residual < 1e-4, "eigenvector {c} residual {residual}");
+        }
+    }
+
+    #[test]
+    fn large_connected_input_converges_without_fallback() {
+        // One blob: a single connected component above the sparse threshold.
+        let m = blobs(2_100, 3, 1);
+        let (idx, dist) =
+            knn_brute_force_cancellable(&m, 15, &CancellationToken::default()).expect("knn");
+        let graph = fuzzy_simplicial_set(&idx, &dist, 1.0, 1.0, 1.0);
+        assert_eq!(connected_components(&graph, m.n_rows()).0, 1);
+        let fit = umap(&m, DEFAULT_SEED).expect("umap");
+        assert!(fit.warnings.is_empty(), "{:?}", fit.warnings);
+        assert!(fit.layout.iter().flatten().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn large_input_separates_clusters() {
+        let n = 2_100;
+        let m = blobs(n, 3, 3);
+        let fit = umap(&m, DEFAULT_SEED).expect("umap");
+        assert_eq!(fit.layout.len(), n);
+        assert!(fit.layout.iter().flatten().all(|x| x.is_finite()));
+        // Three well-separated blobs: each row's nearest layout neighbour
+        // (excluding itself) should almost always share its blob.
+        let same = (0..n)
+            .step_by(7)
+            .filter(|&i| {
+                let nearest = (0..n)
+                    .filter(|&j| j != i)
+                    .min_by(|&a, &b| {
+                        let da = euclidean(&fit.layout[i], &fit.layout[a]);
+                        let db = euclidean(&fit.layout[i], &fit.layout[b]);
+                        da.total_cmp(&db)
+                    })
+                    .expect("neighbour");
+                nearest % 3 == i % 3
+            })
+            .count();
+        let checked = n.div_ceil(7);
+        assert!(
+            same * 100 >= checked * 95,
+            "{same} of {checked} kept their blob"
+        );
+    }
+
+    #[test]
+    fn rejects_inputs_above_the_row_limit() {
+        let matrix = ColumnMatrix {
+            names: vec!["a".into()],
+            cols: vec![(0..=UMAP_MAX_ROWS).map(|i| i as f64).collect()],
+        };
+        let err = umap(&matrix, 1).expect_err("too large");
+        assert!(matches!(
+            err,
+            DomainError::Validation { ref code, .. } if code == "umap_input_too_large"
         ));
     }
 }
