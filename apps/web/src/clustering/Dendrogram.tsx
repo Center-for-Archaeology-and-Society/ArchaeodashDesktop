@@ -27,7 +27,7 @@ export function Dendrogram({ result, cutK = 2, leafSize = 12, labelOf = (row: nu
     : plotRight - ((v - layout.minHeight) / (layout.maxHeight - layout.minHeight)) * (plotRight - plotLeft);
   const size = Number.isFinite(leafSize) ? Math.max(8, Math.min(20, leafSize)) : 12;
   return <figure aria-label={`${result.method === 'diana' ? 'DIANA' : result.linkage ? ({ average: 'Average', complete: 'Complete', ward_d: 'Ward.D', ward_d2: 'Ward.D2' }[result.linkage]) : 'Ward.D2'} dendrogram`}>
-    <figcaption>{result.method === 'diana' ? 'DIANA' : result.linkage ? ({ average: 'Average', complete: 'Complete', ward_d: 'Ward.D', ward_d2: 'Ward.D2' }[result.linkage]) : 'Ward.D2'} hierarchical clustering; cut into {cutK} clusters</figcaption>
+    <figcaption>{result.method === 'diana' ? 'DIANA' : result.linkage ? ({ average: 'Average', complete: 'Complete', ward_d: 'Ward.D', ward_d2: 'Ward.D2' }[result.linkage]) : 'Ward.D2'} hierarchical clustering; cut into {cutK} clusters{layout.truncated && `. Showing the top ${layout.leaves.length} branches of ${result.n_rows.toLocaleString()} samples; dashed lines are collapsed branches, labelled with their sample count`}</figcaption>
       <svg role="img" aria-labelledby={`${id}-title ${id}-desc`} viewBox={`0 0 ${width} ${height}`} width={width} height={height} style={{ display: 'block', width: '100%', height: 'auto', minWidth: width, maxWidth: 'none', font: 'inherit', color: 'inherit' }}>
         <title id={`${id}-title`}>Hierarchical clustering dendrogram</title>
         <desc id={`${id}-desc`}>Horizontal dendrogram with merge height increasing from right to left. Leaves are analytical units in dendrogram order.</desc>
@@ -38,9 +38,10 @@ export function Dendrogram({ result, cutK = 2, leafSize = 12, labelOf = (row: nu
         </g>)}
         <text x={(plotLeft + plotRight) / 2} y={height - 16} textAnchor="middle" fill="currentColor" fontSize={12}>Merge height</text>
         <text x={16} y={(plotTop + plotBottom) / 2} textAnchor="middle" transform={`rotate(-90 16 ${(plotTop + plotBottom) / 2})`} fill="currentColor" fontSize={12}>Leaf order</text>
-        {layout.segments.map((s, i) => <line key={i} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={s.group == null ? 'currentColor' : colors[s.group % colors.length]} strokeWidth={1.4} />)}
-        {layout.leaves.map(({ row, y, group }) => <text key={row} x={plotRight + 8} y={y} dominantBaseline="middle" fill="currentColor" fontSize={size}>
-          <tspan fill={colors[group % colors.length]}>● </tspan>{labelOf(row)} · Cluster {group + 1}
+        {layout.segments.map((s, i) => <line key={i} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={s.group == null ? 'currentColor' : colors[s.group % colors.length]} strokeWidth={1.4} strokeDasharray={s.collapsed ? '4 3' : undefined} />)}
+        {layout.leaves.map(({ row, y, group, size: samples }) => <text key={row} x={plotRight + 8} y={y} dominantBaseline="middle" fill="currentColor" fontSize={size}>
+          <tspan fill={group < 0 ? 'currentColor' : colors[group % colors.length]}>● </tspan>
+          {samples > 1 ? `${samples.toLocaleString()} samples` : labelOf(row)}{group < 0 ? ' · several clusters' : ` · Cluster ${group + 1}`}
         </text>)}
       </svg>
   </figure>;

@@ -696,6 +696,7 @@ fn validate_metric(metric: DistanceMetric) -> Result<(), DomainError> {
     Ok(())
 }
 
+#[cfg(test)]
 fn metric_distance(a: &[f64], b: &[f64], metric: DistanceMetric) -> f64 {
     match metric {
         DistanceMetric::Euclidean => a
@@ -719,6 +720,7 @@ fn metric_distance(a: &[f64], b: &[f64], metric: DistanceMetric) -> f64 {
     }
 }
 
+#[cfg(test)]
 fn metric_matrix(
     x: &ColumnMatrix,
     metric: DistanceMetric,
@@ -777,6 +779,266 @@ pub fn pam_with_metric(
 }
 
 pub fn pam_with_metric_cancellable(
+    x: &ColumnMatrix,
+    k: usize,
+    metric: DistanceMetric,
+    cancel: &CancellationToken,
+) -> Result<Pam, DomainError> {
+    use crate::pairwise::{par_row_blocks, tile_distances, TILE_ROWS};
+
+    cancel.check()?;
+    if !matches!(
+        metric,
+        DistanceMetric::Euclidean | DistanceMetric::Manhattan
+    ) {
+        return Err(DomainError::validation(
+            "pam_metric",
+            "PAM supports Euclidean and Manhattan distances",
+        ));
+    }
+    let n = x.n_rows();
+    if n < 2 || k < 1 || k >= n {
+        return Err(DomainError::validation(
+            "pam_input",
+            "pam requires 1 < k < nrow(x)",
+        ));
+    }
+    // Matrix-free: distances are computed when needed, one row `d(i, .)` at
+    // a time and in parallel, so memory stays O(k n) instead of the n x n
+    // table. Each distance is bit-identical to the dense matrix entry (same
+    // column order), so BUILD, SWAP, and ties match the dense algorithm
+    // (`pam_dense_reference` in tests) and R's `bswap` exactly.
+    const BLOCK: usize = 32;
+    let cols = &x.cols;
+    let row_into = |i: usize, out: &mut [f64]| {
+        let mut start = 0;
+        while start < n {
+            let end = (start + TILE_ROWS).min(n);
+            tile_distances(cols, metric, i, start..end, &mut out[start..end]);
+            start = end;
+        }
+    };
+    let distance_row = |i: usize| {
+        let mut out = vec![0.0f64; n];
+        row_into(i, &mut out);
+        out
+    };
+
+    // BUILD (bswap, med_given = FALSE): `s` is the sentinel
+    // 1.1 * max(dys) + 1 used to seed dysma; for the first medoid every
+    // `beter[i]` sums the positive parts of `s - d(i, j)` over all j.
+    let max_dys = par_row_blocks(n, BLOCK, |rows| {
+        cancel.check()?;
+        let mut buf = vec![0.0f64; TILE_ROWS];
+        let mut max = 0.0f64;
+        for i in rows {
+            let mut start = i + 1;
+            while start < n {
+                let end = (start + TILE_ROWS).min(n);
+                let out = &mut buf[..end - start];
+                tile_distances(cols, metric, i, start..end, out);
+                for &d in out.iter() {
+                    if d > max {
+                        max = d;
+                    }
+                }
+                start = end;
+            }
+        }
+        Ok(max)
+    })?
+    .into_iter()
+    .fold(0.0f64, |acc, d| if d > acc { d } else { acc });
+    let s = max_dys * 1.1 + 1.0;
+    let mut nrepr = vec![false; n]; // 0-based
+    let mut dysma = vec![s; n];
+    for _ in 0..k {
+        cancel.check()?;
+        let beter: Vec<Option<f64>> = par_row_blocks(n, BLOCK, |rows| {
+            cancel.check()?;
+            let mut buf = vec![0.0f64; n];
+            let mut out = Vec::with_capacity(rows.len());
+            for i in rows {
+                if nrepr[i] {
+                    out.push(None);
+                    continue;
+                }
+                row_into(i, &mut buf);
+                let mut b = 0.0f64;
+                for (&dj, &dij) in dysma.iter().zip(&buf) {
+                    let cmd = dj - dij;
+                    if cmd > 0.0 {
+                        b += cmd;
+                    }
+                }
+                out.push(Some(b));
+            }
+            Ok(out)
+        })?
+        .concat();
+        // C `if (ammax <= beter[i])`: the last maximum wins.
+        let mut nmax = 0usize;
+        let mut ammax = 0.0f64;
+        for (i, b) in beter.iter().enumerate() {
+            if let Some(b) = *b {
+                if ammax <= b {
+                    ammax = b;
+                    nmax = i;
+                }
+            }
+        }
+        nrepr[nmax] = true;
+        let row = distance_row(nmax);
+        for (dj, &d) in dysma.iter_mut().zip(&row) {
+            if *dj > d {
+                *dj = d;
+            }
+        }
+    }
+    let mut sky = dysma.iter().sum::<f64>();
+    let build_objective = sky / n as f64;
+
+    // SWAP (bswap L60/L60b, pamonce = 0): each pass recomputes dysma/dysmb
+    // from scratch, scans all (h, i) swap candidates for the smallest T_{i,h}
+    // (`dzsky > dz`, first found wins ties), and accepts it only when the
+    // improvement clears -16 * eps * |sky|; `sky` accumulates the applied dz.
+    // Candidates h are scanned in parallel blocks; each block keeps its first
+    // smallest (h, i), and the blocks are combined in order, which picks the
+    // same swap as the sequential scan.
+    let mut dysmb = vec![0.0f64; n];
+    let mut medoid_ids: Vec<usize>;
+    let mut medoid_rows: Vec<Vec<f64>>;
+    loop {
+        cancel.check()?;
+        medoid_ids = (0..n).filter(|&i| nrepr[i]).collect();
+        medoid_rows = medoid_ids.iter().map(|&i| distance_row(i)).collect();
+        for j in 0..n {
+            dysma[j] = s;
+            dysmb[j] = s;
+            for row in &medoid_rows {
+                let dij = row[j];
+                if dysma[j] > dij {
+                    dysmb[j] = dysma[j];
+                    dysma[j] = dij;
+                } else if dysmb[j] > dij {
+                    dysmb[j] = dij;
+                }
+            }
+        }
+        let blocks = par_row_blocks(n, BLOCK, |rows| {
+            cancel.check()?;
+            let mut buf = vec![0.0f64; n];
+            let mut best: Option<(f64, usize, usize)> = None;
+            for h in rows {
+                if nrepr[h] {
+                    continue;
+                }
+                cancel.check()?;
+                row_into(h, &mut buf);
+                for (&i, ir) in medoid_ids.iter().zip(&medoid_rows) {
+                    let mut dz = 0.0f64;
+                    for j in 0..n {
+                        let hj = buf[j];
+                        let ij = ir[j];
+                        if ij == dysma[j] {
+                            let small = if dysmb[j] > hj { hj } else { dysmb[j] };
+                            dz += -dysma[j] + small;
+                        } else if hj < dysma[j] {
+                            dz += -dysma[j] + hj;
+                        }
+                    }
+                    if best.is_none_or(|(b, _, _)| b > dz) {
+                        best = Some((dz, h, i));
+                    }
+                }
+            }
+            Ok(best)
+        })?;
+        let mut dzsky = 1.0f64;
+        let mut hbest = 0usize;
+        let mut nbest = 0usize;
+        for (dz, h, i) in blocks.into_iter().flatten() {
+            if dzsky > dz {
+                dzsky = dz;
+                hbest = h;
+                nbest = i;
+            }
+        }
+        if dzsky >= -16.0 * f64::EPSILON * sky.abs() {
+            break;
+        }
+        nrepr[hbest] = true;
+        nrepr[nbest] = false;
+        sky += dzsky;
+    }
+    let swap_objective = sky / n as f64;
+
+    // cstat: nearest-medoid assignment with ties going to the smallest
+    // medoid object index, then cluster numbers by first appearance. The
+    // last pass's medoids are the final ones (it made no swap). 1-based ids.
+    let mut nsend = vec![0usize; n + 1];
+    for j in 1..=n {
+        if !nrepr[j - 1] {
+            let mut dsmal = f64::INFINITY;
+            let mut ksmal = 0usize;
+            for (&m, row) in medoid_ids.iter().zip(&medoid_rows) {
+                let dmj = row[j - 1];
+                if dsmal > dmj {
+                    dsmal = dmj;
+                    ksmal = m + 1;
+                }
+            }
+            nsend[j] = ksmal;
+        } else {
+            nsend[j] = j;
+        }
+    }
+    let mut ncluv = vec![0i32; n + 1];
+    let mut jk = 1i32;
+    let mut nplac = nsend[1];
+    for j in 1..=n {
+        if nsend[j] == nplac {
+            ncluv[j] = 1;
+        }
+    }
+    for ja in 2..=n {
+        nplac = nsend[ja];
+        if ncluv[nplac] == 0 {
+            jk += 1;
+            for j in 1..=n {
+                if nsend[j] == nplac {
+                    ncluv[j] = jk;
+                }
+            }
+            if jk == k as i32 {
+                break;
+            }
+        }
+    }
+    let mut med = vec![0usize; k + 1];
+    for (kk, slot) in med.iter_mut().enumerate().skip(1) {
+        let mut m = 0usize;
+        for j in 1..=n {
+            if ncluv[j] == kk as i32 {
+                m = nsend[j];
+            }
+        }
+        *slot = m;
+    }
+
+    Ok(Pam {
+        medoids: med[1..].to_vec(),
+        build_objective,
+        swap_objective,
+        clustering: ncluv[1..].to_vec(),
+    })
+}
+
+/// The original dense-matrix PAM, kept as the reference the matrix-free
+/// [`pam_with_metric_cancellable`] must match bit for bit.
+#[cfg(test)]
+#[allow(dead_code)] // used by the equivalence tests
+pub(crate) fn pam_dense_reference(
     x: &ColumnMatrix,
     k: usize,
     metric: DistanceMetric,
@@ -1023,25 +1285,25 @@ pub fn hclust_ward_d2_cancellable(
             "hclust requires at least two rows",
         ));
     }
-    let rows: Vec<Vec<f64>> = (0..n)
-        .map(|i| (0..p).map(|j| x.cols[j][i]).collect())
-        .collect();
+    let _ = p;
     // Squared Euclidean distances in the Fortran IOFFST compact layout used
     // by R's `dist()` (row-major upper triangle): entry 0 unused, d(I, J) for
-    // 1-based I < J at J + (I-1)*N - I*(I+1)/2.
-    let len = n * (n - 1) / 2 + 1;
-    let mut diss = vec![0.0f64; len];
-    let mut idx = 0usize;
-    for i in 1..n {
-        for j in (i + 1)..=n {
-            let mut s = 0.0f64;
-            for c in 0..p {
-                let dv = rows[i - 1][c] - rows[j - 1][c];
-                s += dv * dv;
+    // 1-based I < J at J + (I-1)*N - I*(I+1)/2. Built in parallel; each entry
+    // accumulates its columns in order, as the sequential loop did.
+    let mut diss = upper_table(n, cancel)?;
+    {
+        let cols = &x.cols;
+        let rows = upper_rows(n, &mut diss);
+        crate::pairwise::par_fill_rows(rows, cancel, |i, out| {
+            out.fill(0.0);
+            for col in cols {
+                let xi = col[i];
+                for (acc, &xj) in out.iter_mut().zip(&col[i + 1..]) {
+                    let dv = xi - xj;
+                    *acc += dv * dv;
+                }
             }
-            idx += 1;
-            diss[idx] = s;
-        }
+        })?;
     }
     let ioffst = |i: usize, j: usize| -> usize {
         let (lo, hi) = if i < j { (i, j) } else { (j, i) };
@@ -1244,24 +1506,20 @@ fn hclust_nn_chain_cancellable(
             "hclust requires at least two rows",
         ));
     }
-    let p = x.cols.len();
-    let rows: Vec<Vec<f64>> = (0..n)
-        .map(|i| (0..p).map(|j| x.cols[j][i]).collect())
-        .collect();
-    // hclust.f uses R dist()'s compact upper-triangle IOFFST layout.
-    let mut diss = vec![0.0f64; n * (n - 1) / 2 + 1];
-    let mut idx = 0usize;
-    for i in 1..n {
-        cancel.check()?;
-        for j in i + 1..=n {
-            let d = metric_distance(&rows[i - 1], &rows[j - 1], metric);
-            idx += 1;
-            diss[idx] = if linkage == LinkageMethod::WardD2 {
-                d * d
-            } else {
-                d
-            };
-        }
+    // hclust.f uses R dist()'s compact upper-triangle IOFFST layout, built
+    // in parallel with the same per-entry arithmetic as `metric_distance`.
+    let mut diss = upper_table(n, cancel)?;
+    {
+        let cols = &x.cols;
+        let rows = upper_rows(n, &mut diss);
+        crate::pairwise::par_fill_rows(rows, cancel, |i, out| {
+            fill_distance_row(cols, metric, i, i + 1, out);
+            if linkage == LinkageMethod::WardD2 {
+                for d in out.iter_mut() {
+                    *d *= *d;
+                }
+            }
+        })?;
     }
     let ioffst = |i: usize, j: usize| -> usize {
         let (lo, hi) = if i < j { (i, j) } else { (j, i) };
@@ -1429,27 +1687,82 @@ pub struct Diana {
 /// the `cluster/src/twins.c` `dys` layout from `dysta.c`/`ind_2` (entry 0
 /// unused, permanently 0): `d(l, j)` for 1-based `l < j` lives at
 /// `(j-1)(j-2)/2 + l`.
+/// Inputs up to this many rows run R's `twins.c` DIANA split loop exactly;
+/// larger ones update the split sums incrementally (see
+/// [`diana_with_metric_cancellable`]).
+pub const DIANA_EXACT_ROWS: usize = 2_000;
+
+/// Zeroed IOFFST upper-triangle table for `n` rows (entry 0 unused).
+fn upper_table(n: usize, cancel: &CancellationToken) -> Result<Vec<f64>, DomainError> {
+    cancel.check()?;
+    crate::pairwise::try_zeroed(n * (n - 1) / 2 + 1)
+}
+
+/// The IOFFST table split into one slice per 0-based row i (entries for
+/// j = i+1..n), for [`crate::pairwise::par_fill_rows`].
+fn upper_rows(n: usize, table: &mut [f64]) -> Vec<(usize, &mut [f64])> {
+    let mut rows = Vec::with_capacity(n);
+    let mut rest = &mut table[1..];
+    for i in 0..n.saturating_sub(1) {
+        let (head, tail) = rest.split_at_mut(n - 1 - i);
+        rows.push((i, head));
+        rest = tail;
+    }
+    rows
+}
+
+/// `d(i, j)` for j = start, start+1, ... into `out`, with the same per-entry
+/// arithmetic as `metric_distance(row i, row j)`.
+fn fill_distance_row(
+    cols: &[Vec<f64>],
+    metric: DistanceMetric,
+    i: usize,
+    start: usize,
+    out: &mut [f64],
+) {
+    use crate::pairwise::{tile_distances, TILE_ROWS};
+    let end = start + out.len();
+    let mut from = start;
+    while from < end {
+        let to = (from + TILE_ROWS).min(end);
+        tile_distances(
+            cols,
+            metric,
+            i,
+            from..to,
+            &mut out[from - start..to - start],
+        );
+        from = to;
+    }
+}
+
 struct CompactDist {
     d: Vec<f64>,
 }
 
 impl CompactDist {
+    /// Lower triangle in `twins.c` order: entry 0 unused, then for each
+    /// 1-based row i the distances to rows 1..i. Built in parallel.
     fn metric(
-        x: &[Vec<f64>],
-        n: usize,
+        x: &ColumnMatrix,
         metric: DistanceMetric,
         cancel: &CancellationToken,
     ) -> Result<Self, DomainError> {
-        let mut d = vec![0.0f64; n * (n - 1) / 2 + 1];
-        let mut idx = 1usize;
-        for i in 1..=n {
-            if i % 16 == 0 {
-                cancel.check()?;
+        let n = x.n_rows();
+        let mut d = crate::pairwise::try_zeroed(n * (n - 1) / 2 + 1)?;
+        cancel.check()?;
+        {
+            let mut rows = Vec::with_capacity(n);
+            let mut rest = &mut d[1..];
+            for i in 1..n {
+                let (head, tail) = rest.split_at_mut(i);
+                rows.push((i, head));
+                rest = tail;
             }
-            for j in 1..i {
-                d[idx] = metric_distance(&x[i - 1], &x[j - 1], metric);
-                idx += 1;
-            }
+            let cols = &x.cols;
+            crate::pairwise::par_fill_rows(rows, cancel, |i, out| {
+                fill_distance_row(cols, metric, i, 0, out);
+            })?;
         }
         Ok(Self { d })
     }
@@ -1484,6 +1797,17 @@ pub fn diana_with_metric_cancellable(
     metric: DistanceMetric,
     cancel: &CancellationToken,
 ) -> Result<Diana, DomainError> {
+    diana_impl(x, metric, cancel, DIANA_EXACT_ROWS)
+}
+
+/// DIANA with an explicit exact-loop threshold (tests run both paths on
+/// small inputs).
+fn diana_impl(
+    x: &ColumnMatrix,
+    metric: DistanceMetric,
+    cancel: &CancellationToken,
+    exact_rows: usize,
+) -> Result<Diana, DomainError> {
     cancel.check()?;
     if !matches!(
         metric,
@@ -1502,11 +1826,25 @@ pub fn diana_with_metric_cancellable(
             "diana requires at least two rows",
         ));
     }
-    let rows: Vec<Vec<f64>> = (0..n)
-        .map(|i| (0..p).map(|j| x.cols[j][i]).collect())
-        .collect();
-    let dys = CompactDist::metric(&rows, n, metric, cancel)?;
+    let _ = p;
+    let dys = CompactDist::metric(x, metric, cancel)?;
     let at = |l: usize, j: usize| dys.at(l, j);
+    // Above DIANA_EXACT_ROWS each split keeps every object's distance sums
+    // to both parts and updates them as objects move (O(m) per move), instead
+    // of recomputing them (O(m^2) per move), which is R's O(n^3) cost. The
+    // sums then differ from R's in the last bits, so near-ties can resolve
+    // differently; at or below the threshold the twins.c loop runs as is.
+    let incremental = n > exact_rows;
+    let mut sum_a = if incremental {
+        vec![0.0f64; n + 1]
+    } else {
+        Vec::new()
+    };
+    let mut sum_b = if incremental {
+        vec![0.0f64; n + 1]
+    } else {
+        Vec::new()
+    };
 
     let mut kwan = vec![0usize; n + 1];
     let mut ban = vec![0.0f64; n + 1];
@@ -1531,18 +1869,57 @@ pub fn diana_with_metric_cancellable(
             // and shift it to the end of the cluster segment.
             let mut bygsd = -1.0f64;
             let mut lndsd = 0usize;
-            for l in ja..=jb {
-                if l % 16 == 0 {
+            let mut diameter = 0.0f64;
+            if incremental {
+                // One parallel pass over the segment's pairs: each object's
+                // total dissimilarity (same order as below) and the diameter.
+                let segment = &ner[ja..=jb];
+                let parts = crate::pairwise::par_row_blocks(segment.len(), 64, |range| {
                     cancel.check()?;
+                    let mut sums = Vec::with_capacity(range.len());
+                    let mut dm = 0.0f64;
+                    for l in range {
+                        let lner = segment[l];
+                        let mut sd = 0.0f64;
+                        for &other in segment {
+                            let d = at(lner, other);
+                            sd += d;
+                            if dm < d {
+                                dm = d;
+                            }
+                        }
+                        sums.push(sd);
+                    }
+                    Ok((sums, dm))
+                })?;
+                let mut l = ja;
+                for (sums, dm) in parts {
+                    if diameter < dm {
+                        diameter = dm;
+                    }
+                    for sd in sums {
+                        sum_a[ner[l]] = sd;
+                        if bygsd < sd {
+                            bygsd = sd;
+                            lndsd = l;
+                        }
+                        l += 1;
+                    }
                 }
-                let lner = ner[l];
-                let mut sd = 0.0f64;
-                for j in ja..=jb {
-                    sd += at(lner, ner[j]);
-                }
-                if bygsd < sd {
-                    bygsd = sd;
-                    lndsd = l;
+            } else {
+                for l in ja..=jb {
+                    if l % 16 == 0 {
+                        cancel.check()?;
+                    }
+                    let lner = ner[l];
+                    let mut sd = 0.0f64;
+                    for j in ja..=jb {
+                        sd += at(lner, ner[j]);
+                    }
+                    if bygsd < sd {
+                        bygsd = sd;
+                        lndsd = l;
+                    }
                 }
             }
             kwan[ja] -= 1;
@@ -1553,6 +1930,17 @@ pub fn diana_with_metric_cancellable(
                     ner[lmma] = ner[lmma + 1];
                 }
                 ner[jb] = lchan;
+            }
+            if incremental {
+                // The splinter starts the new part: split each remaining
+                // object's total into its sums to the two parts.
+                let splinter = ner[jb];
+                for l in ja..jb {
+                    let o = ner[l];
+                    let d = at(o, splinter);
+                    sum_a[o] -= d;
+                    sum_b[o] = d;
+                }
             }
             // Divisive loop: move objects maximizing the (own-group mean -
             // split-group mean) difference, bubbling the moved object into
@@ -1570,16 +1958,19 @@ pub fn diana_with_metric_cancellable(
                         cancel.check()?;
                     }
                     let lner = ner[l];
-                    let mut da = 0.0f64;
-                    for j in ja..=jma {
-                        da += at(lner, ner[j]);
-                    }
-                    da /= rest;
-                    let mut db = 0.0f64;
-                    for j in (jma + 1)..=jb {
-                        db += at(lner, ner[j]);
-                    }
-                    db /= splyn as f64;
+                    let (da, db) = if incremental {
+                        (sum_a[lner] / rest, sum_b[lner] / splyn as f64)
+                    } else {
+                        let mut da = 0.0f64;
+                        for j in ja..=jma {
+                            da += at(lner, ner[j]);
+                        }
+                        let mut db = 0.0f64;
+                        for j in (jma + 1)..=jb {
+                            db += at(lner, ner[j]);
+                        }
+                        (da / rest, db / splyn as f64)
+                    };
                     let dyff = da - db;
                     if bdyff < dyff {
                         bdyff = dyff;
@@ -1589,6 +1980,17 @@ pub fn diana_with_metric_cancellable(
                 jmb = jma + 1;
                 if bdyff <= 0.0 {
                     break;
+                }
+                if incremental {
+                    let moved = ner[jaway];
+                    for l in ja..=jma {
+                        if l != jaway {
+                            let o = ner[l];
+                            let d = at(o, moved);
+                            sum_a[o] -= d;
+                            sum_b[o] += d;
+                        }
+                    }
                 }
                 if jma != jaway {
                     let lchan = ner[jaway];
@@ -1644,6 +2046,8 @@ pub fn diana_with_metric_cancellable(
             // Banner level: first split uses the data-set diameter.
             if nclu == 1 {
                 ban[jmb] = cs;
+            } else if incremental {
+                ban[jmb] = diameter;
             } else {
                 let mut dm = 0.0f64;
                 for k in ja..jb {
@@ -1689,29 +2093,50 @@ pub fn diana_with_metric_cancellable(
     // (the C loop's `dmin >= ban[j]` keeps the LAST minimum) and emit the
     // adjacent leaf pair it separates, resolving stage references. Rows are
     // emitted exactly as twins.c does — no sorting of (l1, l2).
-    let mut kw: Vec<i64> = kwan.iter().map(|&v| v as i64).collect();
-    for _stage in 0..(n - 1) {
-        let mut nj = 0usize;
-        let mut dmin = cs;
-        for j in 2..=n {
-            if kw[j] >= 0 && dmin >= ban[j] {
-                dmin = ban[j];
-                nj = j;
-            }
+    //
+    // Equivalent O(n log n) form: every banner entry is consumed once, in
+    // ascending order with ties to the larger j (the last minimum), and a
+    // leaf's reference is the latest stage containing it (union-find), which
+    // is what the C scan over earlier rows finds.
+    let _ = &kwan;
+    let mut stages: Vec<usize> = (2..=n).collect();
+    stages.sort_by(|&a, &b| {
+        ban[a]
+            .partial_cmp(&ban[b])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.cmp(&a))
+    });
+    // Nodes: leaves 1..=n, stage s at n + s.
+    let mut parent: Vec<usize> = (0..=2 * n).collect();
+    let find = |parent: &mut Vec<usize>, mut v: usize| {
+        let mut root = v;
+        while parent[root] != root {
+            root = parent[root];
         }
-        kw[nj] = -1; // mark consumed, as `kwan[nj] = -1` in twins.c
-        let mut l1 = -(ner[nj - 1] as i32);
-        let mut l2 = -(ner[nj] as i32);
-        for (done, row) in merge_rows.iter().enumerate() {
-            let stage_ref = done as i32 + 1;
-            if row[0] == l1 || row[1] == l1 {
-                l1 = stage_ref;
-            }
-            if row[0] == l2 || row[1] == l2 {
-                l2 = stage_ref;
-            }
+        while parent[v] != root {
+            let next = parent[v];
+            parent[v] = root;
+            v = next;
         }
-        merge_rows.push([l1, l2]);
+        root
+    };
+    let label = |root: usize| {
+        if root <= n {
+            -(root as i32)
+        } else {
+            (root - n) as i32
+        }
+    };
+    for (done, &nj) in stages.iter().enumerate() {
+        if done % 4096 == 0 {
+            cancel.check()?;
+        }
+        let a = find(&mut parent, ner[nj - 1]);
+        let b = find(&mut parent, ner[nj]);
+        merge_rows.push([label(a), label(b)]);
+        let node = n + done + 1;
+        parent[a] = node;
+        parent[b] = node;
     }
 
     Ok(Diana {
@@ -1964,6 +2389,64 @@ pub fn silhouette_widths_streaming_cancellable(
         }
     }
     Ok(out)
+}
+
+/// factoextra `.get_withinSS` without an n x n matrix: for each cluster,
+/// the sum of squared distances over its member pairs (member i, then each
+/// earlier member j, in row order) divided by its size, summed over the
+/// clusters. Distances are computed in parallel batches but added in that
+/// exact order, so the result is bit-identical to summing a dense matrix.
+pub fn within_pair_ss_cancellable(
+    x: &ColumnMatrix,
+    metric: DistanceMetric,
+    labels: &[i32],
+    k: usize,
+    cancel: &CancellationToken,
+) -> Result<f64, DomainError> {
+    const WAVE: usize = 128;
+    let mut per_cluster = Vec::with_capacity(k);
+    for cluster in 1..=k {
+        cancel.check()?;
+        let members: Vec<usize> = labels
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &label)| (label as usize == cluster).then_some(i))
+            .collect();
+        if members.is_empty() {
+            per_cluster.push(0.0);
+            continue;
+        }
+        let m = members.len();
+        let cols: Vec<Vec<f64>> = x
+            .cols
+            .iter()
+            .map(|col| members.iter().map(|&i| col[i]).collect())
+            .collect();
+        let mut pair_sum = 0.0f64;
+        let mut start = 1;
+        while start < m {
+            let end = (start + WAVE).min(m);
+            let rows = crate::pairwise::par_row_blocks(end - start, 4, |range| {
+                cancel.check()?;
+                Ok(range
+                    .map(|r| {
+                        let i = start + r;
+                        let mut out = vec![0.0f64; i];
+                        fill_distance_row(&cols, metric, i, 0, &mut out);
+                        out
+                    })
+                    .collect::<Vec<_>>())
+            })?;
+            for row in rows.into_iter().flatten() {
+                for d in row {
+                    pair_sum += d.powi(2);
+                }
+            }
+            start = end;
+        }
+        per_cluster.push(pair_sum / m as f64);
+    }
+    Ok(per_cluster.iter().sum())
 }
 
 #[cfg(test)]
@@ -2279,4 +2762,148 @@ pub fn cluster_diagnostics(x: &ColumnMatrix, seed: i32) -> Result<ClusterDiagnos
         wss,
         silhouette,
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)] // test code; panics are the failure mode
+mod large_input_tests {
+    use super::{
+        diana_impl, fill_distance_row, metric_distance, pam_dense_reference,
+        pam_with_metric_cancellable, upper_rows, upper_table, CompactDist, DistanceMetric,
+    };
+    use crate::{CancellationToken, ColumnMatrix};
+
+    /// Deterministic matrix: `clusters` separated centres plus jitter;
+    /// `round` snaps values to integers to create many tied distances.
+    fn data(n: usize, p: usize, clusters: usize, round: bool) -> ColumnMatrix {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut cols = vec![Vec::with_capacity(n); p];
+        for i in 0..n {
+            let c = i % clusters;
+            for (j, col) in cols.iter_mut().enumerate() {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let jitter = (state % 10_000) as f64 / 2_500.0;
+                let v = (c * 9 + j % 3) as f64 + jitter;
+                col.push(if round { v.round() } else { v });
+            }
+        }
+        ColumnMatrix {
+            names: (0..p).map(|j| format!("c{j}")).collect(),
+            cols,
+        }
+    }
+
+    fn row(x: &ColumnMatrix, i: usize) -> Vec<f64> {
+        x.cols.iter().map(|c| c[i]).collect()
+    }
+
+    #[test]
+    fn matrix_free_pam_matches_the_dense_reference_bit_for_bit() {
+        let cancel = CancellationToken::new();
+        for (n, round) in [(400, false), (180, true)] {
+            let x = data(n, 4, 5, round);
+            for metric in [DistanceMetric::Euclidean, DistanceMetric::Manhattan] {
+                for k in [2, 3, 5, 8] {
+                    let fast = pam_with_metric_cancellable(&x, k, metric, &cancel).unwrap();
+                    let dense = pam_dense_reference(&x, k, metric, &cancel).unwrap();
+                    assert_eq!(fast.medoids, dense.medoids, "n={n} {metric:?} k={k}");
+                    assert_eq!(fast.clustering, dense.clustering, "n={n} {metric:?} k={k}");
+                    assert_eq!(
+                        fast.build_objective.to_bits(),
+                        dense.build_objective.to_bits()
+                    );
+                    assert_eq!(
+                        fast.swap_objective.to_bits(),
+                        dense.swap_objective.to_bits()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_distance_tables_match_metric_distance() {
+        let cancel = CancellationToken::new();
+        let x = data(300, 5, 4, false);
+        let n = 300;
+        for metric in [
+            DistanceMetric::Euclidean,
+            DistanceMetric::Manhattan,
+            DistanceMetric::Maximum,
+            DistanceMetric::Minkowski { p: 3.0 },
+        ] {
+            let mut upper = upper_table(n, &cancel).unwrap();
+            let rows = upper_rows(n, &mut upper);
+            crate::pairwise::par_fill_rows(rows, &cancel, |i, out| {
+                fill_distance_row(&x.cols, metric, i, i + 1, out);
+            })
+            .unwrap();
+            let mut idx = 0;
+            for i in 0..n {
+                for j in i + 1..n {
+                    idx += 1;
+                    let want = metric_distance(&row(&x, i), &row(&x, j), metric);
+                    assert_eq!(upper[idx].to_bits(), want.to_bits(), "{metric:?} ({i},{j})");
+                }
+            }
+            let lower = CompactDist::metric(&x, metric, &cancel).unwrap();
+            for i in 1..=n {
+                for j in 1..i {
+                    let want = metric_distance(&row(&x, i - 1), &row(&x, j - 1), metric);
+                    assert_eq!(lower.at(i, j).to_bits(), want.to_bits());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn incremental_diana_matches_the_exact_loop_on_separated_data() {
+        let cancel = CancellationToken::new();
+        for metric in [DistanceMetric::Euclidean, DistanceMetric::Manhattan] {
+            let x = data(300, 4, 4, false);
+            let exact = diana_impl(&x, metric, &cancel, usize::MAX).unwrap();
+            let incremental = diana_impl(&x, metric, &cancel, 0).unwrap();
+            assert_eq!(incremental.order, exact.order, "{metric:?}");
+            assert_eq!(incremental.merge, exact.merge, "{metric:?}");
+            let bits = |h: &[f64]| h.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&incremental.height), bits(&exact.height), "{metric:?}");
+        }
+    }
+
+    #[test]
+    fn streamed_within_pair_ss_matches_the_dense_sum() {
+        let cancel = CancellationToken::new();
+        let x = data(500, 4, 4, false);
+        let labels: Vec<i32> = (0..500).map(|i| (i % 4) as i32 + 1).collect();
+        for metric in [DistanceMetric::Euclidean, DistanceMetric::Manhattan] {
+            let dense = crate::cluster::metric_matrix(&x, metric, &cancel).unwrap();
+            let want: f64 = (1..=5usize)
+                .map(|cluster| {
+                    let members: Vec<usize> = (0..500)
+                        .filter(|&i| labels[i] as usize == cluster)
+                        .collect();
+                    if members.is_empty() {
+                        return 0.0;
+                    }
+                    let mut pair_sum = 0.0;
+                    for i in 0..members.len() {
+                        for j in 0..i {
+                            pair_sum += dense[members[i]][members[j]].powi(2);
+                        }
+                    }
+                    pair_sum / members.len() as f64
+                })
+                .sum();
+            let got = super::within_pair_ss_cancellable(&x, metric, &labels, 5, &cancel).unwrap();
+            assert_eq!(got.to_bits(), want.to_bits(), "{metric:?}");
+        }
+    }
+
+    #[test]
+    fn an_impossible_table_is_a_clear_error_not_an_abort() {
+        let err = crate::pairwise::try_zeroed(usize::MAX / 16).unwrap_err();
+        assert!(err.to_string().contains("not enough memory"), "{err}");
+    }
 }

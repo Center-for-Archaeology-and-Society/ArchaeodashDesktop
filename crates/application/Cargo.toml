@@ -21,6 +21,7 @@ same-file = "1.0.6"
 uuid = { workspace = true }
 rust_xlsxwriter = { workspace = true }
 base64 = { workspace = true }
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 
 [dev-dependencies]
 tempfile = "3"

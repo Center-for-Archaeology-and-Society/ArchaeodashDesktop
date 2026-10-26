@@ -22,7 +22,12 @@ use uuid::Uuid;
 const DEFAULT_WORKERS: usize = 2;
 const DEFAULT_QUEUE_CAPACITY: usize = 16;
 const MAX_RETAINED_JOBS: usize = 32;
-const MAX_RESULT_BYTES: usize = 8 * 1024 * 1024;
+/// Largest encoded result one job may return: a 100,000-row cluster fit is
+/// about 15 MB, and Euclidean matches return up to `limit` rows per sample.
+const MAX_RESULT_BYTES: usize = 256 * 1024 * 1024;
+/// Finished jobs' results kept in memory together; beyond this the oldest
+/// finished jobs are dropped when a new job is submitted.
+const RETAINED_RESULT_BYTES: usize = 512 * 1024 * 1024;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_TIMEOUT: Duration = Duration::from_secs(1800);
 
@@ -31,6 +36,8 @@ type JobTask = Box<dyn FnOnce(JobContext) -> Result<AnalysisJobResult, DomainErr
 struct Record {
     snapshot: AnalysisJobSnapshot,
     token: CancellationToken,
+    /// Encoded size of the retained result (0 without one).
+    result_bytes: usize,
 }
 
 struct WorkItem {
@@ -269,6 +276,7 @@ impl AnalysisJobRegistry {
                 error: None,
             },
             token: token.clone(),
+            result_bytes: 0,
         }));
         {
             let mut records = self
@@ -276,7 +284,17 @@ impl AnalysisJobRegistry {
                 .records
                 .lock()
                 .map_err(|_| internal("job registry poisoned"))?;
-            if records.len() >= MAX_RETAINED_JOBS {
+            // Drop the oldest finished jobs while the registry is full or
+            // their results hold too much memory.
+            loop {
+                let retained: usize = records
+                    .values()
+                    .filter_map(|old| old.lock().ok().map(|r| r.result_bytes))
+                    .sum();
+                let full = records.len() >= MAX_RETAINED_JOBS;
+                if !full && retained <= RETAINED_RESULT_BYTES {
+                    break;
+                }
                 let evict = records
                     .iter()
                     .filter_map(|(job_id, old)| {
@@ -297,13 +315,17 @@ impl AnalysisJobRegistry {
                     })
                     .min_by_key(|(_, at)| *at)
                     .map(|(job_id, _)| job_id);
-                if let Some(oldest) = evict {
-                    records.remove(&oldest);
-                } else {
-                    return Err(DomainError::validation(
-                        "analysis_registry_full",
-                        "too many active analysis jobs",
-                    ));
+                match evict {
+                    Some(oldest) => {
+                        records.remove(&oldest);
+                    }
+                    None if full => {
+                        return Err(DomainError::validation(
+                            "analysis_registry_full",
+                            "too many active analysis jobs",
+                        ));
+                    }
+                    None => break,
                 }
             }
             records.insert(id.clone(), Arc::clone(&record));
@@ -451,6 +473,7 @@ fn run_item(item: WorkItem) {
         match outcome {
             Ok(Ok(result)) => match serde_json::to_vec(&result) {
                 Ok(bytes) if bytes.len() <= MAX_RESULT_BYTES => {
+                    r.result_bytes = bytes.len();
                     terminal(&mut r, AnalysisJobState::Succeeded, Some(result), None)
                 }
                 Ok(_) => terminal(
@@ -459,7 +482,7 @@ fn run_item(item: WorkItem) {
                     None,
                     Some(error(
                         "analysis_output_limit",
-                        "analysis output exceeds the 8 MiB job result limit",
+                        "analysis output exceeds the 256 MiB job result limit",
                     )),
                 ),
                 Err(_) => terminal(

@@ -48,10 +48,9 @@ export function recommendedAssignments(
     } else {
       const layout = layoutDendrogram(data, cutK);
       if (!layout) throw new Error('The clustering result cannot be cut into the requested number of clusters.');
-      const groupByRow = new Map(layout.leaves.map(leaf => [leaf.row, leaf.group + 1]));
       data.analytical_uuids.forEach((uuid, i) => {
-        const group = groupByRow.get(i + 1);
-        if (group !== undefined) clusterByUuid.set(uuid, group);
+        const group = layout.clusterOfRow[i];
+        if (group !== undefined) clusterByUuid.set(uuid, group + 1);
       });
     }
     return selected.map(analyticalUuid => {

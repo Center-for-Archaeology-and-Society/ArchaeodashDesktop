@@ -61,9 +61,8 @@ export function selectableRows(
       return ids.map((analyticalUuid, i) => ({ key: analyticalUuid, analyticalUuid, label: rowLabel(analyticalUuid, i), detail: `Cluster ${data.cluster![i]}` }));
     }
     const layout = layoutDendrogram(data, cutK);
-    if (!layout || layout.leaves.length !== data.n_rows) return [];
-    const groups = new Array<number>(data.n_rows);
-    for (const leaf of layout.leaves) groups[leaf.row - 1] = leaf.group + 1;
+    if (!layout || layout.clusterOfRow.length !== data.n_rows) return [];
+    const groups = layout.clusterOfRow.map(group => group + 1);
     if (groups.some(group => !Number.isInteger(group))) return [];
     return ids.map((analyticalUuid, i) => ({ key: analyticalUuid, analyticalUuid, label: rowLabel(analyticalUuid, i), detail: `Cluster ${groups[i]}` }));
   }

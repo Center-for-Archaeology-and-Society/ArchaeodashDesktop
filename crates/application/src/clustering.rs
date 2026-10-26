@@ -29,14 +29,16 @@ use super::transforms::TransformService;
 /// Legacy `set.seed(seed + k)` base seed of the diagnostic series (golden
 /// capture procedure 9).
 const DEFAULT_KMEANS_SEED: i64 = 20260914;
-/// Row cap for analyses that compute pairwise distances on the fly
-/// (k-means silhouettes and diagnostics, Euclidean matching): memory stays
-/// linear in the row count and the work is spread over all cores.
+/// Row cap for every analysis that uses pairwise distances. k-means, PAM,
+/// silhouettes, diagnostics, and Euclidean matching compute distances on the
+/// fly (memory linear in the row count, work spread over all cores);
+/// hierarchical and DIANA also need free memory for their distance table
+/// (see [`MAX_TABLE_SHARE`]).
 const MAX_ANALYSIS_ROWS: usize = 100_000;
-/// Methods that hold the full n x n matrix (PAM, hierarchical, DIANA)
-/// stay below predictable memory bounds (an f64 matrix alone uses 8 bytes per
-/// cell, with several temporary matrices in PAM).
-const MAX_DISTANCE_CELLS: usize = 1_000_000;
+/// Hierarchical and DIANA hold R's half distance table (8 bytes per row
+/// pair: about 2.9 GB at 26,880 rows); it may use at most this share of the
+/// memory free when the analysis starts.
+const MAX_TABLE_SHARE: f64 = 0.8;
 /// Numeric analysis matrix cap (rows x analysis columns).
 const MAX_INPUT_CELLS: usize = 10_000_000;
 /// Group-file read cap (rows x every stored column, descriptive included).
@@ -59,8 +61,29 @@ enum Pairwise {
     None,
     /// Distances computed on the fly: up to `MAX_ANALYSIS_ROWS` rows.
     Streamed,
-    /// The full n x n matrix is held in memory: `MAX_DISTANCE_CELLS` cells.
+    /// R's half distance table is held in memory (hierarchical, DIANA): up
+    /// to `MAX_ANALYSIS_ROWS` rows, when the table fits in free memory.
     Dense,
+}
+
+/// Bytes of the half distance table for `n` rows.
+fn table_bytes(n: usize) -> u64 {
+    let pairs = (n as u64).saturating_mul(n.saturating_sub(1) as u64) / 2 + 1;
+    pairs.saturating_mul(8)
+}
+
+/// Memory free for new allocations right now, if the platform reports it.
+fn available_memory_bytes() -> Option<u64> {
+    use sysinfo::{MemoryRefreshKind, RefreshKind, System};
+    let system = System::new_with_specifics(
+        RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()),
+    );
+    let available = system.available_memory();
+    (available > 0).then_some(available)
+}
+
+fn gigabytes(bytes: u64) -> String {
+    format!("{:.1} GB", bytes as f64 / 1e9)
 }
 
 /// `12345` -> `"12,345"` for user-facing limit messages.
@@ -162,6 +185,23 @@ impl ClusterService {
         context: &str,
         pairwise: Pairwise,
     ) -> Result<(), DomainError> {
+        let available = if pairwise == Pairwise::Dense {
+            available_memory_bytes()
+        } else {
+            None
+        };
+        Self::validate_dimensions_with(n, p, context, pairwise, available)
+    }
+
+    /// [`Self::validate_dimensions`] with the free memory given (`None`:
+    /// unknown, so only the allocation itself can fail).
+    fn validate_dimensions_with(
+        n: usize,
+        p: usize,
+        context: &str,
+        pairwise: Pairwise,
+        available: Option<u64>,
+    ) -> Result<(), DomainError> {
         let cells = n.saturating_mul(p);
         if cells > MAX_INPUT_CELLS {
             return Err(validation(
@@ -179,16 +219,24 @@ impl ClusterService {
                 ),
             ));
         }
-        if pairwise == Pairwise::Dense && n.saturating_mul(n) > MAX_DISTANCE_CELLS {
-            return Err(validation(
-                "cluster_resource_limit",
-                format!(
-                    "{context}: {} rows exceed the {} row limit for PAM, hierarchical, and                      DIANA clustering, which hold the full pairwise distance matrix;                      k-means supports up to {} rows",
-                    thousands(n),
-                    thousands(MAX_DISTANCE_CELLS.isqrt()),
-                    thousands(MAX_ANALYSIS_ROWS)
-                ),
-            ));
+        if pairwise == Pairwise::Dense {
+            let needed = table_bytes(n);
+            if let Some(available) = available {
+                if needed as f64 > available as f64 * MAX_TABLE_SHARE {
+                    return Err(validation(
+                        "cluster_memory",
+                        format!(
+                            "{context}: hierarchical and DIANA clustering of {} rows need a {} \
+                             distance table, but only {} of memory is free. Close other \
+                             programs, use fewer rows, or use k-means or PAM, which need no \
+                             table",
+                            thousands(n),
+                            gigabytes(needed),
+                            gigabytes(available)
+                        ),
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -380,72 +428,6 @@ impl ClusterService {
         }
     }
 
-    fn metric_distances(
-        rows: &[Vec<f64>],
-        metric: DistanceMetric,
-        cancel: &CancellationToken,
-    ) -> Result<Vec<Vec<f64>>, DomainError> {
-        let n = rows.len();
-        let mut distances = vec![vec![0.0; n]; n];
-        for i in 0..n {
-            cancel.check()?;
-            for j in (i + 1)..n {
-                let d = match metric {
-                    DistanceMetric::Euclidean => rows[i]
-                        .iter()
-                        .zip(&rows[j])
-                        .map(|(a, b)| (a - b) * (a - b))
-                        .sum::<f64>()
-                        .sqrt(),
-                    DistanceMetric::Manhattan => rows[i]
-                        .iter()
-                        .zip(&rows[j])
-                        .map(|(a, b)| (a - b).abs())
-                        .sum(),
-                    DistanceMetric::Maximum => rows[i]
-                        .iter()
-                        .zip(&rows[j])
-                        .map(|(a, b)| (a - b).abs())
-                        .fold(0.0, f64::max),
-                    DistanceMetric::Minkowski { p } => rows[i]
-                        .iter()
-                        .zip(&rows[j])
-                        .map(|(a, b)| (a - b).abs().powf(p))
-                        .sum::<f64>()
-                        .powf(1.0 / p),
-                };
-                distances[i][j] = d;
-                distances[j][i] = d;
-            }
-        }
-        Ok(distances)
-    }
-
-    /// factoextra `.get_withinSS`: sum each cluster's lower-triangle squared
-    /// pairwise distances and divide by cluster size. For Euclidean data this
-    /// equals the centroid WSS and also matches `fviz_nbclust(..., pam)`.
-    fn within_pair_ss(dist: &[Vec<f64>], labels: &[i32], k: usize) -> f64 {
-        (1..=k)
-            .map(|cluster| {
-                let members: Vec<usize> = labels
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, &label)| (label as usize == cluster).then_some(i))
-                    .collect();
-                if members.is_empty() {
-                    return 0.0;
-                }
-                let mut pair_sum = 0.0;
-                for i in 0..members.len() {
-                    for j in 0..i {
-                        pair_sum += dist[members[i]][members[j]].powi(2);
-                    }
-                }
-                pair_sum / members.len() as f64
-            })
-            .sum()
-    }
-
     fn cluster_plot(matrix: &ColumnMatrix) -> (Vec<[f64; 2]>, Vec<String>, Option<String>) {
         let n = matrix.n_rows();
         if matrix.cols.len() > 2 && matrix.cols.len() <= MAX_ORDINATION_FEATURES {
@@ -521,15 +503,6 @@ impl ClusterService {
             }
         }
         Ok(())
-    }
-
-    /// Row-major copy of the matrix for the distance-matrix helpers.
-    fn rows(matrix: &archaeodash_analysis::ColumnMatrix) -> Vec<Vec<f64>> {
-        let n = matrix.n_rows();
-        let p = matrix.cols.len();
-        (0..n)
-            .map(|i| (0..p).map(|j| matrix.cols[j][i]).collect())
-            .collect()
     }
 
     /// Group labels for one descriptive column; blank cells keep the legacy
@@ -655,11 +628,7 @@ impl ClusterService {
         input.require_columns(req.source_group_column.as_deref())?;
         let data = input.data;
         let pam = req.diagnostic_method == archaeodash_contracts::ClusterDiagnosticMethodDto::Pam;
-        let pairwise = if pam {
-            Pairwise::Dense
-        } else {
-            Pairwise::Streamed
-        };
+        let pairwise = Pairwise::Streamed;
         Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, pairwise)?;
         let matrix = Self::source_matrix(
             &self.root,
@@ -703,23 +672,12 @@ impl ClusterService {
                 "k-means diagnostics use Euclidean distance",
             ));
         }
-        // Only PAM's within-cluster pair sums need the dense matrix; the
-        // silhouettes below stream their distances.
-        let dist = if pam {
-            Some(Self::metric_distances(
-                &Self::rows(&matrix),
-                metric,
-                cancel,
-            )?)
-        } else {
-            None
-        };
         let mut wss = Vec::with_capacity(max_k);
         let mut labelings: Vec<(Vec<i32>, usize)> = Vec::with_capacity(max_k.saturating_sub(1));
         for k in 1..=max_k {
             cancel.check()?;
-            let (labels, total) = match (req.diagnostic_method, &dist) {
-                (archaeodash_contracts::ClusterDiagnosticMethodDto::Kmeans, _) => {
+            let (labels, total) = match req.diagnostic_method {
+                archaeodash_contracts::ClusterDiagnosticMethodDto::Kmeans => {
                     let fit = archaeodash_analysis::kmeans_cancellable(
                         &matrix,
                         k,
@@ -730,18 +688,21 @@ impl ClusterService {
                     )?;
                     (fit.cluster, fit.tot_withinss)
                 }
-                (archaeodash_contracts::ClusterDiagnosticMethodDto::Pam, Some(dist)) => {
+                archaeodash_contracts::ClusterDiagnosticMethodDto::Pam => {
                     let fit = archaeodash_analysis::pam_with_metric_cancellable(
                         &matrix, k, metric, cancel,
                     )?;
-                    let total = Self::within_pair_ss(dist, &fit.clustering, k);
+                    // factoextra `.get_withinSS`: each cluster's pair sums of
+                    // squared distances over its size (the centroid WSS for
+                    // Euclidean data), streamed instead of an n x n matrix.
+                    let total = archaeodash_analysis::within_pair_ss_cancellable(
+                        &matrix,
+                        metric,
+                        &fit.clustering,
+                        k,
+                        cancel,
+                    )?;
                     (fit.clustering, total)
-                }
-                (archaeodash_contracts::ClusterDiagnosticMethodDto::Pam, None) => {
-                    return Err(validation(
-                        "cluster_diagnostics_state",
-                        "PAM diagnostics require the distance matrix",
-                    ));
                 }
             };
             wss.push(total);
@@ -819,7 +780,9 @@ impl ClusterService {
                 .chain(req.plot_group_column.as_deref()),
         )?;
         let data = input.data;
-        let pairwise = if req.method == ClusterMethod::Kmeans {
+        // k-means and PAM compute distances on the fly; hierarchical and
+        // DIANA need R's half distance table.
+        let pairwise = if matches!(req.method, ClusterMethod::Kmeans | ClusterMethod::Pam) {
             Pairwise::Streamed
         } else {
             Pairwise::Dense
@@ -2338,14 +2301,22 @@ mod tests {
                 Err(DomainError::Validation { ref code, .. }) if code == "cluster_resource_limit"
             )
         };
-        // Dense-matrix methods (PAM, hierarchical, DIANA).
-        assert!(ClusterService::validate_dimensions(1_000, 1, "boundary", Pairwise::Dense).is_ok());
-        assert!(over(ClusterService::validate_dimensions(
-            1_001,
-            1,
-            "over",
-            Pairwise::Dense
-        )));
+        // Table methods (hierarchical, DIANA): the row cap, then free memory.
+        let dense = |n: usize, available: Option<u64>| {
+            ClusterService::validate_dimensions_with(n, 1, "table", Pairwise::Dense, available)
+        };
+        assert!(dense(26_880, None).is_ok());
+        assert!(dense(MAX_ANALYSIS_ROWS, None).is_ok());
+        assert!(over(dense(MAX_ANALYSIS_ROWS + 1, None)));
+        // 26,880 rows need a 2.9 GB table: fine with 8 GB free, not with 2 GB.
+        assert_eq!(table_bytes(26_880), (26_880u64 * 26_879 / 2 + 1) * 8);
+        assert!(dense(26_880, Some(8_000_000_000)).is_ok());
+        let err = dense(26_880, Some(2_000_000_000)).expect_err("too little memory");
+        assert!(
+            matches!(&err, DomainError::Validation { code, message }
+                if code == "cluster_memory" && message.contains("2.9 GB") && message.contains("2.0 GB")),
+            "{err}"
+        );
         // Streamed methods (k-means, Euclidean matching).
         assert!(ClusterService::validate_dimensions(
             MAX_ANALYSIS_ROWS,

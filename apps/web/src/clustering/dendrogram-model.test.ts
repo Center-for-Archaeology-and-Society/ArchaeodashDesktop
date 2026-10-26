@@ -49,7 +49,7 @@ test('zero-height branches meet the leaf labels and invalid negative heights are
   assert.equal(layoutDendrogram({ ...tree, height: [-1] }), null);
 });
 
-test('the full service row limit renders without sampling at either cut extreme', () => {
+test('trees up to FULL_LEAVES draw every sample at either cut extreme', () => {
   const n = 1000;
   const merge: [number, number][] = [[-1, -2]];
   for (let row = 3; row <= n; row++) merge.push([row - 2, -row]);
@@ -59,4 +59,24 @@ test('the full service row limit renders without sampling at either cut extreme'
     assert.equal(layout.leaves.length, n);
     assert.equal(new Set(layout.leaves.map(leaf => leaf.group)).size, k);
   }
+});
+
+test('large trees lay out quickly, draw the top branches, and still cut every sample', () => {
+  const n = 30_000;
+  // A chain is the worst case for layouts that copy branch members.
+  const merge: [number, number][] = [[-1, -2]];
+  for (let row = 3; row <= n; row++) merge.push([row - 2, -row]);
+  const tree = { n_rows: n, merge, height: merge.map((_, i) => i), order: Array.from({ length: n }, (_, i) => i + 1) };
+  const started = performance.now();
+  for (const [k, drawn] of [[1, 200], [5, 200], [250, 250], [5000, 1000]] as const) {
+    const layout = layoutDendrogram(tree, k)!;
+    assert.ok(layout.truncated);
+    assert.equal(layout.leaves.length, drawn);
+    assert.equal(layout.leaves.reduce((sum, leaf) => sum + leaf.size, 0), n);
+    assert.equal(layout.clusterOfRow.length, n);
+    assert.equal(new Set(layout.clusterOfRow).size, k);
+    assert.ok(layout.height <= drawn * 24 + 200, 'the drawing height follows the drawn leaves');
+    assert.ok(layout.segments.some(segment => segment.collapsed));
+  }
+  assert.ok(performance.now() - started < 5000, 'linear-time layout');
 });

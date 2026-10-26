@@ -94,8 +94,7 @@ export function resultTables(result: AnalysisResult, rows: RowInfo = DEFAULT_ROW
       const sheets: ResultSheet[] = [];
       const layout = layoutDendrogram(data, Math.max(1, Math.min(cutK, data.n_rows)));
       if (layout) {
-        const cluster = new Array<number>(data.n_rows);
-        for (const leaf of layout.leaves) cluster[leaf.row - 1] = leaf.group + 1;
+        const cluster = layout.clusterOfRow.map((group) => group + 1);
         sheets.push({
           id: 'cluster-cut',
           name: `Clusters (cut ${cutK})`,

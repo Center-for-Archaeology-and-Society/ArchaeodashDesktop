@@ -23,8 +23,8 @@ pub use cluster::{
     hclust, hclust_cancellable, hclust_ward_d2, hclust_ward_d2_cancellable, kmeans,
     kmeans_cancellable, pam, pam_with_metric, pam_with_metric_cancellable, silhouette_mean,
     silhouette_mean_cancellable, silhouette_widths, silhouette_widths_cancellable,
-    silhouette_widths_streaming_cancellable, ClusterDiagnostics, Diana, DistanceMetric, Hclust,
-    Kmeans, LinkageMethod, Pam,
+    silhouette_widths_streaming_cancellable, within_pair_ss_cancellable, ClusterDiagnostics, Diana,
+    DistanceMetric, Hclust, Kmeans, LinkageMethod, Pam, DIANA_EXACT_ROWS,
 };
 pub use explore::{
     compositional_profile, crosstab_count, crosstab_value_summary, histogram, missing_profile,

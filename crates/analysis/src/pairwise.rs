@@ -140,3 +140,73 @@ where
         })
         .collect()
 }
+
+/// A zero-filled `len`-value buffer for a distance table, or a clear
+/// `cluster_memory` error when the allocation fails, instead of aborting the
+/// process.
+pub(crate) fn try_zeroed(len: usize) -> Result<Vec<f64>, DomainError> {
+    let mut table = Vec::new();
+    if table.try_reserve_exact(len).is_err() {
+        let gb = len as f64 * std::mem::size_of::<f64>() as f64 / 1e9;
+        return Err(DomainError::validation(
+            "cluster_memory",
+            format!("not enough memory for the {gb:.1} GB pairwise distance table"),
+        ));
+    }
+    table.resize(len, 0.0);
+    Ok(table)
+}
+
+/// Fills each `(row, out)` slice with `fill(row, out)`, rows in parallel.
+/// Used to build condensed distance tables in place (one slice per row of
+/// the triangle), so the table is never copied. Each slice is written by
+/// exactly one call, so the result does not depend on scheduling.
+pub(crate) fn par_fill_rows<F>(
+    rows: Vec<(usize, &mut [f64])>,
+    cancel: &crate::CancellationToken,
+    fill: F,
+) -> Result<(), DomainError>
+where
+    F: Fn(usize, &mut [f64]) + Sync,
+{
+    let total: usize = rows.iter().map(|(_, out)| out.len()).sum();
+    let threads = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
+    // Chunks of roughly equal work, several per thread for balance.
+    let target = (total / (threads * 8)).max(1 << 14);
+    let mut chunks: Vec<Vec<(usize, &mut [f64])>> = Vec::new();
+    let mut current = Vec::new();
+    let mut size = 0usize;
+    for (row, out) in rows {
+        size += out.len();
+        current.push((row, out));
+        if size >= target {
+            chunks.push(std::mem::take(&mut current));
+            size = 0;
+        }
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    let threads = threads.min(chunks.len()).max(1);
+    let queue = std::sync::Mutex::new(chunks.into_iter());
+    let queue = &queue;
+    let fill = &fill;
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(move || loop {
+                if cancel.is_cancelled() {
+                    return;
+                }
+                let next = queue
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .next();
+                let Some(chunk) = next else { return };
+                for (row, out) in chunk {
+                    fill(row, out);
+                }
+            });
+        }
+    });
+    cancel.check()
+}
