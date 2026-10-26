@@ -5,15 +5,27 @@
 //! only in the disposable cache below.
 //!
 //! Cache (Section 6 `CacheStore`): each result is stored under
-//! `.archaeodash/cache/ordination/<kind>/<key>.json`, keyed by the request,
-//! every input file's size and modification time, the engine version, and
-//! `CACHE_VERSION`. Any rewrite of an input file changes the key, so stale
-//! results are never served; the Data Manager can precompute results that
-//! pages then reuse instantly. The cache can be deleted at any time.
+//! `.archaeodash/cache/ordination/<kind>/<key>.json`; the Data Manager can
+//! precompute results that pages then reuse instantly. The cache can be
+//! deleted at any time.
+//!
+//! PCA and UMAP do not depend on group membership, so they run over the
+//! pooled rows in a canonical order (ascending analytical UUID) and are keyed
+//! by content: the request's settings plus every row's UUID and measured
+//! values (see [`content_cache_file`]). Moving rows between group files, or
+//! listing the same files in another order, reuses the cached result; any
+//! change to the rows or their values computes afresh. Results are returned
+//! in request row order. Clustering with a UMAP source shares these entries
+//! ([`cached_umap_layout`]). LDA depends on the group labels and stays keyed
+//! by the request and each input file's size and modification time.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 
-use archaeodash_analysis::{lda, pca, umap, ColumnMatrix, DEFAULT_SEED};
+use archaeodash_analysis::{
+    lda, pca, umap_cancellable, CancellationToken, ColumnMatrix, DEFAULT_SEED,
+};
 use archaeodash_contracts::{
     LdaRequest, LdaResponse, PcaRequest, PcaResponse, TransformationDefinition, UmapRequest,
     UmapResponse,
@@ -34,11 +46,236 @@ fn io_err(e: std::io::Error) -> DomainError {
     DomainError::Internal(Box::new(e))
 }
 
-/// Bump when an ordination algorithm or response shape changes so cached
-/// results from older engines are never served.
-const CACHE_VERSION: &str = "ordination-cache-1";
+/// Bump when an ordination algorithm, response shape, or cache key changes
+/// so cached results from older engines are never served.
+const CACHE_VERSION: &str = "ordination-cache-2";
 /// Most cached results kept per ordination kind; the oldest go first.
 const CACHE_MAX_FILES: usize = 200;
+
+/// Row order the membership-independent ordinations run in: ascending
+/// analytical UUID, ties (copied units) by input position. Copies share
+/// their values too, so the ordered matrix is the same however the rows are
+/// split across files.
+fn canonical_order(data: &GroupFileData) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..data.rows.len()).collect();
+    order.sort_by(|&a, &b| data.rows[a].uuid.cmp(&data.rows[b].uuid).then(a.cmp(&b)));
+    order
+}
+
+fn reordered(data: &GroupFileData, order: &[usize]) -> GroupFileData {
+    GroupFileData {
+        profile: data.profile.clone(),
+        rows: order.iter().map(|&i| data.rows[i].clone()).collect(),
+    }
+}
+
+/// Puts rows computed in canonical order back into input order.
+fn to_input_order(rows: Vec<Vec<f64>>, order: &[usize]) -> Vec<Vec<f64>> {
+    let mut out = vec![Vec::new(); rows.len()];
+    for (row, &i) in rows.into_iter().zip(order) {
+        if let Some(slot) = out.get_mut(i) {
+            *slot = row;
+        }
+    }
+    out
+}
+
+/// Cache file for a membership-independent ordination of `canonical` rows:
+/// keyed by `kind`, the settings in `params`, the elemental column names,
+/// and each row's UUID and measured values in order. File paths, file
+/// modification times, and descriptive values (including group names) are
+/// not part of the key.
+fn content_cache_file(
+    root: &Path,
+    kind: &str,
+    params: &impl Serialize,
+    canonical: &GroupFileData,
+) -> Option<PathBuf> {
+    let mut hasher = Sha256::new();
+    for part in [CACHE_VERSION, env!("CARGO_PKG_VERSION"), kind] {
+        hasher.update(part.as_bytes());
+        hasher.update([0]);
+    }
+    hasher.update(serde_json::to_vec(params).ok()?);
+    hasher.update([0]);
+    let names = &canonical.profile.roles.elemental;
+    hasher.update((names.len() as u64).to_le_bytes());
+    for name in names {
+        hasher.update((name.len() as u64).to_le_bytes());
+        hasher.update(name.as_bytes());
+    }
+    hasher.update((canonical.rows.len() as u64).to_le_bytes());
+    for row in &canonical.rows {
+        hasher.update(row.uuid.as_bytes());
+        hasher.update((row.elemental.len() as u64).to_le_bytes());
+        for value in &row.elemental {
+            match value {
+                Some(v) => {
+                    hasher.update([1]);
+                    hasher.update(v.to_bits().to_le_bytes());
+                }
+                None => hasher.update([0]),
+            }
+        }
+    }
+    Some(
+        root.join(".archaeodash/cache/ordination")
+            .join(kind)
+            .join(format!("{:x}.json", hasher.finalize())),
+    )
+}
+
+fn cache_get<T: DeserializeOwned>(file: Option<&Path>) -> Option<T> {
+    serde_json::from_slice(&std::fs::read(file?).ok()?).ok()
+}
+
+/// Best effort: a failed cache write never fails the ordination.
+fn cache_put<T: Serialize>(file: Option<&Path>, value: &T) {
+    let Some(file) = file else { return };
+    let Ok(bytes) = serde_json::to_vec(value) else {
+        return;
+    };
+    if write_atomic(file, &bytes).is_err() {
+        return;
+    }
+    let Some(dir) = file.parent() else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    if files.len() > CACHE_MAX_FILES {
+        files.sort();
+        for (_, old) in &files[..files.len() - CACHE_MAX_FILES] {
+            let _ = std::fs::remove_file(old);
+        }
+    }
+}
+
+/// Per-entry lock so one result is computed once when two callers ask for
+/// it together (for example the Visualize page and the Data Manager's
+/// precompute after a group change); the second waits, then reads the cache.
+fn entry_lock(file: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(file).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(file.to_path_buf(), Arc::downgrade(&lock));
+    lock
+}
+
+/// The cached value at `file`, or `compute`'s result, stored there. Callers
+/// for the same entry compute it once (see [`entry_lock`]).
+fn cached_or_compute<T: Serialize + DeserializeOwned>(
+    file: Option<&Path>,
+    compute: impl FnOnce() -> Result<T, DomainError>,
+) -> Result<T, DomainError> {
+    if let Some(hit) = cache_get(file) {
+        return Ok(hit);
+    }
+    let Some(file) = file else {
+        return compute();
+    };
+    let lock = entry_lock(file);
+    let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(hit) = cache_get(Some(file)) {
+        return Ok(hit);
+    }
+    let value = compute()?;
+    cache_put(Some(file), &value);
+    Ok(value)
+}
+
+/// UMAP settings that, with the rows, determine the layout. Shared by the
+/// ordination page and clustering so both use the same cache entries.
+#[derive(Serialize)]
+struct UmapKey<'a> {
+    columns: &'a [String],
+    transformation: Option<&'a TransformationDefinition>,
+    seed: u64,
+}
+
+#[derive(Serialize)]
+struct PcaKey<'a> {
+    columns: &'a [String],
+    scale: bool,
+    transformation: Option<&'a TransformationDefinition>,
+}
+
+/// Cached UMAP over `canonical` rows (already in [`canonical_order`]);
+/// computes and stores it on a miss. The response's `path` and
+/// `revision_id` are whatever the computing request had; callers replace
+/// them.
+fn umap_canonical(
+    root: &Path,
+    canonical: &GroupFileData,
+    columns: &[String],
+    transformation: Option<&TransformationDefinition>,
+    seed: u64,
+    context: &str,
+    cancel: &CancellationToken,
+) -> Result<UmapResponse, DomainError> {
+    let key = UmapKey {
+        columns,
+        transformation,
+        seed,
+    };
+    let file = content_cache_file(root, "umap", &key, canonical);
+    cached_or_compute(file.as_deref(), || {
+        let matrix = OrdinationService::input_matrix(canonical, columns, transformation, context)?;
+        let result = umap_cancellable(&matrix, seed, cancel)?;
+        let k = result.config.n_components;
+        Ok(UmapResponse {
+            path: String::new(),
+            revision_id: String::new(),
+            column_names: columns.to_vec(),
+            score_names: (1..=k).map(|i| format!("V{i}")).collect(),
+            embedding: result.layout,
+            seed,
+            n_neighbors: result.config.n_neighbors,
+            n_epochs: result.config.n_epochs,
+            a: result.config.a,
+            b: result.config.b,
+            warnings: result.warnings,
+        })
+    })
+}
+
+/// UMAP layout of `data`'s rows (in `data`'s row order) through the shared
+/// ordination cache under `root`, so clustering with a UMAP source reuses a
+/// layout the Visualize or Ordination page (or precompute) already made for
+/// the same rows, and vice versa.
+pub(crate) fn cached_umap_layout(
+    root: &Path,
+    data: &GroupFileData,
+    columns: &[String],
+    transformation: Option<&TransformationDefinition>,
+    seed: u64,
+    context: &str,
+    cancel: &CancellationToken,
+) -> Result<Vec<Vec<f64>>, DomainError> {
+    let order = canonical_order(data);
+    let canonical = reordered(data, &order);
+    let response = umap_canonical(
+        root,
+        &canonical,
+        columns,
+        transformation,
+        seed,
+        context,
+        cancel,
+    )?;
+    Ok(to_input_order(response.embedding, &order))
+}
 
 /// Ordination use cases rooted at one local project directory, sharing the
 /// transform definition engine with `TransformService`.
@@ -139,8 +376,9 @@ impl OrdinationService {
         Ok((input, matrix))
     }
 
-    /// Cache file for one request over `path` + `extra_paths`; `None` when an
-    /// input file cannot be inspected (the computation then reports it).
+    /// LDA cache file for one request over `path` + `extra_paths`, keyed by
+    /// each input file's size and modification time; `None` when an input
+    /// file cannot be inspected (the computation then reports it).
     fn cache_file(
         &self,
         kind: &str,
@@ -174,84 +412,106 @@ impl OrdinationService {
         )
     }
 
-    fn cache_get<T: DeserializeOwned>(file: Option<&Path>) -> Option<T> {
-        serde_json::from_slice(&std::fs::read(file?).ok()?).ok()
+    /// Reads the request's files as one combined input, checks the
+    /// requested columns, and returns it with its [`canonical_order`] and
+    /// the rows in that order.
+    fn read_canonical(
+        &self,
+        path: &str,
+        extra_paths: &[String],
+        columns: &[String],
+        transformation: Option<&TransformationDefinition>,
+    ) -> Result<(CombinedInput, Vec<usize>, GroupFileData), DomainError> {
+        let input = CombinedInput::read_local(&self.root, path, extra_paths)?;
+        input.require_inputs(columns, transformation)?;
+        let order = canonical_order(&input.data);
+        let canonical = reordered(&input.data, &order);
+        Ok((input, order, canonical))
     }
 
-    /// Best effort: a failed cache write never fails the ordination.
-    fn cache_put<T: Serialize>(file: Option<&Path>, value: &T) {
-        let Some(file) = file else { return };
-        let Ok(bytes) = serde_json::to_vec(value) else {
-            return;
-        };
-        if write_atomic(file, &bytes).is_err() {
-            return;
-        }
-        let Some(dir) = file.parent() else { return };
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
-            .filter_map(Result::ok)
-            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
-            .collect();
-        if files.len() > CACHE_MAX_FILES {
-            files.sort();
-            for (_, old) in &files[..files.len() - CACHE_MAX_FILES] {
-                let _ = std::fs::remove_file(old);
-            }
-        }
-    }
-
-    /// PCA, served from the cache when this exact request already ran on
-    /// the same input files.
+    /// PCA, served from the cache when the same rows (by UUID and measured
+    /// values) were already ordinated with the same settings, whichever
+    /// files hold them.
     pub fn pca(&self, req: &PcaRequest) -> Result<PcaResponse, DomainError> {
-        let file = self.cache_file("pca", req, &req.path, &req.extra_paths);
-        if let Some(hit) = Self::cache_get(file.as_deref()) {
-            return Ok(hit);
-        }
-        let result = self.compute_pca(req)?;
-        Self::cache_put(file.as_deref(), &result);
-        Ok(result)
-    }
-
-    /// LDA, served from the cache when possible (see [`Self::pca`]).
-    pub fn lda(&self, req: &LdaRequest) -> Result<LdaResponse, DomainError> {
-        let file = self.cache_file("lda", req, &req.path, &req.extra_paths);
-        if let Some(hit) = Self::cache_get(file.as_deref()) {
-            return Ok(hit);
-        }
-        let result = self.compute_lda(req)?;
-        Self::cache_put(file.as_deref(), &result);
-        Ok(result)
-    }
-
-    /// UMAP, served from the cache when possible (see [`Self::pca`]). UMAP
-    /// is the slow one, so this is where precomputing pays off most.
-    pub fn umap(&self, req: &UmapRequest) -> Result<UmapResponse, DomainError> {
-        let file = self.cache_file("umap", req, &req.path, &req.extra_paths);
-        if let Some(hit) = Self::cache_get(file.as_deref()) {
-            return Ok(hit);
-        }
-        let result = self.compute_umap(req)?;
-        Self::cache_put(file.as_deref(), &result);
-        Ok(result)
-    }
-
-    /// prcomp-parity PCA (Section 15.4 procedure 6) over one group file.
-    fn compute_pca(&self, req: &PcaRequest) -> Result<PcaResponse, DomainError> {
         if req.columns.is_empty() {
             return Err(validation(
                 "ordination_empty",
                 "PCA requires at least one column",
             ));
         }
-        let (input, matrix) = self.read_inputs(
+        let (input, order, canonical) = self.read_canonical(
             &req.path,
             &req.extra_paths,
             &req.columns,
             req.transformation.as_ref(),
+        )?;
+        let key = PcaKey {
+            columns: &req.columns,
+            scale: req.scale,
+            transformation: req.transformation.as_ref(),
+        };
+        let file = content_cache_file(&self.root, "pca", &key, &canonical);
+        let mut result: PcaResponse = cached_or_compute(file.as_deref(), || {
+            Self::compute_pca(req, &canonical, &input.context())
+        })?;
+        result.scores = to_input_order(result.scores, &order);
+        result.path = req.path.clone();
+        result.revision_id = input.data.profile.revision_id.clone();
+        Ok(result)
+    }
+
+    /// LDA, served from the cache when this exact request already ran on
+    /// the same input files.
+    pub fn lda(&self, req: &LdaRequest) -> Result<LdaResponse, DomainError> {
+        let file = self.cache_file("lda", req, &req.path, &req.extra_paths);
+        cached_or_compute(file.as_deref(), || self.compute_lda(req))
+    }
+
+    /// UMAP, served from the cache when possible (see [`Self::pca`]). UMAP
+    /// is the slow one, so this is where precomputing pays off most.
+    ///
+    /// Legacy `umap::umap(method = "naive")` parity (Section 15.4 procedure
+    /// 7, class D), with a deterministic seed replacing the legacy unseeded
+    /// global stream.
+    pub fn umap(&self, req: &UmapRequest) -> Result<UmapResponse, DomainError> {
+        if req.columns.is_empty() {
+            return Err(validation(
+                "ordination_empty",
+                "UMAP requires at least one column",
+            ));
+        }
+        let (input, order, canonical) = self.read_canonical(
+            &req.path,
+            &req.extra_paths,
+            &req.columns,
+            req.transformation.as_ref(),
+        )?;
+        let mut result = umap_canonical(
+            &self.root,
+            &canonical,
+            &req.columns,
+            req.transformation.as_ref(),
+            req.seed.unwrap_or(DEFAULT_SEED),
+            &input.context(),
+            &CancellationToken::new(),
+        )?;
+        result.embedding = to_input_order(result.embedding, &order);
+        result.path = req.path.clone();
+        result.revision_id = input.data.profile.revision_id.clone();
+        Ok(result)
+    }
+
+    /// prcomp-parity PCA (Section 15.4 procedure 6) over `canonical` rows.
+    fn compute_pca(
+        req: &PcaRequest,
+        canonical: &GroupFileData,
+        context: &str,
+    ) -> Result<PcaResponse, DomainError> {
+        let matrix = Self::input_matrix(
+            canonical,
+            &req.columns,
+            req.transformation.as_ref(),
+            context,
         )?;
         let result = pca(&matrix, req.scale)?;
 
@@ -272,7 +532,7 @@ impl OrdinationService {
 
         Ok(PcaResponse {
             path: req.path.clone(),
-            revision_id: input.data.profile.revision_id.clone(),
+            revision_id: canonical.profile.revision_id.clone(),
             column_names: req.columns.clone(),
             score_names,
             sdev: result.sdev,
@@ -323,41 +583,6 @@ impl OrdinationService {
             svd: result.svd,
             score_names,
             scores: result.scores,
-            warnings: result.warnings,
-        })
-    }
-
-    /// Legacy `umap::umap(method = "naive")` parity (Section 15.4 procedure
-    /// 7, class D) over one group file, with a deterministic seed replacing
-    /// the legacy unseeded global stream.
-    fn compute_umap(&self, req: &UmapRequest) -> Result<UmapResponse, DomainError> {
-        if req.columns.is_empty() {
-            return Err(validation(
-                "ordination_empty",
-                "UMAP requires at least one column",
-            ));
-        }
-        let (input, matrix) = self.read_inputs(
-            &req.path,
-            &req.extra_paths,
-            &req.columns,
-            req.transformation.as_ref(),
-        )?;
-        let seed = req.seed.unwrap_or(DEFAULT_SEED);
-        let result = umap(&matrix, seed)?;
-        let k = result.config.n_components;
-
-        Ok(UmapResponse {
-            path: req.path.clone(),
-            revision_id: input.data.profile.revision_id.clone(),
-            column_names: req.columns.clone(),
-            score_names: (1..=k).map(|i| format!("V{i}")).collect(),
-            embedding: result.layout,
-            seed,
-            n_neighbors: result.config.n_neighbors,
-            n_epochs: result.config.n_epochs,
-            a: result.config.a,
-            b: result.config.b,
             warnings: result.warnings,
         })
     }
@@ -421,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn results_are_cached_per_request_and_input_file_state() {
+    fn results_are_cached_per_request_and_row_content() {
         let (service, dir, path) = service_with_merged_group();
         let cache = dir.join(".archaeodash/cache/ordination/pca");
         let count = || std::fs::read_dir(&cache).map(|d| d.count()).unwrap_or(0);
@@ -443,12 +668,13 @@ mod tests {
             .expect("entry")
             .path();
         let mut planted = first.clone();
-        planted.revision_id = "from-cache".into();
+        planted.sdev[0] = 12345.0;
         std::fs::write(&entry, serde_json::to_vec(&planted).expect("json")).expect("plant");
-        assert_eq!(
-            service.pca(&request).expect("cached").revision_id,
-            "from-cache"
-        );
+        let cached = service.pca(&request).expect("cached");
+        assert_eq!(cached.sdev[0], 12345.0);
+        // Path and revision always describe the current request.
+        assert_eq!(cached.path, path);
+        assert_eq!(cached.revision_id, first.revision_id);
         // A different request gets its own entry.
         service
             .pca(&PcaRequest {
@@ -457,15 +683,202 @@ mod tests {
             })
             .expect("scaled");
         assert_eq!(count(), 2);
-        // Rewriting the group file invalidates its entries.
+        // Rewriting the group file with the same rows keeps the entry: the
+        // key is the row content, not the file's modification time.
         std::thread::sleep(std::time::Duration::from_millis(20));
         let bytes = std::fs::read(dir.join(&path)).expect("read group");
         std::fs::write(dir.join(&path), &bytes).expect("rewrite group");
-        let fresh = service.pca(&request).expect("recomputed");
-        assert_eq!(fresh.revision_id, first.revision_id);
-        assert_eq!(count(), 3);
+        assert_eq!(service.pca(&request).expect("cached").sdev[0], 12345.0);
+        assert_eq!(count(), 2);
         // The cache never touches the group file itself.
         assert_eq!(std::fs::read(dir.join(&path)).expect("read group"), bytes);
+    }
+
+    #[test]
+    fn content_key_tracks_rows_and_values_but_not_files_or_labels() {
+        let (_service, dir, path) = service_with_merged_group();
+        let data = archaeodash_data_io::read_group_file(&dir.join(&path)).expect("read");
+        let key = |d: &GroupFileData| {
+            let order = canonical_order(d);
+            content_cache_file(&dir, "pca", &("as", false), &reordered(d, &order)).expect("key")
+        };
+        let base = key(&data);
+        // Same rows in another order: same key.
+        let mut shuffled = data.clone();
+        shuffled.rows.reverse();
+        assert_eq!(key(&shuffled), base);
+        // File identity and descriptive values (group names) are not keyed.
+        let mut relabelled = data.clone();
+        relabelled.profile.revision_id = "other".into();
+        relabelled.profile.group_name = "Other".into();
+        for row in &mut relabelled.rows {
+            for cell in &mut row.descriptive {
+                *cell = Some("Z".into());
+            }
+        }
+        assert_eq!(key(&relabelled), base);
+        // A changed measured value, a missing value, or a dropped row is.
+        let mut changed = data.clone();
+        changed.rows[0].elemental[0] = Some(99.0);
+        assert_ne!(key(&changed), base);
+        let mut missing = data.clone();
+        missing.rows[0].elemental[0] = None;
+        assert_ne!(key(&missing), base);
+        let mut fewer = data.clone();
+        fewer.rows.pop();
+        assert_ne!(key(&fewer), base);
+        // So are the settings and the ordination kind.
+        let order = canonical_order(&data);
+        let canonical = reordered(&data, &order);
+        assert_ne!(
+            content_cache_file(&dir, "pca", &("as", true), &canonical),
+            Some(base.clone())
+        );
+        assert_ne!(
+            content_cache_file(&dir, "umap", &("as", false), &canonical),
+            Some(base)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 30 rows in three sites (one group file each), enough for UMAP.
+    fn service_with_umap_groups() -> (OrdinationService, std::path::PathBuf, Vec<String>) {
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "archaeodash-ordination-umap-{}-{n}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let mut csv = String::from("anid,Site,as,fe,zn\n");
+        for i in 0..30u32 {
+            let site = ["A", "B", "C"][(i % 3) as usize];
+            let offset = f64::from(i % 3) * 10.0;
+            let jitter = f64::from((i * 7) % 11) * 0.37;
+            csv.push_str(&format!(
+                "S{i},{site},{},{},{}\n",
+                offset + jitter,
+                offset * 0.5 + f64::from((i * 5) % 13) * 0.21,
+                3.0 + f64::from((i * 3) % 17) * 0.11
+            ));
+        }
+        std::fs::write(dir.join("umap.csv"), csv).expect("write source");
+        let import = crate::import::ImportService::new(&dir).expect("import service");
+        let commit = import
+            .commit(&ImportCommitRequest {
+                sheet: None,
+                source: "umap.csv".into(),
+                group_column: "Site".into(),
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+                group_name: None,
+            })
+            .expect("commit");
+        let paths = commit.groups.iter().map(|g| g.path.clone()).collect();
+        (
+            OrdinationService::new(&dir).expect("ordination service"),
+            dir,
+            paths,
+        )
+    }
+
+    /// Rows of one ordination keyed by analytical UUID.
+    fn by_uuid(
+        dir: &Path,
+        paths: &[String],
+        rows: &[Vec<f64>],
+    ) -> std::collections::HashMap<String, Vec<f64>> {
+        let input = CombinedInput::read_local(dir, &paths[0], &paths[1..]).expect("read");
+        assert_eq!(input.data.rows.len(), rows.len());
+        input
+            .data
+            .rows
+            .iter()
+            .zip(rows)
+            .map(|(r, v)| (r.uuid.to_string(), v.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn moving_rows_between_groups_reuses_pca_and_umap() {
+        let (service, dir, paths) = service_with_umap_groups();
+        assert_eq!(paths.len(), 3);
+        let entries = |kind: &str| {
+            std::fs::read_dir(dir.join(".archaeodash/cache/ordination").join(kind))
+                .map(|d| d.count())
+                .unwrap_or(0)
+        };
+        let columns: Vec<String> = vec!["as".into(), "fe".into(), "zn".into()];
+        let umap_req = |paths: &[String]| UmapRequest {
+            path: paths[0].clone(),
+            columns: columns.clone(),
+            transformation: None,
+            seed: Some(7),
+            extra_paths: paths[1..].to_vec(),
+        };
+        let pca_req = |paths: &[String]| PcaRequest {
+            path: paths[0].clone(),
+            columns: columns.clone(),
+            scale: true,
+            transformation: None,
+            extra_paths: paths[1..].to_vec(),
+        };
+        let umap0 = service.umap(&umap_req(&paths)).expect("umap");
+        let pca0 = service.pca(&pca_req(&paths)).expect("pca");
+        let umap_rows = by_uuid(&dir, &paths, &umap0.embedding);
+        let pca_rows = by_uuid(&dir, &paths, &pca0.scores);
+        assert_eq!((entries("umap"), entries("pca")), (1, 1));
+
+        // The same files in another order: cached, rows follow the request.
+        let reversed: Vec<String> = paths.iter().rev().cloned().collect();
+        let umap1 = service.umap(&umap_req(&reversed)).expect("umap");
+        assert_eq!(by_uuid(&dir, &reversed, &umap1.embedding), umap_rows);
+        assert_eq!(umap1.path, reversed[0]);
+
+        // Move three units from the first group to the second.
+        let source = archaeodash_data_io::read_group_file(&dir.join(&paths[0])).expect("read");
+        let groups = GroupService::new(&dir).expect("group service");
+        groups
+            .transfer_units(&archaeodash_contracts::TransferUnitsRequest {
+                action: archaeodash_contracts::TransferAction::Move,
+                source_path: paths[0].clone(),
+                destination_path: paths[1].clone(),
+                destination_group_name: None,
+                selected_uuids: source.rows[..3]
+                    .iter()
+                    .map(|r| r.uuid.to_string())
+                    .collect(),
+                expected_source_revision: source.profile.revision_id.clone(),
+            })
+            .expect("move");
+        let umap2 = service.umap(&umap_req(&paths)).expect("umap");
+        let pca2 = service.pca(&pca_req(&paths)).expect("pca");
+        assert_eq!(by_uuid(&dir, &paths, &umap2.embedding), umap_rows);
+        assert_eq!(by_uuid(&dir, &paths, &pca2.scores), pca_rows);
+        assert_eq!((entries("umap"), entries("pca")), (1, 1), "no recompute");
+
+        // Clustering's UMAP source shares the entry.
+        let input = CombinedInput::read_local(&dir, &paths[0], &paths[1..]).expect("read");
+        let layout = cached_umap_layout(
+            &dir,
+            &input.data,
+            &columns,
+            None,
+            7,
+            "test",
+            &CancellationToken::new(),
+        )
+        .expect("layout");
+        assert_eq!(by_uuid(&dir, &paths, &layout), umap_rows);
+        assert_eq!(entries("umap"), 1);
+
+        // A different row set is computed afresh.
+        let fewer = service.umap(&umap_req(&paths[..2])).expect("umap");
+        assert_eq!(entries("umap"), 2);
+        assert_eq!(fewer.embedding.len(), 20);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

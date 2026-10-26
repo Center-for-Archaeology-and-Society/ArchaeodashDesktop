@@ -8,7 +8,7 @@
  * assignment of the selected units to an existing or new group via the
  * atomic transfer-units transaction.
  */
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import type {
   ExportsService,
   GroupRowDto,
@@ -22,6 +22,7 @@ import { notifyGroupsChanged } from '../data-manager/events.ts';
 import { selectionBySource } from './combine.ts';
 import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
 import { useGroupFiles } from '../datasets/useGroupFiles.ts';
+import { realignByUuid, rowContentKey, rowGroupKey } from '../datasets/rowKeys.ts';
 
 export { GroupMultiSelect };
 import { VisualizeScatter, type ScatterPoint, type ScatterTraceSpec } from './VisualizeScatter.tsx';
@@ -170,12 +171,20 @@ const AXIS_SOURCES: readonly [AxisSource, string][] = [
   ['lda', 'LDA'],
 ];
 
-/** Ordination scores aligned with the combined rows. */
+/** Ordination scores for the rows `uuids` (in the order they were requested). */
 interface Scores {
   readonly names: string[];
   readonly labels: string[];
+  readonly uuids: string[];
   readonly values: number[][];
   readonly note?: string;
+}
+
+/** Transformed element values for the rows `uuids`, row-major. */
+interface TransformedRows {
+  readonly uuids: string[];
+  readonly columns: string[];
+  readonly rows: (number | null)[][];
 }
 
 function errorText(err: unknown): string {
@@ -220,10 +229,24 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
   }, [ready, createdTarget]);
   const loadState = dataset.load;
   const analysisSetup = useAnalysisSetup();
-  const setupInput = useMemo(
+  // Results that depend only on the loaded samples and their values (PCA,
+  // UMAP, element transforms) are keyed by `contentKey`, so moving samples
+  // between groups does not recompute them; LDA also depends on the groups.
+  const rowUuids = useMemo(() => combined.rows.map((r) => r.analytical_uuid), [combined]);
+  const contentKey = useMemo(() => rowContentKey(combined), [combined]);
+  const groupKey = useMemo(() => rowGroupKey(combined), [combined]);
+  // The rows a content-keyed request reads (current at request time).
+  const loadedRef = useRef({ files, rowUuids });
+  loadedRef.current = { files, rowUuids };
+  const setupInputFresh = useMemo(
     () => analysisInput(analysisSetup.setup, combined.elementalColumns),
     [analysisSetup.setup, combined.elementalColumns],
   );
+  // Same object while the setup's content is unchanged (a reload rebuilds
+  // the column list), so effects keyed on it do not re-run.
+  const setupInputKey = JSON.stringify(setupInputFresh);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const setupInput = useMemo(() => setupInputFresh, [setupInputKey]);
 
   // Element axes use the Analysis setup's elements; with a transform, values
   // come from the backend over all loaded groups pooled (like ordination).
@@ -237,32 +260,38 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       }),
     };
   }, [setupInput.elements, combined]);
-  const [transformedView, setTransformedView] = useState<AsyncState<ElementView>>({ kind: 'idle' });
+  const [transformed, setTransformed] = useState<AsyncState<TransformedRows>>({ kind: 'idle' });
   useEffect(() => {
     const definition = setupInput.transformation;
     const apply = deps.transformations?.apply;
-    const [first, ...rest] = files.map((f) => f.path);
+    const { files: current, rowUuids: uuids } = loadedRef.current;
+    const [first, ...rest] = current.map((f) => f.path);
     if (!definition || !apply || !first || setupInput.columns.length === 0) {
-      setTransformedView({ kind: 'idle' });
+      setTransformed({ kind: 'idle' });
       return;
     }
     let cancelled = false;
-    setTransformedView({ kind: 'loading' });
+    setTransformed({ kind: 'loading' });
     apply({ path: first, extra_paths: rest, definition })
       .then((r) => {
-        if (cancelled) return;
-        setTransformedView({
-          kind: 'loaded',
-          data: { columns: r.columns, values: r.columns.map((_, j) => r.rows.map((row) => row[j] ?? null)) },
-        });
+        if (!cancelled) setTransformed({ kind: 'loaded', data: { uuids, columns: r.columns, rows: r.rows } });
       })
       .catch((err: unknown) => {
-        if (!cancelled) setTransformedView({ kind: 'error', message: errorText(err) });
+        if (!cancelled) setTransformed({ kind: 'error', message: errorText(err) });
       });
     return () => {
       cancelled = true;
     };
-  }, [deps, files, setupInput]);
+  }, [deps, contentKey, setupInput]);
+  const transformedView = useMemo((): AsyncState<ElementView> => {
+    if (transformed.kind !== 'loaded') return transformed;
+    const { uuids, columns, rows } = transformed.data;
+    const aligned = realignByUuid(uuids, rows, rowUuids);
+    return {
+      kind: 'loaded',
+      data: { columns, values: columns.map((_, j) => aligned.map((row) => row?.[j] ?? null)) },
+    };
+  }, [transformed, rowUuids]);
   const elementView: ElementView =
     setupInput.transformation && transformedView.kind === 'loaded' ? transformedView.data
       : setupInput.transformation ? EMPTY_VIEW
@@ -271,21 +300,25 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
   // A new set of rows invalidates the current selection.
   useEffect(() => {
     setSelection(clearSelection({ uuids: new Set() }));
-  }, [files]);
+  }, [contentKey]);
   const colors = useMemo(() => paletteColors(paletteTheme, combined.groupNames.length), [combined, paletteTheme]);
   const colorOf = useCallback(
     (group: string) => colors[combined.groupNames.indexOf(group)] ?? '#888',
     [colors, combined],
   );
 
-  // Ordination scores over all loaded groups (one request, rows in file order).
+  // Ordination scores over all loaded groups (one request), kept by row UUID.
+  // PCA and UMAP re-run only when the samples, their values, or the setup
+  // change; LDA (grouped by file) also when samples change group.
+  const scoresRowsKey = source === 'lda' ? groupKey : contentKey;
   useEffect(() => {
-    if (source === 'elements' || files.length === 0 || !analysisSetup.loaded) {
+    const { files: current, rowUuids: uuids } = loadedRef.current;
+    if (source === 'elements' || current.length === 0 || !analysisSetup.loaded) {
       setScores({ kind: 'idle' });
       return;
     }
     const columns = setupInput.columns;
-    const [first, ...rest] = files.map((f) => f.path);
+    const [first, ...rest] = current.map((f) => f.path);
     if (!first || columns.length < 2) {
       setScores({ kind: 'error', message: 'Ordination needs at least two selected elements shared by the loaded groups.' });
       return;
@@ -301,6 +334,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
           labels: r.score_names.map(
             (n, i) => `${n} (${((r.explained_variance[i] ?? 0) * 100).toFixed(1)}%)`,
           ),
+          uuids,
           values: r.scores,
         };
       }
@@ -309,17 +343,19 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
         return {
           names: r.score_names,
           labels: r.score_names.map((n) => `UMAP ${n}`),
+          uuids,
           values: r.embedding,
           note: r.warnings.join('; ') || undefined,
         };
       }
-      if (files.length < 3) {
+      if (current.length < 3) {
         throw new Error('LDA needs at least three groups; select more groups in Dataset.');
       }
       const r = await deps.ordination.lda({ ...base, group_column: '', group_by_file: true });
       return {
         names: r.score_names,
         labels: r.score_names,
+        uuids,
         values: r.scores,
         note: r.warnings.join('; ') || undefined,
       };
@@ -334,7 +370,11 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [deps, source, files, combined, setupInput, analysisSetup.loaded]);
+  }, [deps, source, scoresRowsKey, setupInput, analysisSetup.loaded]);
+  const scoreRows = useMemo(
+    () => (scores.kind === 'loaded' ? realignByUuid(scores.data.uuids, scores.data.values, rowUuids) : []),
+    [scores, rowUuids],
+  );
 
   // Reset axes to the first two dimensions whenever the axis source changes.
   useEffect(() => {
@@ -391,11 +431,10 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
   const coordinate = useCallback(
     (rowIdx: number, axis: number): number | null => {
       if (source === 'elements') return elementView.values[axis]?.[rowIdx] ?? null;
-      if (scores.kind !== 'loaded') return null;
-      const v = scores.data.values[rowIdx]?.[axis];
+      const v = scoreRows[rowIdx]?.[axis];
       return v === undefined || !Number.isFinite(v) ? null : v;
     },
-    [source, elementView, scores],
+    [source, elementView, scoreRows],
   );
 
   const axisNames = useMemo(
@@ -454,7 +493,6 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       }));
   }, [combined, filteredIdx, coordinate, xIdx, yIdx, symbolColumn, symbolLevels, labelColumnName, showLabels, ellipseOn, ellipseLevel, colorOf, axisNames]);
 
-  const rowUuids = useMemo(() => combined.rows.map((r) => r.analytical_uuid), [combined]);
   const selectUuids = useCallback((uuids: readonly string[]) => setSelection(replaceSelection(uuids)), []);
   const clearSelected = useCallback(() => setSelection(emptySelection()), []);
 
@@ -529,9 +567,10 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       setSelection(replaceSelection([]));
       setAssignState({ kind: 'loaded', data: outcome.moved });
       // Rescan (a new group may exist, an emptied one may be gone) and keep
-      // the current selection plus the destination group.
+      // the current selection plus the destination group. The new revisions
+      // reload only the files that changed; plot coordinates are kept by
+      // sample, so PCA and UMAP are not recomputed.
       await rescan(keep);
-      dataset.reload();
       notifyGroupsChanged();
     } catch (err: unknown) {
       setAssignState({ kind: 'error', message: errorText(err) });

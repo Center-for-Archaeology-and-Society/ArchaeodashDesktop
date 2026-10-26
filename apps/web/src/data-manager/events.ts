@@ -1,8 +1,9 @@
 /**
  * Cross-page "project group files changed" signal. Pages that rewrite group
  * files outside the sidebar (e.g. Visualize & Assign) call
- * `notifyGroupsChanged()` so the Data Manager file tree rescans. The page
- * that fired it already holds fresh data, so the shell does not remount it.
+ * `notifyGroupsChanged()` so the Data Manager file tree and every page's
+ * group list (`useGroupFiles`) rescan. Nothing is remounted, so results that
+ * do not depend on group membership are kept.
  */
 export const GROUPS_CHANGED_EVENT = 'archaeodash:groups-changed';
 

@@ -14,6 +14,7 @@ import { combineGroupFiles, type CombinedRows, type LoadedGroupFile } from '../v
 import { includedAmong, useGroupInclusion } from './GroupInclusion.tsx';
 import { activeFolderAmong, exclusionWithin, folderOf } from './folders.ts';
 import { useDataCache } from './DataCache.tsx';
+import { onGroupsChanged } from '../data-manager/events.ts';
 
 export type GroupFilesLoad =
   | { kind: 'idle' }
@@ -115,6 +116,11 @@ export function useGroupFiles(groups: GroupsService): GroupFiles {
   useEffect(() => {
     void rescan().catch(() => setCandidates([]));
   }, [rescan]);
+  // Another page changed group files (e.g. moved samples): pick up the new
+  // revisions. Pages stay mounted in the background, and without this they
+  // would keep showing the old rows. Only changed files are re-read, and
+  // results keyed by row content (rowKeys.ts) are not recomputed.
+  useEffect(() => onGroupsChanged(() => void rescan().catch(() => undefined)), [rescan]);
 
   const orderedPaths = useMemo(
     () => ready.map((c) => c.path).filter((p) => selectedPaths.includes(p)),

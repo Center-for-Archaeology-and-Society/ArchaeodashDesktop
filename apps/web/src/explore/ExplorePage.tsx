@@ -39,6 +39,7 @@ import {
 } from '../visualize/combine.ts';
 import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
 import { useGroupFiles } from '../datasets/useGroupFiles.ts';
+import { rowContentKey } from '../datasets/rowKeys.ts';
 import { HiddenIdNote } from './HiddenIdNote.tsx';
 import { CellAutosave, cellKey } from './autosave.ts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
@@ -516,6 +517,15 @@ export function exploreKey(kind: string, revKey: string, request: unknown): stri
 }
 
 /**
+ * Cache key for a histogram: it depends only on the loaded samples' measured
+ * values (`rowContentKey`), not on which group files hold them, so moving
+ * samples between groups or editing descriptive cells reuses it.
+ */
+export function histogramKey(contentKey: string, column: string, bins: number): string {
+  return exploreKey('histogram', contentKey, { column, bins, binning: 'equal_width' });
+}
+
+/**
  * Missing-value profile, computed from the rows already loaded (no backend
  * round trip), so the tab opens instantly however large the dataset is.
  */
@@ -656,6 +666,7 @@ function useExploreWarmup(
   columns: string[],
   profileGroupColumn: string,
   revKey: string,
+  contentKey: string,
   rowCount: number,
 ): void {
   const cache = useDataCache();
@@ -666,7 +677,7 @@ function useExploreWarmup(
       for (const column of columns) {
         if (cancelled) return;
         const request = histogramRequest(input, column, DEFAULT_BINS);
-        await cache.result(exploreKey('histogram', revKey, request), () => deps.explore.histogram(request)).catch(() => undefined);
+        await cache.result(histogramKey(contentKey, column, DEFAULT_BINS), () => deps.explore.histogram(request)).catch(() => undefined);
       }
       // The profile response has one entry per row and element; only warm it
       // when that stays modest.
@@ -677,7 +688,7 @@ function useExploreWarmup(
     return () => {
       cancelled = true;
     };
-  }, [cache, ready, input, columns, profileGroupColumn, revKey, rowCount, deps]);
+  }, [cache, ready, input, columns, profileGroupColumn, revKey, contentKey, rowCount, deps]);
 }
 
 /** Histogram with the legacy bins 2–100, default 30. */
@@ -685,12 +696,12 @@ function HistogramView({
   deps,
   input,
   columns,
-  revKey,
+  contentKey,
 }: {
   deps: ExploreDeps;
   input: InputPaths;
   columns: string[];
-  revKey: string;
+  contentKey: string;
 }): ReactElement {
   const [column, setColumn] = useValidChoice(columns, columns[0] ?? '');
   // The typed text is kept as is (it may be empty or out of range while
@@ -702,7 +713,7 @@ function HistogramView({
   const showBinsError = binsInvalid && (binsTouched || binsText.trim() !== '');
   const request = useMemo(() => histogramRequest(input, column, bins), [input, column, bins]);
   const state: AsyncState<ExploreHistogramResponse> = useCachedResult(
-    column ? exploreKey('histogram', revKey, request) : null,
+    column ? histogramKey(contentKey, column, bins) : null,
     () => deps.explore.histogram(request),
   );
 
@@ -1073,11 +1084,12 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
 
   // Saved table edits change revisions, so results recompute after them.
   const revKey = autosave.revisionsKey;
+  const contentKey = useMemo(() => rowContentKey(combined), [combined]);
   const profileGroupColumn = files.length > 1 ? combined.groupColumn : '';
   // Warm the other tabs in the background once the data is in: every
   // element's default histogram, then the default profile plot. Results are
   // cached with the file revisions, so tabs and field changes open at once.
-  useExploreWarmup(deps, load.kind === 'loaded' && files.length > 0 && savesSettled, input, plotColumns, profileGroupColumn, revKey, combined.rows.length);
+  useExploreWarmup(deps, load.kind === 'loaded' && files.length > 0 && savesSettled, input, plotColumns, profileGroupColumn, revKey, contentKey, combined.rows.length);
 
   return (
     <section className="page" aria-labelledby="explore-heading">
@@ -1119,7 +1131,7 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
           <TabPanels active={view} panels={{
             table: () => <DataTable files={files} deps={deps} autosave={autosave} onReload={dataset.reload} />,
             missing: () => <MissingView combined={combined} columns={plotColumns} />,
-            histogram: () => <HistogramView deps={deps} input={input} columns={plotColumns} revKey={revKey} />,
+            histogram: () => <HistogramView deps={deps} input={input} columns={plotColumns} contentKey={contentKey} />,
             crosstab: () => <CrosstabView deps={deps} input={input} data={data} defaultGroupColumn={defaultGroupColumn(combined)} revKey={revKey} />,
             profile: () => (
               <ProfileView

@@ -5,6 +5,7 @@ import {
 import { moveAcrossSources } from './multi-source-move.ts';
 import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
 import { useGroupFiles } from '../datasets/useGroupFiles.ts';
+import { rowContentKey } from '../datasets/rowKeys.ts';
 import { asRowsResponse, defaultGroupColumn, inputPaths } from '../visualize/combine.ts';
 import { notifyGroupsChanged } from '../data-manager/events.ts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
@@ -211,6 +212,11 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   const { files, combined, candidates } = dataset;
   const paths = useMemo(() => dataset.ready.map(c => c.path), [dataset.ready]);
   const multiSource = files.length > 1;
+  // Which samples are loaded and their values; unchanged when samples only
+  // move between groups (see rowKeys.ts).
+  const contentKey = useMemo(() => rowContentKey(combined), [combined]);
+  const filesRef = useRef(files);
+  filesRef.current = files;
   const data = useMemo(
     () => (dataset.load.kind === 'loaded' && files.length > 0 ? asRowsResponse(files, combined) : null),
     [dataset.load.kind, files, combined],
@@ -266,6 +272,8 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   const [cutK, setCutK] = useState(2);
   const moving = useRef(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  // Rows key of the inputs `result` was computed from.
+  const [resultRowsKey, setResultRowsKey] = useState('');
   const generation = useRef(0);
   useEffect(() => {
     let active = true;
@@ -273,26 +281,45 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
       .then(found => { if (active) setDefinitions(found); }).catch(e => { if (active) setError(`Could not load transformations: ${String(e)}`); });
     return () => { active = false; generation.current++; activeJob.current?.abort(); };
   }, [deps]);
-  // New rows (selection change or a committed move): reset settings. With
+  // New samples (a Dataset change) or a new setup: reset settings. With
   // several groups the synthetic group column is the default grouping.
+  // Samples moving between groups keep the settings.
   const defaultGroup = defaultGroupColumn(combined);
+  const settingsData = useRef<{ key: string; setup: unknown } | null>(null);
   useEffect(() => {
     if (!data) return;
-    setGroup(defaultGroup);
-    setId(defaultIdColumn(data, uniqueIdColumns(data))); setSourceGroup(defaultGroup); setPlotGroup(defaultGroup); setProjection(null);
-    setDefinitionName(analysisSetup.setup ? ANALYSIS_SETUP_NAME : '');
-  }, [data, defaultGroup, analysisSetup.setup]);
+    const ids = uniqueIdColumns(data);
+    const previous = settingsData.current;
+    settingsData.current = { key: contentKey, setup: analysisSetup.setup };
+    if (!previous || previous.key !== contentKey || previous.setup !== analysisSetup.setup) {
+      setGroup(defaultGroup);
+      setId(defaultIdColumn(data, ids)); setSourceGroup(defaultGroup); setPlotGroup(defaultGroup); setProjection(null);
+      setDefinitionName(analysisSetup.setup ? ANALYSIS_SETUP_NAME : '');
+      return;
+    }
+    // Same samples: keep each choice unless its column is gone.
+    const has = (c: string) => data.descriptive_columns.includes(c);
+    setGroup(g => (has(g) ? g : defaultGroup));
+    setSourceGroup(g => (has(g) ? g : defaultGroup));
+    setPlotGroup(g => (g === '' || has(g) ? g : defaultGroup));
+    setId(i => (ids.includes(i) ? i : defaultIdColumn(data, ids)));
+  }, [data, contentKey, defaultGroup, analysisSetup.setup]);
   useEffect(() => { if (dataset.load.kind === 'error') setError(dataset.load.message); }, [dataset.load]);
-  // PCA of the same inputs the analysis uses, for "First n PCs (var% / cum%)" labels.
+  // PCA of the same inputs the analysis uses, for "First n PCs (var% / cum%)"
+  // labels. Keyed by content, so a reload or a move between groups (same
+  // samples, same values) does not re-run it or reset the component count.
+  const pcaInputKey = data && columns.length ? JSON.stringify([contentKey, columns, definition]) : '';
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const pcaInput = useMemo(() => (pcaInputKey ? { columns, definition } : null), [pcaInputKey]);
   useEffect(() => {
     setPcaVariance(null);
-    if (source !== 'pca' || !data || !columns.length || !deps.ordination) return;
+    if (source !== 'pca' || !pcaInput || !deps.ordination) return;
     let active = true;
-    deps.ordination.pca({ ...inputPaths(files), columns, transformation: definition, scale: false })
+    deps.ordination.pca({ ...inputPaths(filesRef.current), columns: pcaInput.columns, transformation: pcaInput.definition, scale: false })
       .then(fitted => { if (active) setPcaVariance({ explained: fitted.explained_variance, cumulative: fitted.cumulative_variance }); })
       .catch(() => { /* Unlabelled choices remain. */ });
     return () => { active = false; };
-  }, [source, data, files, columns, definition, deps.ordination]);
+  }, [source, pcaInput, deps.ordination]);
   const pcMax = !data ? 0 : pcaVariance?.explained.length || Math.max(1, Math.min(columns.length, data.rows.length));
   // Default to every component (GroupMembership.R / EuclideanDistance.R).
   useEffect(() => { if (pcMax) setPcCount(pcMax); }, [pcMax]);
@@ -311,9 +338,15 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   }, [combined]);
 
   function reset() { activeJob.current?.abort(); activeJob.current = null; generation.current++; setResult(null); setReviewing(false); setError(''); setNotice(''); setBusy(false); }
+  // A result stays valid while the same samples are loaded; a Dataset change
+  // that adds or removes samples clears it.
+  useEffect(() => {
+    if (result && resultRowsKey !== contentKey) { setResult(null); setReviewing(false); }
+  }, [result, resultRowsKey, contentKey]);
   async function run(diagnostics = false) {
     if (activeJob.current || moving.current) return;
     const ticket = ++generation.current;
+    const rowsKey = contentKey;
     setBusy(true); setError(''); setNotice(''); setReviewing(false); setCutK(2); setResult(null);
     try {
       // UMAP always uses the Ordination embedding's seed; the clustering seed is separate.
@@ -337,7 +370,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
         : output.kind === 'cluster_diagnostics' ? { kind: 'diagnostics', data: output.result }
         : output.kind === 'membership_probabilities' ? { kind: 'membership', data: output.result }
         : { kind: 'euclidean', data: output.result };
-      if (ticket === generation.current) setResult(next);
+      if (ticket === generation.current) { setResult(next); setResultRowsKey(rowsKey); }
     } catch (e) { if (ticket === generation.current) { if (e instanceof DOMException && e.name === 'AbortError') setNotice('Analysis cancelled.'); else setError(String(e)); } }
     finally { if (ticket === generation.current) { setBusy(false); setCancelling(false); activeJob.current = null; } }
   }
@@ -356,14 +389,22 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
         revisions,
       });
       if (ticket !== generation.current) return;
-      setResult(null); setReviewing(false);
-      setNotice(`Moved ${outcome.moved} analytical units. Recompute analysis for the updated data.`);
+      setReviewing(false);
+      // Cluster results describe the same samples after a move (and are
+      // matched to rows by sample), so further clusters can be assigned
+      // without recomputing. Membership and matches depend on the groups,
+      // as does an LDA source grouped by group file.
+      const groupDependent = kind !== 'cluster' || (source === 'lda' && sourceGroup === combined.groupColumn);
+      if (groupDependent) setResult(null);
+      setNotice(groupDependent
+        ? `Moved ${outcome.moved} analytical units. Recompute analysis for the updated data.`
+        : `Moved ${outcome.moved} analytical units. The clustering still applies to the same samples; assign more clusters or recompute.`);
       try {
         // Keep the selection, plus any group a move created.
         const created = outcome.transactions.flatMap(tx => tx.outputs.map(o => o.path));
         const selected = dataset.selectedPaths;
+        // The new revisions reload only the files the move changed.
         await dataset.rescan(all => all.filter(p => selected.includes(p) || created.includes(p)));
-        dataset.reload();
         notifyGroupsChanged();
       } catch (e) {
         setError(`Move committed, but reloading failed. Reopen the dataset. ${e instanceof Error ? e.message : String(e)}`);

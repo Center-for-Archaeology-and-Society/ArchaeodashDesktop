@@ -14,7 +14,8 @@ archaeodash-data-io = { workspace = true }
 archaeodash-storage = { workspace = true }
 archaeodash-file-store-fs = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+# float_roundtrip: cached results read back bit-identical to fresh ones.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 sha2 = { workspace = true }
 same-file = "1.0.6"
 uuid = { workspace = true }

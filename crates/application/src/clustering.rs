@@ -225,6 +225,7 @@ impl ClusterService {
 
     #[allow(clippy::too_many_arguments)]
     fn source_matrix(
+        cache_root: &std::path::Path,
         data: &GroupFileData,
         columns: &[String],
         transformation: Option<&TransformationDefinition>,
@@ -297,12 +298,20 @@ impl ClusterService {
                 ("PC".to_string(), fitted.scores)
             }
             AnalysisSourceDto::Umap => {
-                let fitted = archaeodash_analysis::umap_cancellable(
-                    &base,
+                // Through the ordination cache: the layout depends only on
+                // the rows and settings, so a layout already made by the
+                // Visualize/Ordination pages, precompute, or an earlier
+                // diagnostics or fit run is reused.
+                let layout = super::ordination::cached_umap_layout(
+                    cache_root,
+                    data,
+                    columns,
+                    transformation,
                     umap_seed.unwrap_or(20260914),
+                    context,
                     cancel,
                 )?;
-                ("V".to_string(), fitted.layout)
+                ("V".to_string(), layout)
             }
             AnalysisSourceDto::Lda => {
                 let group_column = source_group_column.ok_or_else(|| {
@@ -653,6 +662,7 @@ impl ClusterService {
         };
         Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, pairwise)?;
         let matrix = Self::source_matrix(
+            &self.root,
             &data,
             &req.columns,
             req.transformation.as_ref(),
@@ -816,6 +826,7 @@ impl ClusterService {
         };
         Self::validate_dimensions(data.rows.len(), req.columns.len(), &req.path, pairwise)?;
         let matrix = Self::source_matrix(
+            &self.root,
             &data,
             &req.columns,
             req.transformation.as_ref(),
@@ -1074,6 +1085,7 @@ impl ClusterService {
             Pairwise::None,
         )?;
         let matrix = Self::source_matrix(
+            &self.root,
             &data,
             &req.columns,
             req.transformation.as_ref(),
@@ -1200,6 +1212,7 @@ impl ClusterService {
             Pairwise::Streamed,
         )?;
         let matrix = Self::source_matrix(
+            &self.root,
             &data,
             &req.columns,
             req.transformation.as_ref(),

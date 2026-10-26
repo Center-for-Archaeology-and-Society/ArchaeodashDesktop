@@ -7,7 +7,7 @@
  * (Section 5): nothing is persisted; recompute re-requests. PCA scores export
  * as ephemeral CSV via the exports service (Section 7.3).
  */
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import type {
   ExportsService,
   GroupsService,
@@ -23,6 +23,7 @@ import { downloadExportResult } from '../exports.ts';
 import { PlotlyChart } from '../charts/PlotlyChart.tsx';
 import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
 import { useGroupFiles } from '../datasets/useGroupFiles.ts';
+import { realignRowsByUuid, rowContentKey } from '../datasets/rowKeys.ts';
 import { asRowsResponse, defaultGroupColumn, inputPaths } from '../visualize/combine.ts';
 import { groupColors } from '../visualize/visualize-model.ts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
@@ -454,7 +455,31 @@ interface OrdinationInput {
   readonly transformation?: TransformationDefinition;
 }
 
-function PcaView({ deps, data, extraPaths, groups, rows, columns, transformation }: { deps: OrdinationDeps } & OrdinationInput): ReactElement {
+/**
+ * Rows identity for PCA and UMAP, which depend only on the loaded samples and
+ * their values: they re-run when `rowsKey` (see rowKeys.ts) or the settings
+ * change, not when samples move between groups, and their scores are matched
+ * to the current rows by sample UUID.
+ */
+interface RowIdentity {
+  readonly rowsKey: string;
+  readonly rowUuids: readonly string[];
+}
+
+/** Scores and the UUIDs of the rows they were computed for. */
+interface ForRows<T> {
+  readonly uuids: readonly string[];
+  readonly result: T;
+}
+
+/** Latest value in a ref, for content-keyed requests that read it. */
+function useLatest<T>(value: T): { readonly current: T } {
+  const ref = useRef(value);
+  ref.current = value;
+  return ref;
+}
+
+function PcaView({ deps, data, extraPaths, groups, rows, columns, transformation, rowsKey, rowUuids }: { deps: OrdinationDeps } & OrdinationInput & RowIdentity): ReactElement {
   const request = useMemo(
     () => ({
       path: data.path,
@@ -464,7 +489,18 @@ function PcaView({ deps, data, extraPaths, groups, rows, columns, transformation
     }),
     [data, extraPaths, columns, transformation],
   );
-  const { state, reload } = useOrdination<PcaResponse>(() => deps.ordination.pca(request), [deps, request]);
+  const latest = useLatest({ request, rowUuids });
+  const settingsKey = JSON.stringify([request.columns, request.transformation]);
+  const { state: computed, reload } = useOrdination<ForRows<PcaResponse>>(async () => {
+    const { request: current, rowUuids: uuids } = latest.current;
+    return { uuids, result: await deps.ordination.pca(current) };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deps, rowsKey, settingsKey]);
+  const state = useMemo((): AsyncState<PcaResponse> => {
+    if (computed.kind !== 'loaded') return computed;
+    const { uuids, result } = computed.data;
+    return { kind: 'loaded', data: { ...result, scores: realignRowsByUuid(uuids, result.scores, rowUuids) } };
+  }, [computed, rowUuids]);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState('');
   const exportScores = (format: 'csv' | 'xlsx') => {
@@ -497,22 +533,31 @@ function PcaView({ deps, data, extraPaths, groups, rows, columns, transformation
   );
 }
 
-function UmapView({ deps, data, extraPaths, groups, rows, columns, transformation }: { deps: OrdinationDeps } & OrdinationInput): ReactElement {
-  const { state } = useOrdination<UmapResponse>(
-    () =>
-      deps.ordination.umap({
-        path: data.path,
-        extra_paths: [...extraPaths],
-        columns: [...(columns ?? data.elemental_columns)],
-        transformation: transformation ?? null,
-        seed: UMAP_SEED,
-      }),
-    [deps, data, extraPaths, columns, transformation],
+function UmapView({ deps, data, extraPaths, groups, rows, columns, transformation, rowsKey, rowUuids }: { deps: OrdinationDeps } & OrdinationInput & RowIdentity): ReactElement {
+  const request = {
+    path: data.path,
+    extra_paths: [...extraPaths],
+    columns: [...(columns ?? data.elemental_columns)],
+    transformation: transformation ?? null,
+    seed: UMAP_SEED,
+  };
+  const latest = useLatest({ request, rowUuids });
+  const settingsKey = JSON.stringify([request.columns, request.transformation]);
+  const { state } = useOrdination<ForRows<UmapResponse>>(async () => {
+    const { request: current, rowUuids: uuids } = latest.current;
+    return { uuids, result: await deps.ordination.umap(current) };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deps, rowsKey, settingsKey]);
+  const result = useMemo(
+    () => (state.kind === 'loaded'
+      ? { ...state.data.result, embedding: realignRowsByUuid(state.data.uuids, state.data.result.embedding, rowUuids) }
+      : null),
+    [state, rowUuids],
   );
   if (state.kind === 'loading') return <BusyNote>Computing UMAP…</BusyNote>;
   if (state.kind === 'error') return <p role="alert">Error: {state.message}</p>;
-  if (state.kind !== 'loaded') return <p>No UMAP yet.</p>;
-  return <UmapResult result={state.data} groups={groups} rows={rows} />;
+  if (!result) return <p>No UMAP yet.</p>;
+  return <UmapResult result={result} groups={groups} rows={rows} />;
 }
 
 /** Pure UMAP result presentation (seed echo, embedding scatter, score table). */
@@ -689,7 +734,11 @@ export function OrdinationPage({ deps }: { deps: OrdinationDeps }): ReactElement
   const [view, setView] = useState<OrdinationView>('pca');
   const data = useMemo(() => asRowsResponse(files, combined), [files, combined]);
   const extraPaths = useMemo(() => inputPaths(files).extra_paths, [files]);
-  const viewKey = files.map((f) => `${f.path}@${f.data.revision_id}`).join('|');
+  // Remount the views only for a new set of samples (a Dataset change), not
+  // when samples move between groups: PCA and UMAP results stay valid then.
+  const rowUuids = useMemo(() => combined.rows.map((r) => r.analytical_uuid), [combined]);
+  const rowsKey = useMemo(() => rowContentKey(combined), [combined]);
+  const viewKey = rowsKey;
   const analysisSetup = useAnalysisSetup();
   const input = useMemo(
     () => analysisInput(analysisSetup.setup, data.elemental_columns),
@@ -749,8 +798,8 @@ export function OrdinationPage({ deps }: { deps: OrdinationDeps }): ReactElement
       )}
       {load.kind === 'loaded' && files.length > 0 && analysisSetup.loaded && input.columns.length >= 2 && (
         <TabPanels key={viewKey} active={view} panels={{
-          pca: () => <PcaView deps={deps} data={data} extraPaths={extraPaths} groups={combined.groupOf} rows={rowLabels} columns={input.columns} transformation={input.transformation} />,
-          umap: () => <UmapView deps={deps} data={data} extraPaths={extraPaths} groups={combined.groupOf} rows={rowLabels} columns={input.columns} transformation={input.transformation} />,
+          pca: () => <PcaView deps={deps} data={data} extraPaths={extraPaths} groups={combined.groupOf} rows={rowLabels} columns={input.columns} transformation={input.transformation} rowsKey={rowsKey} rowUuids={rowUuids} />,
+          umap: () => <UmapView deps={deps} data={data} extraPaths={extraPaths} groups={combined.groupOf} rows={rowLabels} columns={input.columns} transformation={input.transformation} rowsKey={rowsKey} rowUuids={rowUuids} />,
           lda: () => (
             <LdaView
               deps={deps}
