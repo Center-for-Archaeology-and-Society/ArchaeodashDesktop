@@ -1,6 +1,7 @@
 import { AutomaticAssignment } from './AutomaticAssignment.tsx';
 import { useMemo, useState, type ReactElement } from 'react';
-import type { TransferUnitsRequest, BatchTransferUnitsRequest, GroupCandidate } from '@archaeodash/client';
+import type { ApplyClustersRequest, TransferUnitsRequest, BatchTransferUnitsRequest, GroupCandidate } from '@archaeodash/client';
+import { ClusterGroupsAssignment, type ClusterGroupSources } from './ClusterGroups.tsx';
 import type { AnalysisResult } from './AnalysisPage.tsx';
 import { buildAssignmentRequest, nearestMatchKeys, selectableRows, selectedUnits } from './assignment-model.ts';
 import { newGroupPath, newGroupProblem } from './new-group.ts';
@@ -31,7 +32,10 @@ export function MoveConfirmation({ request, busy, onConfirm, onCancel, multiSour
  * keys (UUIDs, or Euclidean match-row keys) stay in state and requests,
  * never in checkbox values or labels.
  */
-export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfirm, candidates = [], onBatchConfirm, onReviewChange = () => {}, multiSource = false, rowLabel, selected: selectedProp, onSelectedChange }: {
+/** How the checked samples are assigned. */
+type AssignMode = 'manual' | 'automatic' | 'replace' | 'new_folder';
+
+export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfirm, candidates = [], onBatchConfirm, onReviewChange = () => {}, multiSource = false, rowLabel, selected: selectedProp, onSelectedChange, clusterSources, onApplyClusters }: {
   result: AnalysisResult;
   /** Sample label (ANID) by hidden identity and input row index. */
   rowLabel?: (uuid: string | undefined, index: number) => string;
@@ -47,6 +51,9 @@ export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfi
   /** Row keys checked in the results table (owned by the caller). */
   selected?: ReadonlySet<string>;
   onSelectedChange?: (next: Set<string>) => void;
+  /** Cluster results: the analyzed groups, for turning clusters into groups. */
+  clusterSources?: ClusterGroupSources;
+  onApplyClusters?: (request: ApplyClustersRequest) => void;
 }): ReactElement | null {
   const rows = useMemo(() => selectableRows(result, cutK, rowLabel), [result, cutK, rowLabel]);
   const [ownSelected, setOwnSelected] = useState<Set<string>>(() => new Set());
@@ -57,13 +64,19 @@ export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfi
   const [newPath, setNewPath] = useState<string | null>(null);
   const [prepared, setPrepared] = useState<TransferUnitsRequest | null>(null);
   const [error, setError] = useState('');
-  const [automatic, setAutomatic] = useState(false);
+  const [mode, setMode] = useState<AssignMode>('manual');
   const [autoReviewing, setAutoReviewing] = useState(false);
   const keys = useMemo(() => {
     const valid = new Set(rows.map(row => row.key));
     return [...selected].filter(key => valid.has(key));
   }, [rows, selected]);
   if (result.kind === 'diagnostics') return null;
+  // Cluster results become groups (replacing the analyzed ones, or in a new
+  // folder); other results map their labels onto existing groups.
+  const clusterGroups = result.kind === 'fit' && !!clusterSources && !!onApplyClusters;
+  const automatic = mode === 'automatic' && !clusterGroups;
+  const asClusterGroups = clusterGroups && (mode === 'replace' || mode === 'new_folder');
+  const manual = !automatic && !asClusterGroups;
   const units = selectedUnits(rows, keys);
   const euclidean = result.kind === 'euclidean';
   const targets = destinations.filter(path => multiSource || path !== result.data.path);
@@ -93,14 +106,20 @@ export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfi
     {rows.length === 0 ? <p>No assignable analytical units are available. Recompute the analysis if its identities are unavailable.</p> : <>
       <fieldset disabled={busy || prepared !== null || autoReviewing}>
         <legend>Result selection</legend>
-        {onBatchConfirm && <label>Assignment mode <select value={automatic ? 'automatic' : 'manual'} onChange={event => setAutomatic(event.target.value === 'automatic')}>
-          <option value="manual">Choose one destination</option><option value="automatic">{euclidean ? 'Use checked match groups' : 'Use analysis groups'}</option>
-        </select></label>}
-        {euclidean
+        {clusterGroups
+          ? <label>Assignment mode <select value={manual ? 'manual' : mode} onChange={event => setMode(event.target.value as AssignMode)}>
+            <option value="manual">Move checked samples to one group</option>
+            <option value="replace">Replace the analyzed groups with the clusters</option>
+            <option value="new_folder">Create a new folder of cluster groups</option>
+          </select></label>
+          : onBatchConfirm && <label>Assignment mode <select value={automatic ? 'automatic' : 'manual'} onChange={event => setMode(event.target.value === 'automatic' ? 'automatic' : 'manual')}>
+            <option value="manual">Choose one destination</option><option value="automatic">{euclidean ? 'Use checked match groups' : 'Use analysis groups'}</option>
+          </select></label>}
+        {asClusterGroups ? null : euclidean
           ? <button type="button" onClick={() => setSelected(new Set(nearestMatchKeys(result.data.rows)))}>Check the nearest match of every sample</button>
           : <button type="button" onClick={() => setSelected(new Set(rows.map(row => row.key)))}>Select all {rows.length} analytical units</button>}{' '}
-        <button type="button" onClick={() => setSelected(new Set())}>Clear selection</button>
-        {!automatic && <><label>Destination group <select value={target} onChange={event => { setTarget(event.target.value); setError(''); }}>
+        {!asClusterGroups && <button type="button" onClick={() => setSelected(new Set())}>Clear selection</button>}
+        {manual && <><label>Destination group <select value={target} onChange={event => { setTarget(event.target.value); setError(''); }}>
           <option value="">Choose a group…</option>{targets.map(path => <option key={path} value={path}>{groupName(path)}</option>)}
           <option value={NEW_GROUP}>Create a new group…</option>
         </select></label>
@@ -112,6 +131,9 @@ export function ResultAssignment({ result, destinations, cutK = 2, busy, onConfi
         {!targets.length && !creating && <p>No other ready group file is available. Create a new group to assign these results.</p>}
         <button type="button" disabled={!units.length || (creating ? !!newProblem : !targets.includes(target))} onClick={review}>Review move</button></>}
       </fieldset>
+      {asClusterGroups && result.kind === 'fit' && clusterSources && onApplyClusters && <ClusterGroupsAssignment
+        key={mode} data={result.data} cutK={cutK} mode={mode === 'replace' ? 'replace' : 'new_folder'} sources={clusterSources} busy={busy}
+        onApply={onApplyClusters} onReviewChange={value => { setAutoReviewing(value); onReviewChange(value); }} />}
       {automatic && onBatchConfirm && <AutomaticAssignment multiSource={multiSource} result={result} selected={keys} candidates={candidates} cutK={cutK} busy={busy} onConfirm={onBatchConfirm} onReviewChange={value => { setAutoReviewing(value); onReviewChange(value); }} />}
       {prepared && <MoveConfirmation request={prepared} busy={busy} multiSource={multiSource} groupName={groupName} onConfirm={onConfirm} onCancel={() => { setPrepared(null); onReviewChange(false); }} />}
     </>}

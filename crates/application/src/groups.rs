@@ -6,17 +6,18 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use archaeodash_contracts::{
-    AddDescriptiveColumnRequest, BatchTransferUnitsRequest, CopyGroupsRequest, CreateFolderRequest,
-    DeleteFolderRequest, DeleteGroupRequest, DuplicateGroupRequest, GroupCandidate, GroupFolder,
-    GroupRowDto, GroupRowsResponse, GroupSummary, MergeGroupsRequest,
-    PatchDescriptiveValuesRequest, RenameFolderRequest, RenameGroupRequest, TransactionResponse,
-    TransferAction, TransferUnitsRequest,
+    AddDescriptiveColumnRequest, ApplyClustersMode, ApplyClustersRequest,
+    BatchTransferUnitsRequest, CopyGroupsRequest, CreateFolderRequest, DeleteFolderRequest,
+    DeleteGroupRequest, DuplicateGroupRequest, GroupCandidate, GroupFolder, GroupRowDto,
+    GroupRowsResponse, GroupSummary, MergeGroupsRequest, PatchDescriptiveValuesRequest,
+    RenameFolderRequest, RenameGroupRequest, TransactionResponse, TransferAction,
+    TransferUnitsRequest,
 };
 use archaeodash_data_io::{sanitize_group_name, GroupFileData, GroupProfile, GroupRow};
 use archaeodash_file_store_fs::FsGroupFileStore;
 use archaeodash_storage::{
-    plan_copy, plan_merge, plan_move, FileInput, GroupFileStore, PlannedOutput, StoreError,
-    Transaction, TransactionAction,
+    assert_schema_compatible, plan_copy, plan_merge, plan_move, FileInput, GroupFileStore,
+    PlannedOutput, StoreError, Transaction, TransactionAction,
 };
 use uuid::Uuid;
 
@@ -628,6 +629,267 @@ impl GroupService {
         Ok(())
     }
 
+    /// Turns a clustering of whole groups into groups named `Cluster 1`,
+    /// `Cluster 2`, ... in one journaled transaction. Rows keep their
+    /// identities, values, and descriptive cells, in source order.
+    ///
+    /// - `Replace`: the analyzed groups are replaced by the cluster groups in
+    ///   their folder; the folder's other groups are untouched, and a cluster
+    ///   name they already use gets a ` (2)`, ` (3)`, ... suffix.
+    /// - `NewFolder`: the cluster groups go to a new folder beside the
+    ///   analyzed one (`<folder> clusters`, then ` 2`, ...); the analyzed
+    ///   groups are untouched.
+    ///
+    /// The clusters must cover every row of the sources exactly once, so a
+    /// stale clustering (rows added or removed since) is refused.
+    pub fn apply_clusters(
+        &self,
+        req: &ApplyClustersRequest,
+    ) -> Result<TransactionResponse, StoreError> {
+        let invalid = |message: &str| StoreError::Validation(message.to_string());
+        if req.sources.is_empty() {
+            return Err(invalid("choose at least one analyzed group"));
+        }
+        if req.clusters.is_empty() || req.clusters.len() > 1000 {
+            return Err(invalid("a clustering needs between 1 and 1,000 clusters"));
+        }
+        let folder = folder_of(&req.sources[0].path);
+        let mut listed = HashSet::new();
+        for source in &req.sources {
+            if folder_of(&source.path) != folder {
+                return Err(invalid(
+                    "the analyzed groups must all be in one folder to be replaced by clusters",
+                ));
+            }
+            if !listed.insert(source.path.replace('\\', "/").to_lowercase()) {
+                return Err(invalid("an analyzed group is listed twice"));
+            }
+            Self::normalized_path(&source.path)?;
+            self.reject_symlink_path(&source.path)?;
+        }
+        let paths: Vec<String> = req.sources.iter().map(|s| s.path.clone()).collect();
+        let mut sources: Vec<(String, GroupFileData)> = Vec::new();
+        let mut inputs = Vec::new();
+        for (source, data) in req
+            .sources
+            .iter()
+            .zip(self.store.read_groups_snapshot(&paths)?)
+        {
+            let data = data.ok_or_else(|| {
+                StoreError::Validation(format!("group file {} no longer exists", source.path))
+            })?;
+            if data.profile.revision_id != source.expected_revision {
+                return Err(StoreError::RevisionConflict {
+                    path: source.path.clone(),
+                    expected: source.expected_revision.clone(),
+                    found: data.profile.revision_id.clone(),
+                });
+            }
+            inputs.push(Self::input_of(&source.path, &data));
+            sources.push((source.path.clone(), data));
+        }
+        for (path, data) in &sources[1..] {
+            assert_schema_compatible(&sources[0].0, &sources[0].1, path, data)?;
+        }
+
+        // Rows per cluster, in source order.
+        let mut cluster_of: HashMap<Uuid, usize> = HashMap::new();
+        for (cluster, uuids) in req.clusters.iter().enumerate() {
+            for uuid in Self::parse_uuids(uuids)? {
+                if cluster_of.insert(uuid, cluster).is_some() {
+                    return Err(invalid("a sample is listed in more than one cluster"));
+                }
+            }
+        }
+        let mut rows_of: Vec<Vec<GroupRow>> = vec![Vec::new(); req.clusters.len()];
+        let mut missing = 0usize;
+        let mut placed = 0usize;
+        for (_, data) in &sources {
+            for row in &data.rows {
+                match cluster_of.get(&row.uuid) {
+                    Some(&cluster) => {
+                        rows_of[cluster].push(row.clone());
+                        placed += 1;
+                    }
+                    None => missing += 1,
+                }
+            }
+        }
+        if missing > 0 || placed != cluster_of.len() {
+            return Err(StoreError::Validation(format!(
+                "the clustering does not match the analyzed groups ({missing} of their \
+                 samples are not in it); run the analysis again"
+            )));
+        }
+
+        // Destination folder.
+        let replace = req.mode == ApplyClustersMode::Replace;
+        let source_folder = on_disk_folder(&self.root, &folder);
+        let destination = if replace {
+            source_folder.clone()
+        } else {
+            self.free_cluster_folder(&source_folder)?
+        };
+        let dir = self.store.resolve(&destination)?;
+        let created_dir = !replace && !dir.exists();
+        let lower = |text: &str| text.to_lowercase();
+        let source_by_file: HashMap<String, (String, String)> = sources
+            .iter()
+            .map(|(path, data)| {
+                (
+                    lower(&file_name_of(path)),
+                    (path.clone(), data.profile.revision_id.clone()),
+                )
+            })
+            .collect();
+        // Names and files in use by groups that stay (Replace keeps the
+        // folder's other groups; a new folder starts empty).
+        let mut taken_names: HashSet<String> = HashSet::new();
+        let mut taken_files: HashSet<String> = HashSet::new();
+        if replace {
+            for candidate in self.scan_candidates()? {
+                if folder_of(&candidate.path) == folder_of(&sources[0].0)
+                    && !source_by_file.contains_key(&lower(&file_name_of(&candidate.path)))
+                {
+                    if let Some(group) = &candidate.group {
+                        taken_names.insert(lower(&group.group_name));
+                    }
+                }
+            }
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let name = lower(&entry.file_name().to_string_lossy());
+                    if !source_by_file.contains_key(&name) {
+                        taken_files.insert(name);
+                    }
+                }
+            }
+        }
+        let first = &sources[0].1.profile;
+        let mut outputs = Vec::new();
+        for (cluster, rows) in rows_of.into_iter().enumerate() {
+            if rows.is_empty() {
+                continue;
+            }
+            let base = format!("Cluster {}", cluster + 1);
+            let mut name = base.clone();
+            let mut suffix = 2;
+            let file = loop {
+                let file = format!("{}.parquet", sanitize_group_name(&name));
+                if !taken_names.contains(&lower(&name)) && !taken_files.contains(&lower(&file)) {
+                    break file;
+                }
+                name = format!("{base} ({suffix})");
+                suffix += 1;
+            };
+            taken_names.insert(lower(&name));
+            taken_files.insert(lower(&file));
+            // Replacing: a cluster that reuses an analyzed group's file name
+            // overwrites that file instead of deleting and recreating it.
+            let (path, revision_id) = match source_by_file.get(&lower(&file)) {
+                Some((path, revision)) if replace => (path.clone(), Self::next_revision(revision)),
+                _ if destination.is_empty() => (file, "rev-1".to_string()),
+                _ => (format!("{destination}/{file}"), "rev-1".to_string()),
+            };
+            outputs.push(PlannedOutput {
+                path,
+                group_id: sanitize_group_name(&name),
+                group_name: name,
+                revision_id,
+                rows,
+                roles: first.roles.clone(),
+                recipe: first.import_recipe.clone(),
+                source_path: first.source_path.clone(),
+                source_sha256: first.source_sha256.clone(),
+            });
+        }
+        let written: HashSet<String> = outputs
+            .iter()
+            .map(|o| o.path.replace('\\', "/").to_lowercase())
+            .collect();
+        let delete_paths: Vec<String> = if replace {
+            paths
+                .iter()
+                .filter(|p| !written.contains(&p.replace('\\', "/").to_lowercase()))
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if created_dir {
+            std::fs::create_dir_all(&dir).map_err(|e| StoreError::Io(e.to_string()))?;
+            std::fs::write(dir.join(FOLDER_MARKER), b"")
+                .map_err(|e| StoreError::Io(e.to_string()))?;
+        }
+        let tx = Transaction {
+            action: TransactionAction::ApplyClusters,
+            inputs,
+            outputs: outputs.clone(),
+            delete_paths: delete_paths.clone(),
+            selected_uuids: cluster_of.keys().copied().collect(),
+        };
+        let result = self.execute(&tx);
+        if result.is_err() && created_dir {
+            // Leave no empty folder behind when the transaction is refused.
+            let _ = std::fs::remove_file(dir.join(FOLDER_MARKER));
+            let _ = std::fs::remove_dir(&dir);
+        }
+        Ok(TransactionResponse {
+            transaction_id: result?,
+            action: "apply_clusters".to_string(),
+            outputs: outputs
+                .iter()
+                .map(|out| Self::summary_of_output(&out.path, out))
+                .collect(),
+            deleted_paths: delete_paths,
+        })
+    }
+
+    /// An unused folder beside `folder` for cluster groups: `<name> clusters`,
+    /// then `<name> clusters 2`, ... (`Clusters` for the project root).
+    fn free_cluster_folder(&self, folder: &str) -> Result<String, StoreError> {
+        let (parent, name) = match folder.rsplit_once('/') {
+            Some((parent, name)) => (parent.to_string(), name.to_string()),
+            None => (String::new(), folder.to_string()),
+        };
+        let base = if name.is_empty() {
+            "Clusters".to_string()
+        } else {
+            format!("{name} clusters")
+        };
+        let parent_dir = if parent.is_empty() {
+            self.root.clone()
+        } else {
+            self.store.resolve(&parent)?
+        };
+        let existing: HashSet<String> = std::fs::read_dir(&parent_dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().to_lowercase())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for n in 1..10_000 {
+            let candidate = if n == 1 {
+                base.clone()
+            } else {
+                format!("{base} {n}")
+            };
+            let candidate = validate_folder_name(&candidate)?;
+            if !existing.contains(&candidate.to_lowercase()) {
+                return Ok(if parent.is_empty() {
+                    candidate
+                } else {
+                    format!("{parent}/{candidate}")
+                });
+            }
+        }
+        Err(StoreError::Validation(
+            "no free folder name for the cluster groups".to_string(),
+        ))
+    }
+
     /// Moves one or more UUID selections to distinct destinations using one
     /// journaled transaction, so validation failure leaves every group intact.
     pub fn batch_transfer_units(
@@ -958,6 +1220,11 @@ impl GroupService {
             TransactionAction::CopyGroups | TransactionAction::MoveGroups => {
                 return Err(StoreError::Invariant(
                     "copy_groups uses copy_groups, not transfer_units".to_string(),
+                ));
+            }
+            TransactionAction::ApplyClusters => {
+                return Err(StoreError::Invariant(
+                    "apply_clusters uses apply_clusters, not transfer_units".to_string(),
                 ));
             }
             TransactionAction::DeleteGroup => {
@@ -2210,6 +2477,138 @@ mod tests {
             .delete_folder(&DeleteFolderRequest { path: empty.path })
             .expect("delete empty");
         assert!(!dir.path().join("Empty").exists());
+    }
+
+    #[test]
+    fn apply_clusters_replaces_selected_groups_or_writes_a_new_folder() {
+        use archaeodash_contracts::{ApplyClustersMode, ApplyClustersRequest, GroupRevisionRef};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, _) = commit_two_groups(dir.path());
+        let read = |p: &str| read_group_file(&dir.path().join(p)).expect("read");
+        let reference = |p: &str| GroupRevisionRef {
+            path: p.to_string(),
+            expected_revision: read(p).profile.revision_id,
+        };
+        let uuids =
+            |p: &str| -> Vec<String> { read(p).rows.iter().map(|r| r.uuid.to_string()).collect() };
+        let names = |p: &str| -> Vec<String> {
+            read(p)
+                .rows
+                .iter()
+                .filter_map(|r| r.visible.clone())
+                .collect()
+        };
+        let baca = uuids("groups/Baca.parquet");
+        let hooper = uuids("groups/Hooper.parquet");
+
+        // New folder: both groups clustered; the originals stay.
+        let request = ApplyClustersRequest {
+            sources: vec![
+                reference("groups/Baca.parquet"),
+                reference("groups/Hooper.parquet"),
+            ],
+            clusters: vec![
+                vec![baca[0].clone(), hooper[0].clone()],
+                vec![baca[1].clone()],
+            ],
+            mode: ApplyClustersMode::NewFolder,
+        };
+        let created = service.apply_clusters(&request).expect("new folder");
+        let paths: Vec<&str> = created.outputs.iter().map(|o| o.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "groups clusters/Cluster_1.parquet",
+                "groups clusters/Cluster_2.parquet"
+            ]
+        );
+        assert!(created.deleted_paths.is_empty());
+        assert_eq!(names("groups clusters/Cluster_1.parquet"), ["A1", "A3"]);
+        assert_eq!(
+            read("groups clusters/Cluster_2.parquet").profile.group_name,
+            "Cluster 2"
+        );
+        assert_eq!(uuids("groups/Baca.parquet"), baca);
+        // A second run picks the next free folder.
+        let again = service.apply_clusters(&request).expect("second folder");
+        assert!(again.outputs[0].path.starts_with("groups clusters 2/"));
+
+        // Replace only Baca: its samples become Cluster 1 and Cluster 2 in
+        // its folder; Hooper is untouched.
+        let replaced = service
+            .apply_clusters(&ApplyClustersRequest {
+                sources: vec![reference("groups/Baca.parquet")],
+                clusters: vec![vec![baca[0].clone()], vec![baca[1].clone()]],
+                mode: ApplyClustersMode::Replace,
+            })
+            .expect("replace");
+        assert_eq!(replaced.deleted_paths, ["groups/Baca.parquet"]);
+        assert!(!dir.path().join("groups/Baca.parquet").exists());
+        assert_eq!(names("groups/Cluster_1.parquet"), ["A1"]);
+        assert_eq!(names("groups/Cluster_2.parquet"), ["A2"]);
+        assert_eq!(uuids("groups/Hooper.parquet"), hooper);
+
+        // Replacing Hooper alone: "Cluster 1" belongs to a group that stays,
+        // so the new group gets a suffix.
+        let suffixed = service
+            .apply_clusters(&ApplyClustersRequest {
+                sources: vec![reference("groups/Hooper.parquet")],
+                clusters: vec![hooper.clone()],
+                mode: ApplyClustersMode::Replace,
+            })
+            .expect("suffix");
+        assert_eq!(suffixed.outputs[0].group_name, "Cluster 1 (2)");
+        assert_eq!(suffixed.outputs[0].path, "groups/Cluster_1__2_.parquet");
+
+        // Re-clustering the cluster groups overwrites a reused file in place.
+        let rerun = service
+            .apply_clusters(&ApplyClustersRequest {
+                sources: vec![
+                    reference("groups/Cluster_1.parquet"),
+                    reference("groups/Cluster_2.parquet"),
+                ],
+                clusters: vec![baca.clone()],
+                mode: ApplyClustersMode::Replace,
+            })
+            .expect("rerun");
+        assert_eq!(rerun.outputs[0].path, "groups/Cluster_1.parquet");
+        assert_eq!(rerun.outputs[0].revision_id, "rev-2");
+        assert_eq!(rerun.deleted_paths, ["groups/Cluster_2.parquet"]);
+        assert_eq!(names("groups/Cluster_1.parquet"), ["A1", "A2"]);
+
+        // Refused: a stale revision, a sample left out, a sample twice.
+        let current = reference("groups/Cluster_1.parquet");
+        let stale = GroupRevisionRef {
+            expected_revision: "rev-1".into(),
+            ..current.clone()
+        };
+        let refuse = |sources: Vec<GroupRevisionRef>, clusters: Vec<Vec<String>>| {
+            service
+                .apply_clusters(&ApplyClustersRequest {
+                    sources,
+                    clusters,
+                    mode: ApplyClustersMode::Replace,
+                })
+                .expect_err("refused")
+                .to_string()
+        };
+        assert!(matches!(
+            service.apply_clusters(&ApplyClustersRequest {
+                sources: vec![stale],
+                clusters: vec![baca.clone()],
+                mode: ApplyClustersMode::Replace,
+            }),
+            Err(StoreError::RevisionConflict { .. })
+        ));
+        assert!(
+            refuse(vec![current.clone()], vec![vec![baca[0].clone()]]).contains("does not match")
+        );
+        assert!(refuse(
+            vec![current.clone()],
+            vec![baca.clone(), vec![baca[0].clone()]]
+        )
+        .contains("more than one cluster"));
+        assert_eq!(names("groups/Cluster_1.parquet"), ["A1", "A2"]);
     }
 
     #[test]

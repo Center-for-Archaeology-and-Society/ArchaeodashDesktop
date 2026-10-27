@@ -361,6 +361,19 @@ async fn groups_copy(
         .map_err(store_error_response)
 }
 
+/// `POST /api/v1/groups/apply-clusters`: turn a clustering of whole groups
+/// into cluster groups.
+async fn groups_apply_clusters(
+    State(state): State<AppState>,
+    Json(req): Json<archaeodash_contracts::ApplyClustersRequest>,
+) -> Result<Json<TransactionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .groups
+        .apply_clusters(&req)
+        .map(Json)
+        .map_err(store_error_response)
+}
+
 /// Query parameters for the destructive delete route (Section 10.4: the
 /// client confirms the exact path and names the revision it last read).
 #[derive(Debug, serde::Deserialize)]
@@ -819,6 +832,7 @@ pub fn root_router(state: AppState) -> Router {
         )
         .route("/api/v1/groups/duplicate", post(groups_duplicate))
         .route("/api/v1/groups/copy", post(groups_copy))
+        .route("/api/v1/groups/apply-clusters", post(groups_apply_clusters))
         .route("/api/v1/groups/rename", post(groups_rename))
         .route("/api/v1/groups/columns", post(groups_add_column))
         .route(

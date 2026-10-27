@@ -428,6 +428,32 @@ pub struct CopyGroupsRequest {
     pub remove_sources: bool,
 }
 
+/// Where [`ApplyClustersRequest`] puts the cluster groups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplyClustersMode {
+    /// Replace the analyzed groups with the cluster groups in their folder;
+    /// other groups in that folder are untouched.
+    Replace,
+    /// Create the cluster groups in a new folder beside the analyzed groups'
+    /// folder; the analyzed groups are untouched.
+    NewFolder,
+}
+
+/// `POST /groups/apply-clusters` request: turn a clustering of the analyzed
+/// groups into groups named `Cluster 1`, `Cluster 2`, ... in one journaled
+/// transaction. The clusters must cover every row of the sources exactly
+/// once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApplyClustersRequest {
+    /// The analyzed group files, at the revisions the caller read.
+    pub sources: Vec<GroupRevisionRef>,
+    /// Hidden analytical UUIDs of each cluster, cluster 1 first. Empty
+    /// clusters create no group.
+    pub clusters: Vec<Vec<String>>,
+    pub mode: ApplyClustersMode,
+}
+
 /// `POST /groups/rename` request: rename one group (profile name and id,
 /// and the file name in the same folder) through a journaled transaction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -6,6 +6,9 @@ import { moveAcrossSources } from './multi-source-move.ts';
 import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
 import { useGroupFiles } from '../datasets/useGroupFiles.ts';
 import { rowContentKey } from '../datasets/rowKeys.ts';
+import { useGroupInclusion } from '../datasets/GroupInclusion.tsx';
+import { folderLabel, folderOf } from '../datasets/folders.ts';
+import type { ClusterGroupSources } from './ClusterGroups.tsx';
 import { asRowsResponse, defaultGroupColumn, inputPaths } from '../visualize/combine.ts';
 import { notifyGroupsChanged } from '../data-manager/events.ts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
@@ -20,7 +23,7 @@ import { EligibleGroupPicker, GroupSizesTable } from './MembershipGroups.tsx';
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import type {
   AnalysisSource, ClusterDistanceMetric, ClusterLinkage, TransformationDefinition, AnalysisJobSnapshot, AnalysisJobRequest,
-  Transport, ClusterMethod, MembershipMethod, TransferUnitsRequest, BatchTransferUnitsRequest, GroupCandidate,
+  Transport, ClusterMethod, MembershipMethod, TransferUnitsRequest, BatchTransferUnitsRequest, GroupCandidate, ApplyClustersRequest,
   ClusterFitResponse, ClusterDiagnosticsResponse,
   MembershipProbabilitiesResponse, EuclideanMatchesResponse, TableCell,
 } from '@archaeodash/client';
@@ -189,11 +192,12 @@ export function ResultTable({ result, rows: rowInfo, cutK = 2, selection }: {
 }
 
 /** Plots, the result tables and the assignment controls of one result; owns the row selection. */
-function ResultsPanel({ result, cutK, onCutKChange, busy, reviewing, onReviewChange, rowInfo, destinations, candidates, multiSource, onAssign }: {
+function ResultsPanel({ result, cutK, onCutKChange, busy, reviewing, onReviewChange, rowInfo, destinations, candidates, multiSource, onAssign, clusterSources, onApplyClusters }: {
   result: AnalysisResult; cutK: number; onCutKChange: (k: number) => void; busy: boolean; reviewing: boolean;
   onReviewChange: (reviewing: boolean) => void; rowInfo: RowInfo; destinations: readonly string[];
   candidates: readonly GroupCandidate[]; multiSource: boolean;
   onAssign: (request: TransferUnitsRequest | BatchTransferUnitsRequest) => void;
+  clusterSources?: ClusterGroupSources; onApplyClusters?: (request: ApplyClustersRequest) => void;
 }): ReactElement {
   // Keys (UUIDs, or Euclidean match rows) survive sorting, filtering and column changes.
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
@@ -202,7 +206,7 @@ function ResultsPanel({ result, cutK, onCutKChange, busy, reviewing, onReviewCha
     <ResultTable result={result} rows={rowInfo} cutK={cutK} selection={{ selected, onChange: setSelected, disabled: busy || reviewing }} />
     <ResultAssignment result={result} cutK={cutK} destinations={destinations} candidates={candidates} multiSource={multiSource} busy={busy}
       onReviewChange={onReviewChange} onConfirm={onAssign} onBatchConfirm={onAssign} rowLabel={rowInfo.label}
-      selected={selected} onSelectedChange={setSelected} />
+      selected={selected} onSelectedChange={setSelected} clusterSources={clusterSources} onApplyClusters={onApplyClusters} />
   </>;
 }
 
@@ -216,6 +220,14 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   const contentKey = useMemo(() => rowContentKey(combined), [combined]);
   const filesRef = useRef(files);
   filesRef.current = files;
+  const inclusion = useGroupInclusion();
+  // The analyzed group files, for turning a clustering into groups.
+  const clusterSources = useMemo<ClusterGroupSources>(() => ({
+    refs: files.map(f => ({ path: f.path, expected_revision: f.data.revision_id })),
+    names: files.map(f => f.groupName),
+  }), [files]);
+  // Folder of cluster groups created by the last "new folder" assignment.
+  const [clusterFolder, setClusterFolder] = useState<string | null>(null);
   const data = useMemo(
     () => (dataset.load.kind === 'loaded' && files.length > 0 ? asRowsResponse(files, combined) : null),
     [dataset.load.kind, files, combined],
@@ -415,6 +427,43 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
       if (ticket === generation.current) setBusy(false);
     }
   }
+  /** Turns the clustering into Cluster 1, Cluster 2, ... groups (replacing
+   *  the analyzed groups, or in a new folder). */
+  async function applyClusters(request: ApplyClustersRequest) {
+    const apply = deps.groups.applyClusters;
+    if (moving.current || !apply) return;
+    moving.current = true;
+    const ticket = generation.current;
+    setBusy(true); setError(''); setNotice(''); setClusterFolder(null);
+    try {
+      const response = await apply(request);
+      if (ticket !== generation.current) return;
+      setReviewing(false);
+      const created = response.outputs.map(o => o.path);
+      if (request.mode === 'replace') {
+        setNotice(`Replaced the analyzed groups with ${created.length} cluster groups. Rename them in the Data Manager if you like.`);
+      } else {
+        const folder = folderOf(created[0] ?? '');
+        setClusterFolder(folder);
+        setNotice(`Created ${created.length} cluster groups in the new folder “${folderLabel(folder)}”. The analyzed groups are unchanged.`);
+      }
+      try {
+        // The analyzed groups that remain, plus the new cluster groups when
+        // they are in this folder.
+        const selected = dataset.selectedPaths;
+        const slash = (path: string) => path.replace(/\\/g, '/');
+        await dataset.rescan(all => all.filter(p => selected.includes(p) || created.some(c => slash(c) === slash(p))));
+        notifyGroupsChanged();
+      } catch (e) {
+        setError(`The cluster groups were created, but reloading failed. Reopen the dataset. ${e instanceof Error ? e.message : String(e)}`);
+      }
+    } catch (e) {
+      if (ticket === generation.current) setError(`Could not create the cluster groups; nothing was changed. ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      moving.current = false;
+      if (ticket === generation.current) setBusy(false);
+    }
+  }
   const disabled = busy || !data || !columns.length || (kind !== 'cluster' && (!group || !id)) || (source === 'lda' && !sourceGroup);
   const submit = (event: FormEvent) => { event.preventDefault(); void run(); };
   const elementsNote = !data ? '' : savedDefinition && !usingSetup
@@ -481,10 +530,13 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     </form>
     {kind === 'membership' && data && group && <GroupSizesTable groups={eligibility} column={group} />}
     {busy && <BusyNote>{moving.current ? 'Assigning analytical units to groups…' : cancelling ? 'Cancelling analysis…' : job ? `${job.state}: ${job.stage?.replaceAll('_', ' ') ?? 'waiting'} (${job.progress}%)` : 'Submitting analysis…'}</BusyNote>}
-    {notice && <p role="status" className="callout callout-info">{notice}</p>}{error && <p role="alert">{error}</p>}
+    {notice && <p role="status" className="callout callout-info">{notice}{clusterFolder !== null && inclusion?.setActiveFolder && <>{' '}
+      <button type="button" className="btn" disabled={busy} onClick={() => { inclusion.setActiveFolder?.(clusterFolder); setClusterFolder(null); setNotice(''); }}>Analyze the new folder</button>
+    </>}</p>}{error && <p role="alert">{error}</p>}
     {result && <div key={generation.current} className="results">
       <ResultsPanel result={result} cutK={cutK} onCutKChange={setCutK} busy={busy} reviewing={reviewing} onReviewChange={setReviewing} rowInfo={rowInfo}
-        destinations={paths} candidates={candidates} multiSource={multiSource} onAssign={request => void assign(request)} />
+        destinations={paths} candidates={candidates} multiSource={multiSource} onAssign={request => void assign(request)}
+        clusterSources={deps.groups.applyClusters ? clusterSources : undefined} onApplyClusters={request => void applyClusters(request)} />
     </div>}
   </section>;
 }

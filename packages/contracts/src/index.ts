@@ -255,6 +255,20 @@ export interface CopyGroupsRequest {
   remove_sources?: boolean;
 }
 
+/** Where `ApplyClustersRequest` puts the cluster groups: `replace` swaps the
+ *  analyzed groups for them in their folder (other groups untouched);
+ *  `new_folder` creates them in a new folder and leaves the analyzed groups. */
+export type ApplyClustersMode = 'replace' | 'new_folder';
+
+/** Turn a clustering of whole groups into `Cluster 1`, `Cluster 2`, ... groups
+ *  in one journaled transaction. `clusters` lists each cluster's analytical
+ *  UUIDs (cluster 1 first) and must cover every source row exactly once. */
+export interface ApplyClustersRequest {
+  sources: GroupRevisionRef[];
+  clusters: string[][];
+  mode: ApplyClustersMode;
+}
+
 /** Rename one group (profile name/id and file name), journaled. */
 export interface RenameGroupRequest {
   path: string;

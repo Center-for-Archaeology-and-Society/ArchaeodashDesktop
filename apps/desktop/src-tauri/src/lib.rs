@@ -754,6 +754,18 @@ async fn copy_groups(
     .await
 }
 
+/// Turn a clustering of whole groups into cluster groups (`apply_clusters`).
+#[tauri::command]
+async fn apply_clusters(
+    state: tauri::State<'_, SharedState>,
+    request: archaeodash_contracts::ApplyClustersRequest,
+) -> Result<archaeodash_contracts::TransactionResponse, String> {
+    run_blocking("apply_clusters", &state, move |s| {
+        s.groups.apply_clusters(request)
+    })
+    .await
+}
+
 /// `export_table`: any result table as CSV or XLSX (no project access).
 #[tauri::command]
 async fn export_table(
@@ -860,6 +872,7 @@ pub fn run() {
             rename_group_folder,
             delete_group_folder,
             copy_groups,
+            apply_clusters,
             rename_group,
             add_group_column,
             preferences_get,

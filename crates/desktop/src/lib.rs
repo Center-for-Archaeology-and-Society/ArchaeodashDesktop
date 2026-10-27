@@ -172,6 +172,16 @@ impl DesktopGroups {
         self.with_service(|svc| svc.copy_groups(&req))
     }
 
+    /// Desktop `apply_clusters` command body: turn a clustering of whole
+    /// groups into `Cluster 1`, `Cluster 2`, ... groups (replacing the
+    /// analyzed groups, or in a new folder).
+    pub fn apply_clusters(
+        &self,
+        req: archaeodash_contracts::ApplyClustersRequest,
+    ) -> Result<TransactionResponse, String> {
+        self.with_service(|svc| svc.apply_clusters(&req))
+    }
+
     /// Desktop `duplicate_group` command body: duplicate one whole group,
     /// preserving analytical UUIDs and lineage by default.
     pub fn duplicate_group(

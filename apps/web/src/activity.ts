@@ -20,6 +20,7 @@ const LABELS: readonly [RegExp, string | null][] = [
   [/batch_transfer_units|transfer_units|transfer-units/, 'Assigning units to groups'],
   [/merge_groups|groups\/merge/, 'Merging groups'],
   [/copy_groups|groups\/copy/, 'Copying groups'],
+  [/apply_clusters|apply-clusters/, 'Creating cluster groups'],
   [/list_group_folders|GET \/api\/v1\/groups\/folders/, 'Reading project files'],
   [/group_folder|groups\/folders/, 'Updating folders'],
   [/duplicate_group|groups\/duplicate/, 'Duplicating group'],

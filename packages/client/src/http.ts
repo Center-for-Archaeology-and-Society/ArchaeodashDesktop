@@ -32,6 +32,7 @@ import type {
   RenameGroupRequest,
   AddDescriptiveColumnRequest,
   CopyGroupsRequest,
+  ApplyClustersRequest,
   ExportResult,
   ExportTransformedRequest,
   EuclideanMatchesRequest,
@@ -270,6 +271,7 @@ export class HttpTransport implements Transport {
       renameFolder: (request: RenameFolderRequest) => this.request<GroupFolder>('POST', '/api/v1/groups/folders/rename', { body: request }),
       deleteFolder: async (path: string) => { await this.request('POST', '/api/v1/groups/folders/delete', { body: { path } }); },
       copyGroups: (request: CopyGroupsRequest) => this.request('POST', '/api/v1/groups/copy', { body: request }),
+      applyClusters: (request: ApplyClustersRequest) => this.request('POST', '/api/v1/groups/apply-clusters', { body: request }),
       renameGroup: (request: RenameGroupRequest) => this.request('POST', '/api/v1/groups/rename', { body: request }),
       addColumn: (request: AddDescriptiveColumnRequest) => this.request('POST', '/api/v1/groups/columns', { body: request }),
       deleteGroup: (request: DeleteGroupRequest) =>

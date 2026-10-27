@@ -6,10 +6,11 @@
  */
 import type { GroupCandidate } from '@archaeodash/client';
 
-/** A project-relative path that stays inside the project. */
+/** A project-relative path that stays inside the project. Windows paths use
+ *  backslashes (`group2\A.parquet`), so both separators are accepted. */
 export function safePath(path: string): boolean {
-  return !!path.trim() && !path.includes('\\') &&!path.includes('\0') && !path.startsWith('/') &&
-    !/^[a-zA-Z]:/.test(path) && path.split('/').every(part => part !== '' && part !== '.' && part !== '..');
+  return !!path.trim() && !path.includes('\0') && !/^[\\/]/.test(path) &&
+    !/^[a-zA-Z]:/.test(path) && path.split(/[\\/]/).every(part => part !== '' && part !== '.' && part !== '..');
 }
 
 /** Default file for a new group named `name`, in the folder of `sourcePath`. */

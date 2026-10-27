@@ -15,6 +15,14 @@ test('new group files sit beside the analyzed group with a sanitized name', () =
   assert.equal(safePath('../a.parquet'), false);
 });
 
+test('Windows group paths with backslashes are safe; escapes and absolute paths are not', () => {
+  assert.equal(safePath('group2\\A.parquet'), true);
+  assert.equal(safePath('group2\\sub/A.parquet'), true);
+  for (const bad of ['group2\\..\\A.parquet', '\\A.parquet', 'C:\\A.parquet', 'group2\\\\A.parquet', '..\\A.parquet']) {
+    assert.equal(safePath(bad), false, bad);
+  }
+});
+
 test('new groups refuse blank names, unsafe paths and collisions with existing groups or files', () => {
   assert.equal(newGroupProblem('Fresh', 'groups/Fresh.parquet', candidates), null);
   assert.match(newGroupProblem(' ', 'groups/x.parquet', candidates)!, /Enter a name/);

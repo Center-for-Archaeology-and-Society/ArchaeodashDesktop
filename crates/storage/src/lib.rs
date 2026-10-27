@@ -110,6 +110,9 @@ pub enum TransactionAction {
     ReplaceImport,
     /// Import rows into existing groups of a folder (new groups for the rest).
     AppendImport,
+    /// Turn a clustering of whole groups into cluster groups, replacing the
+    /// analyzed groups or in a new folder.
+    ApplyClusters,
 }
 
 /// Journal record for one multi-file transaction (Section 6.8). Serialized to
