@@ -18,6 +18,8 @@ pub mod preferences;
 pub mod transforms;
 
 pub use analysis_jobs::{AnalysisJobRegistry, AnalysisJobs, JobContext};
+/// Cooperative cancellation for long analyses (ordination callers pass one).
+pub use archaeodash_analysis::CancellationToken;
 pub use clustering::ClusterService;
 pub use combined::{synthetic_group_column, CombinedInput};
 pub use explore::ExploreService;

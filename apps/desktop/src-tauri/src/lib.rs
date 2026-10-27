@@ -526,9 +526,10 @@ async fn explore_compositional_profile(
 async fn ordination_pca(
     state: tauri::State<'_, SharedState>,
     request: PcaRequest,
+    token: Option<String>,
 ) -> Result<archaeodash_contracts::PcaResponse, String> {
     run_blocking("ordination_pca", &state, move |s| {
-        s.ordination.ordination_pca(request)
+        s.ordination.ordination_pca_cancellable(request, token)
     })
     .await
 }
@@ -539,9 +540,10 @@ async fn ordination_pca(
 async fn ordination_lda(
     state: tauri::State<'_, SharedState>,
     request: LdaRequest,
+    token: Option<String>,
 ) -> Result<archaeodash_contracts::LdaResponse, String> {
     run_blocking("ordination_lda", &state, move |s| {
-        s.ordination.ordination_lda(request)
+        s.ordination.ordination_lda_cancellable(request, token)
     })
     .await
 }
@@ -554,9 +556,24 @@ async fn ordination_lda(
 async fn ordination_umap(
     state: tauri::State<'_, SharedState>,
     request: UmapRequest,
+    token: Option<String>,
 ) -> Result<archaeodash_contracts::UmapResponse, String> {
     run_blocking("ordination_umap", &state, move |s| {
-        s.ordination.ordination_umap(request)
+        s.ordination.ordination_umap_cancellable(request, token)
+    })
+    .await
+}
+
+/// `cancel_ordination`: stops the PCA/LDA/UMAP run started with this
+/// client `token` at its next checkpoint (the page calls it when a newer
+/// request supersedes the run).
+#[tauri::command]
+async fn cancel_ordination(
+    state: tauri::State<'_, SharedState>,
+    token: String,
+) -> Result<(), String> {
+    run_blocking("cancel_ordination", &state, move |s| {
+        s.ordination.cancel_ordination(&token)
     })
     .await
 }
@@ -855,6 +872,7 @@ pub fn run() {
             ordination_pca,
             ordination_lda,
             ordination_umap,
+            cancel_ordination,
             cluster_diagnostics,
             cluster_fit,
             membership_probabilities,

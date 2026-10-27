@@ -485,3 +485,17 @@ test('http: 202 with a JSON body parses the job snapshot; 202 without a body is 
   const acked = await transport.auth.logout();
   assert.equal(acked, undefined);
 });
+
+test('http: ordination calls pass the abort signal to fetch', async () => {
+  const seen: (AbortSignal | null | undefined)[] = [];
+  const transport = new HttpTransport('', async (_input, init) => {
+    seen.push(init?.signal);
+    return new Response(JSON.stringify({}), { status: 200, headers: { 'content-type': 'application/json' } });
+  });
+  const controller = new AbortController();
+  const request = { path: 'groups/A.parquet', extra_paths: [], columns: ['Ti', 'Sr'], transformation: null };
+  await transport.ordination.pca(request, { signal: controller.signal });
+  await transport.ordination.umap({ ...request, seed: 1 });
+  assert.equal(seen[0], controller.signal);
+  assert.equal(seen[1], undefined);
+});

@@ -187,21 +187,3 @@ export function indicesByGroup(count: number, groups: readonly string[] | undefi
   }
   return [...out];
 }
-
-/**
- * Latest-request gate: `begin()` returns a check that stays true only until
- * another request begins (or `cancel()` runs), so a slower earlier response
- * never overwrites a newer one.
- */
-export function requestGate(): { begin: () => () => boolean; cancel: () => void } {
-  let current = 0;
-  return {
-    begin() {
-      const ticket = ++current;
-      return () => ticket === current;
-    },
-    cancel() {
-      current++;
-    },
-  };
-}

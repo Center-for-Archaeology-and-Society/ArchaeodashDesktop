@@ -56,3 +56,15 @@ test('jobs call the ordination service with the planned requests', async () => {
   assert.equal(precomputeStatusText('umap', 'computing'), 'UMAP computing…');
   assert.equal(precomputeStatusText('lda', { skipped: 'needs three or more groups' }), 'LDA skipped (needs three or more groups)');
 });
+
+test('jobs pass the abort signal to every backend call so a change cancels them', async () => {
+  const seen: (AbortSignal | undefined)[] = [];
+  const record = async (_r: unknown, options?: { signal?: AbortSignal }) => { seen.push(options?.signal); return {} as never; };
+  const service = { pca: record, umap: record, lda: record } as unknown as OrdinationService;
+  const setup = { ...newSetup(['na', 'fe']), precompute: ['pca', 'umap', 'lda'] as ('pca' | 'umap' | 'lda')[] };
+  const plan = planPrecompute(setup, ['A', 'B', 'C'].map((n) => candidate(n, ['na', 'fe'])));
+  const controller = new AbortController();
+  for (const job of plan.jobs) await job.run(service, controller.signal);
+  assert.equal(seen.length, 4); // pca, two lda, umap
+  assert.ok(seen.every((s) => s === controller.signal));
+});

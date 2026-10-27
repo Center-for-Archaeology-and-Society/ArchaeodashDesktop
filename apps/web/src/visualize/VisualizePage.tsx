@@ -41,6 +41,7 @@ import {
   type Selection,
 } from './visualize-model.ts';
 import { includedAfterMove, moveAcrossSources } from '../clustering/multi-source-move.ts';
+import { RERUN_DELAY_MS, waitUnlessAborted } from '../ordination/rerun.ts';
 import { plotlyText } from '../charts/plotly-text.ts';
 import { ValueMultiSelect } from './ValueMultiSelect.tsx';
 import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
@@ -311,6 +312,9 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
   // PCA and UMAP re-run only when the samples, their values, or the setup
   // change; LDA (grouped by file) also when samples change group.
   const scoresRowsKey = source === 'lda' ? groupKey : contentKey;
+  // Rows key of the last run: a rerun after the group selection changes
+  // waits RERUN_DELAY_MS so a burst of checks/unchecks starts one run.
+  const lastScoresRowsKey = useRef<string | null>(null);
   useEffect(() => {
     const { files: current, rowUuids: uuids } = loadedRef.current;
     if (source === 'elements' || current.length === 0 || !analysisSetup.loaded) {
@@ -323,12 +327,17 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       setScores({ kind: 'error', message: 'Ordination needs at least two selected elements shared by the loaded groups.' });
       return;
     }
-    let cancelled = false;
+    // Leaving this effect (new inputs, new source, unmount) aborts the run,
+    // which cancels its backend work.
+    const controller = new AbortController();
+    const { signal } = controller;
+    const rowsChanged = lastScoresRowsKey.current !== null && lastScoresRowsKey.current !== scoresRowsKey;
+    lastScoresRowsKey.current = scoresRowsKey;
     setScores({ kind: 'loading' });
     const base = { path: first, extra_paths: rest, columns, transformation: setupInput.transformation ?? null };
     const run = async (): Promise<Scores> => {
       if (source === 'pca') {
-        const r = await deps.ordination.pca(base);
+        const r = await deps.ordination.pca(base, { signal });
         return {
           names: r.score_names,
           labels: r.score_names.map(
@@ -339,7 +348,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
         };
       }
       if (source === 'umap') {
-        const r = await deps.ordination.umap({ ...base, seed: UMAP_SEED });
+        const r = await deps.ordination.umap({ ...base, seed: UMAP_SEED }, { signal });
         return {
           names: r.score_names,
           labels: r.score_names.map((n) => `UMAP ${n}`),
@@ -351,7 +360,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       if (current.length < 3) {
         throw new Error('LDA needs at least three groups; select more groups in Dataset.');
       }
-      const r = await deps.ordination.lda({ ...base, group_column: '', group_by_file: true });
+      const r = await deps.ordination.lda({ ...base, group_column: '', group_by_file: true }, { signal });
       return {
         names: r.score_names,
         labels: r.score_names,
@@ -360,16 +369,16 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
         note: r.warnings.join('; ') || undefined,
       };
     };
-    run()
-      .then((s) => {
-        if (!cancelled) setScores({ kind: 'loaded', data: s });
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setScores({ kind: 'error', message: errorText(err) });
-      });
-    return () => {
-      cancelled = true;
-    };
+    void (async () => {
+      if (rowsChanged && !(await waitUnlessAborted(RERUN_DELAY_MS, signal))) return;
+      try {
+        const s = await run();
+        if (!signal.aborted) setScores({ kind: 'loaded', data: s });
+      } catch (err: unknown) {
+        if (!signal.aborted) setScores({ kind: 'error', message: errorText(err) });
+      }
+    })();
+    return () => controller.abort();
   }, [deps, source, scoresRowsKey, setupInput, analysisSetup.loaded]);
   const scoreRows = useMemo(
     () => (scores.kind === 'loaded' ? realignByUuid(scores.data.uuids, scores.data.values, rowUuids) : []),

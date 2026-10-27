@@ -6,8 +6,8 @@
 pub mod recent;
 
 use archaeodash_application::{
-    AnalysisJobs, ClusterService, ExploreService, ExportService, GroupService, ImportService,
-    OrdinationService, PreferenceService, SourceFileService, TransformService,
+    AnalysisJobs, CancellationToken, ClusterService, ExploreService, ExportService, GroupService,
+    ImportService, OrdinationService, PreferenceService, SourceFileService, TransformService,
 };
 use archaeodash_contracts::{
     AnalysisJobSnapshot, AppInfo, AppliedTransformation, ApplyTransformationRequest,
@@ -476,6 +476,46 @@ impl Default for DesktopExplore {
 /// the project root (Section 8.5 views are ephemeral, Section 5).
 pub struct DesktopOrdination {
     service: RwLock<Option<OrdinationService>>,
+    cancels: Mutex<OrdinationCancels>,
+}
+
+/// Longest client-chosen cancel token accepted (UUIDs are 36 characters).
+const MAX_CANCEL_TOKEN_LEN: usize = 128;
+/// How long a cancel that arrived before its run started is remembered.
+const EARLY_CANCEL_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Cancel tokens of running ordinations, keyed by the client's token. A
+/// cancel can reach the backend before its run registers (both are
+/// separate IPC calls), so such cancels are remembered briefly and the run
+/// starts already cancelled.
+#[derive(Default)]
+struct OrdinationCancels {
+    running: std::collections::HashMap<String, CancellationToken>,
+    early: std::collections::HashMap<String, std::time::Instant>,
+}
+
+impl OrdinationCancels {
+    fn prune(&mut self) {
+        let now = std::time::Instant::now();
+        self.early
+            .retain(|_, at| now.duration_since(*at) < EARLY_CANCEL_TTL);
+    }
+}
+
+/// Removes a run's token when the run ends, however it ends.
+struct RunningOrdination<'a> {
+    cancels: &'a Mutex<OrdinationCancels>,
+    key: Option<String>,
+}
+
+impl Drop for RunningOrdination<'_> {
+    fn drop(&mut self) {
+        if let Some(key) = self.key.take() {
+            if let Ok(mut cancels) = self.cancels.lock() {
+                cancels.running.remove(&key);
+            }
+        }
+    }
 }
 
 impl DesktopOrdination {
@@ -483,7 +523,62 @@ impl DesktopOrdination {
     pub fn new() -> Self {
         Self {
             service: RwLock::new(None),
+            cancels: Mutex::new(OrdinationCancels::default()),
         }
+    }
+
+    /// Registers a run under the client's cancel `token` (if any) and returns
+    /// its cancellation token plus a guard that unregisters it.
+    fn begin_run(
+        &self,
+        token: Option<String>,
+    ) -> Result<(CancellationToken, RunningOrdination<'_>), String> {
+        let cancel = CancellationToken::new();
+        let Some(token) = token else {
+            return Ok((
+                cancel,
+                RunningOrdination {
+                    cancels: &self.cancels,
+                    key: None,
+                },
+            ));
+        };
+        if token.is_empty() || token.len() > MAX_CANCEL_TOKEN_LEN {
+            return Err("invalid ordination cancel token".to_string());
+        }
+        let mut cancels = self.cancels.lock().map_err(|e| e.to_string())?;
+        cancels.prune();
+        if cancels.early.remove(&token).is_some() {
+            cancel.cancel();
+        }
+        cancels.running.insert(token.clone(), cancel.clone());
+        Ok((
+            cancel,
+            RunningOrdination {
+                cancels: &self.cancels,
+                key: Some(token),
+            },
+        ))
+    }
+
+    /// Desktop `cancel_ordination` command body: stops the ordination run
+    /// registered under `token` at its next checkpoint. Unknown tokens are
+    /// remembered briefly in case their run has not started yet.
+    pub fn cancel_ordination(&self, token: &str) -> Result<(), String> {
+        if token.is_empty() || token.len() > MAX_CANCEL_TOKEN_LEN {
+            return Err("invalid ordination cancel token".to_string());
+        }
+        let mut cancels = self.cancels.lock().map_err(|e| e.to_string())?;
+        cancels.prune();
+        match cancels.running.get(token) {
+            Some(cancel) => cancel.cancel(),
+            None => {
+                cancels
+                    .early
+                    .insert(token.to_string(), std::time::Instant::now());
+            }
+        }
+        Ok(())
     }
 
     /// Opens (or re-opens) the project root for ordination use cases.
@@ -507,21 +602,54 @@ impl DesktopOrdination {
     /// Desktop `ordination_pca` command body: prcomp-parity PCA (Section 15.4
     /// procedure 6); results are ephemeral and never persisted (Section 5).
     pub fn ordination_pca(&self, req: PcaRequest) -> Result<PcaResponse, String> {
-        self.with_service(|svc| svc.pca(&req))
+        self.ordination_pca_cancellable(req, None)
+    }
+
+    /// [`Self::ordination_pca`] that [`Self::cancel_ordination`] can stop
+    /// under the client's `token`.
+    pub fn ordination_pca_cancellable(
+        &self,
+        req: PcaRequest,
+        token: Option<String>,
+    ) -> Result<PcaResponse, String> {
+        let (cancel, _run) = self.begin_run(token)?;
+        self.with_service(|svc| svc.pca_with_cancel(&req, &cancel))
     }
 
     /// Desktop `ordination_lda` command body: `MASS::lda` moment-method
     /// parity with the legacy three-group minimum (Section 15.4 procedure 8);
     /// results are ephemeral and never persisted (Section 5).
     pub fn ordination_lda(&self, req: LdaRequest) -> Result<LdaResponse, String> {
-        self.with_service(|svc| svc.lda(&req))
+        self.ordination_lda_cancellable(req, None)
+    }
+
+    /// [`Self::ordination_lda`] that [`Self::cancel_ordination`] can stop
+    /// under the client's `token`.
+    pub fn ordination_lda_cancellable(
+        &self,
+        req: LdaRequest,
+        token: Option<String>,
+    ) -> Result<LdaResponse, String> {
+        let (cancel, _run) = self.begin_run(token)?;
+        self.with_service(|svc| svc.lda_with_cancel(&req, &cancel))
     }
 
     /// Desktop `ordination_umap` command body: legacy naive UMAP parity
     /// (Section 15.4 procedure 7); results are ephemeral and never persisted
     /// (Section 5).
     pub fn ordination_umap(&self, req: UmapRequest) -> Result<UmapResponse, String> {
-        self.with_service(|svc| svc.umap(&req))
+        self.ordination_umap_cancellable(req, None)
+    }
+
+    /// [`Self::ordination_umap`] that [`Self::cancel_ordination`] can stop
+    /// under the client's `token`.
+    pub fn ordination_umap_cancellable(
+        &self,
+        req: UmapRequest,
+        token: Option<String>,
+    ) -> Result<UmapResponse, String> {
+        let (cancel, _run) = self.begin_run(token)?;
+        self.with_service(|svc| svc.umap_with_cancel(&req, &cancel))
     }
 }
 
@@ -1746,6 +1874,61 @@ mod tests {
         assert_eq!(umap.score_names, vec!["V1", "V2"]);
         assert_eq!(umap.embedding.len(), 20);
         assert!(umap.embedding.iter().all(|row| row.len() == 2));
+
+        // Cancel tokens: a cancel that reaches the backend before its run
+        // starts still stops that run, even when the result is cached.
+        let umap_req = || UmapRequest {
+            path: commit.groups[0].path.clone(),
+            columns: vec!["as".into(), "fe".into()],
+            transformation: None,
+            seed: None,
+            extra_paths: vec![],
+        };
+        ordination.cancel_ordination("umap-1").expect("cancel");
+        let err = ordination
+            .ordination_umap_cancellable(umap_req(), Some("umap-1".into()))
+            .expect_err("cancelled before start");
+        assert!(err.contains("analysis_cancelled"), "{err}");
+        // The early cancel is consumed: the same token now runs normally.
+        let again = ordination
+            .ordination_umap_cancellable(umap_req(), Some("umap-1".into()))
+            .expect("token reusable after its cancel was consumed");
+        assert_eq!(again.embedding, umap.embedding);
+        ordination.cancel_ordination("pca-1").expect("cancel");
+        let err = ordination
+            .ordination_pca_cancellable(
+                PcaRequest {
+                    path: merged_path.clone(),
+                    columns: vec!["as".into(), "fe".into()],
+                    scale: false,
+                    transformation: None,
+                    extra_paths: vec![],
+                },
+                Some("pca-1".into()),
+            )
+            .expect_err("cancelled pca");
+        assert!(err.contains("analysis_cancelled"), "{err}");
+        ordination.cancel_ordination("lda-1").expect("cancel");
+        let err = ordination
+            .ordination_lda_cancellable(
+                LdaRequest {
+                    path: merged_path.clone(),
+                    columns: vec!["as".into(), "fe".into()],
+                    group_column: "Site".into(),
+                    transformation: None,
+                    extra_paths: vec![],
+                    group_by_file: false,
+                },
+                Some("lda-1".into()),
+            )
+            .expect_err("cancelled lda");
+        assert!(err.contains("analysis_cancelled"), "{err}");
+        // Finished runs leave nothing registered; bad tokens are refused.
+        assert!(ordination.cancels.lock().expect("lock").running.is_empty());
+        assert!(ordination.cancel_ordination("").is_err());
+        assert!(ordination
+            .ordination_umap_cancellable(umap_req(), Some("x".repeat(129)))
+            .is_err());
 
         // Validation errors surface as error payloads on the open service.
         let err = ordination

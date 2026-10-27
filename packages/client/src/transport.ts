@@ -136,10 +136,20 @@ export interface TransformationsService {
   apply(request: ApplyTransformationRequest): Promise<AppliedTransformation>;
 }
 
+/** Per-call options for long-running requests. */
+export interface CallOptions {
+  /**
+   * Aborting rejects the call with an `AbortError` right away and asks the
+   * backend to stop the work (desktop: `cancel_ordination`; hosted: the
+   * fetch is aborted).
+   */
+  readonly signal?: AbortSignal;
+}
+
 export interface OrdinationService {
-  pca(request: PcaRequest): Promise<PcaResponse>;
-  lda(request: LdaRequest): Promise<LdaResponse>;
-  umap(request: UmapRequest): Promise<UmapResponse>;
+  pca(request: PcaRequest, options?: CallOptions): Promise<PcaResponse>;
+  lda(request: LdaRequest, options?: CallOptions): Promise<LdaResponse>;
+  umap(request: UmapRequest, options?: CallOptions): Promise<UmapResponse>;
 }
 
 export interface AnalysisJobsService {
@@ -359,6 +369,22 @@ export interface Transport {
   readonly hostedFiles?: HostedFilesService;
   /** Hosted transformation definitions; absent in desktop (Tauri) mode. */
   readonly hostedTransformations?: HostedTransformationsService;
+}
+
+/** The rejection of a call whose `CallOptions.signal` was aborted. */
+export function abortError(): DOMException {
+  return new DOMException('Request cancelled', 'AbortError');
+}
+
+/** Whether `err` is the rejection of an aborted call (see {@link abortError}). */
+export function isAbortError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { name?: unknown }).name === 'AbortError';
+}
+
+/** A fresh client-chosen token naming one cancellable backend run. */
+export function newCancelToken(): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid ?? `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 /** Normalizes any backend rejection into a TransportError. */

@@ -75,7 +75,10 @@ import type {
   UmapResponse,
 } from '@archaeodash/contracts';
 import {
+  abortError,
+  newCancelToken,
   toTransportError,
+  type CallOptions,
   type ExportsService,
   type ExploreService,
   type FilesService,
@@ -214,10 +217,43 @@ export class TauriTransport implements Transport {
 
   private makeOrdination(): OrdinationService {
     return {
-      pca: (request: PcaRequest) => this.call<PcaResponse>('ordination_pca', { request }),
-      lda: (request: LdaRequest) => this.call<LdaResponse>('ordination_lda', { request }),
-      umap: (request: UmapRequest) => this.call<UmapResponse>('ordination_umap', { request }),
+      pca: (request: PcaRequest, options?: CallOptions) =>
+        this.cancellable<PcaResponse>('ordination_pca', request, options),
+      lda: (request: LdaRequest, options?: CallOptions) =>
+        this.cancellable<LdaResponse>('ordination_lda', request, options),
+      umap: (request: UmapRequest, options?: CallOptions) =>
+        this.cancellable<UmapResponse>('ordination_umap', request, options),
     };
+  }
+
+  /**
+   * Invokes an ordination command that `options.signal` can stop. The call
+   * carries a fresh cancel token; aborting rejects at once with an
+   * `AbortError` and sends `cancel_ordination` so the backend stops at its
+   * next checkpoint. Without a signal the command is invoked as before.
+   */
+  private cancellable<T>(cmd: string, request: unknown, options?: CallOptions): Promise<T> {
+    const signal = options?.signal;
+    if (!signal) return this.call<T>(cmd, { request });
+    if (signal.aborted) return Promise.reject(abortError());
+    const token = newCancelToken();
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = () => {
+        reject(abortError());
+        this.call<void>('cancel_ordination', { token }).catch(() => undefined);
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      this.call<T>(cmd, { request, token }).then(
+        (value) => {
+          signal.removeEventListener('abort', onAbort);
+          resolve(value);
+        },
+        (err: unknown) => {
+          signal.removeEventListener('abort', onAbort);
+          reject(err);
+        },
+      );
+    });
   }
 
   private makeJobs(): AnalysisJobsService {

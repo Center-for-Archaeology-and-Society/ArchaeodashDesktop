@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { TauriTransport } from './tauri.ts';
-import { TransportError, type Transport } from './transport.ts';
+import { TransportError, isAbortError, type Transport } from './transport.ts';
 import {
   registerTransportContractTests,
   type Harness,
@@ -139,4 +139,62 @@ test('tauri: structured envelope rejections keep their code', async () => {
     () => transport.preferences.get(),
     (err: unknown) => err instanceof TransportError && err.envelope.code === 'validation_error',
   );
+});
+
+const umapRequest = { path: 'groups/A.parquet', extra_paths: [], columns: ['Ti', 'Sr'], transformation: null, seed: 1 };
+
+test('tauri: an aborted ordination rejects at once and cancels its backend run', async () => {
+  const calls: { cmd: string; args?: Record<string, unknown> }[] = [];
+  let finish: (value: unknown) => void = () => undefined;
+  const invoke = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
+    calls.push({ cmd, args });
+    if (cmd === 'cancel_ordination') return Promise.resolve(undefined as T);
+    return new Promise<T>((resolve) => { finish = resolve as (value: unknown) => void; });
+  };
+  const transport = new TauriTransport(invoke);
+  const controller = new AbortController();
+  const pending = transport.ordination.umap(umapRequest, { signal: controller.signal });
+  controller.abort();
+  await assert.rejects(pending, (err: unknown) => isAbortError(err));
+  assert.equal(calls[0]?.cmd, 'ordination_umap');
+  const token = calls[0]?.args?.token;
+  assert.equal(typeof token, 'string');
+  assert.deepEqual(calls[0]?.args?.request, umapRequest);
+  assert.deepEqual(calls[1], { cmd: 'cancel_ordination', args: { token } });
+  // The late backend reply is ignored.
+  finish({});
+  await Promise.resolve();
+  assert.equal(calls.length, 2);
+});
+
+test('tauri: a signal that never aborts resolves normally with a token; no signal sends none', async () => {
+  const calls: { cmd: string; args?: Record<string, unknown> }[] = [];
+  const invoke = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
+    calls.push({ cmd, args });
+    return { score_names: ['PC1'] } as T;
+  };
+  const transport = new TauriTransport(invoke);
+  const out = await transport.ordination.pca(umapRequest, { signal: new AbortController().signal });
+  assert.deepEqual(out, { score_names: ['PC1'] });
+  assert.equal(typeof calls[0]?.args?.token, 'string');
+  await transport.ordination.lda({ ...umapRequest, group_column: 'Site' });
+  assert.deepEqual(Object.keys(calls[1]?.args ?? {}), ['request']);
+  // Two runs never share a token.
+  await transport.ordination.pca(umapRequest, { signal: new AbortController().signal });
+  assert.notEqual(calls[2]?.args?.token, calls[0]?.args?.token);
+});
+
+test('tauri: an already-aborted signal rejects without invoking', async () => {
+  const calls: string[] = [];
+  const invoke = async <T>(cmd: string): Promise<T> => {
+    calls.push(cmd);
+    return undefined as T;
+  };
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    new TauriTransport(invoke).ordination.umap(umapRequest, { signal: controller.signal }),
+    (err: unknown) => isAbortError(err),
+  );
+  assert.deepEqual(calls, []);
 });

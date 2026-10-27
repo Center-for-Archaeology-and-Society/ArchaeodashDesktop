@@ -34,6 +34,7 @@ import {
 import { useGroupInclusion } from '../datasets/GroupInclusion.tsx';
 import { activeFolderAmong, folderOf } from '../datasets/folders.ts';
 import { ImportDialog } from './ImportDialog.tsx';
+import { RERUN_DELAY_MS, waitUnlessAborted } from '../ordination/rerun.ts';
 import { BusyLabel, Spinner } from '../ui/Busy.tsx';
 
 export interface AnalysisSetupPanelProps {
@@ -113,8 +114,11 @@ export function AnalysisSetupPanel({ elements, groups, ordination, dataKey = '' 
 }
 
 /**
- * Runs the setup's precompute choices whenever the setup or the group files
- * change; results land in the backend's ordination cache.
+ * Runs the setup's precompute choices whenever the setup, the group files,
+ * or the included groups change; results land in the backend's ordination
+ * cache. A change aborts the running job (cancelling its backend work) and
+ * waits RERUN_DELAY_MS before starting again, so a burst of group checks
+ * starts one precompute.
  */
 function usePrecompute(
   setup: TransformationDefinition | null,
@@ -130,33 +134,35 @@ function usePrecompute(
       setStates([]);
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
+    const { signal } = controller;
     const update = (kind: OrdinationKind, state: PrecomputeState) => {
-      if (!cancelled) setStates((current) => current.map(([k, s]) => [k, k === kind ? state : s]));
+      if (!signal.aborted) setStates((current) => current.map(([k, s]) => [k, k === kind ? state : s]));
     };
     void (async () => {
+      if (!(await waitUnlessAborted(RERUN_DELAY_MS, signal))) return;
       const scanned = (await groups.scan()).filter((c) => c.ready && c.group);
       // Same groups the pages analyze: the active folder, minus exclusions.
       const folder = activeFolderAmong(scanned.map((c) => c.path), activeFolder);
       const candidates = scanned.filter((c) => (folder === null || folderOf(c.path) === folder) && !excluded?.has(c.path));
       const plan = planPrecompute(setup, candidates);
-      if (cancelled) return;
+      if (signal.aborted) return;
       setStates([
         ...plan.jobs.map((job): [OrdinationKind, PrecomputeState] => [job.kind, 'waiting']),
         ...plan.skipped.map((s): [OrdinationKind, PrecomputeState] => [s.kind, { skipped: s.reason }]),
       ]);
       for (const job of plan.jobs) {
-        if (cancelled) return;
+        if (signal.aborted) return;
         update(job.kind, 'computing');
         try {
-          await job.run(ordination);
+          await job.run(ordination, signal);
           update(job.kind, 'ready');
         } catch (cause) {
           update(job.kind, { failed: cause instanceof Error ? cause.message : String(cause) });
         }
       }
-    })().catch(() => { if (!cancelled) setStates([]); });
-    return () => { cancelled = true; };
+    })().catch(() => { if (!signal.aborted) setStates([]); });
+    return () => controller.abort();
   }, [setup, groups, ordination, dataKey, excluded, activeFolder]);
   return states;
 }

@@ -538,9 +538,14 @@ fn one_embedding(
     cancel: &CancellationToken,
 ) -> Result<Vec<Vec<f64>>, DomainError> {
     let spectral = if v < SPARSE_SPECTRAL_ROWS {
-        laplacian_dense(edges, v)
+        // The dense solve itself cannot be interrupted; checking around it
+        // bounds a cancel's wait to one component's solve.
+        cancel.check()?;
+        let vectors = laplacian_dense(edges, v)
             .and_then(|l| smallest_eigenpairs(&l, d + 1))
-            .map(|(_, vectors)| vectors)
+            .map(|(_, vectors)| vectors);
+        cancel.check()?;
+        vectors
     } else {
         sparse_smallest_eigenvectors(edges, v, d + 1, cancel)?
     };
@@ -1290,6 +1295,29 @@ mod tests {
             names: (0..p).map(|j| format!("c{j}")).collect(),
             cols,
         }
+    }
+
+    #[test]
+    fn cancelling_mid_run_stops_umap_early() {
+        // A superseded page request cancels its token while UMAP runs; the
+        // run must stop at its next checkpoint instead of finishing. Fifteen
+        // 100-row blobs keep each dense spectral solve (which cannot be
+        // interrupted) small, so the neighbour search and layout epochs,
+        // which check often, dominate.
+        let m = blobs(1_500, 4, 15);
+        let full = std::time::Instant::now();
+        umap_cancellable(&m, 1, &CancellationToken::default()).expect("full run");
+        let full = full.elapsed();
+        let cancel = CancellationToken::new();
+        let started = std::time::Instant::now();
+        cancel.set_deadline(started + full / 10);
+        let err = umap_cancellable(&m, 1, &cancel).expect_err("cancelled mid-run");
+        assert!(err.to_string().contains("analysis_cancelled"), "{err}");
+        assert!(
+            started.elapsed() < full / 2,
+            "stopped after {:?} of a {full:?} run",
+            started.elapsed()
+        );
     }
 
     #[test]

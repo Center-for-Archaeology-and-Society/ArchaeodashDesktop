@@ -33,7 +33,8 @@ import { TableCard, num, type TableSheet } from '../ui/TableExport.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
 import { TabPanels } from '../ui/TabPanels.tsx';
 import { ContributionTableCard, LdaScalingBars, LdaStripPlot, LdaVectorPlot, PcaVariablesPlot } from './OrdinationCharts.tsx';
-import { GRADIENT_SCALE, componentCount, individualCos2, ldaLayout, requestGate } from './ordination-model.ts';
+import { GRADIENT_SCALE, componentCount, individualCos2, ldaLayout } from './ordination-model.ts';
+import { RERUN_DELAY_MS, supersedingRuns, waitUnlessAborted } from './rerun.ts';
 import { plotlyText } from '../charts/plotly-text.ts';
 
 export interface OrdinationDeps {
@@ -416,29 +417,35 @@ export function PcaResult({
 }
 
 function useOrdination<TResp>(
-  request: () => Promise<TResp>,
+  request: (signal: AbortSignal) => Promise<TResp>,
   deps: readonly unknown[],
 ): { state: AsyncState<TResp>; reload: () => void } {
   const [state, setState] = useState<AsyncState<TResp>>({ kind: 'idle' });
-  // Only the latest request may set state: a slower earlier response (stale
-  // inputs or a superseded recompute) is dropped.
-  const [gate] = useState(requestGate);
-  const run = useCallback(async () => {
-    const current = gate.begin();
+  // Only the latest request may run: starting one aborts the previous run,
+  // which cancels its backend work, and its late response is dropped.
+  const [runs] = useState(supersedingRuns);
+  // The first run starts at once; reruns from changed inputs (group
+  // selection, setup) wait RERUN_DELAY_MS so a burst of changes runs once.
+  const started = useRef(false);
+  const run = useCallback(async (wait: boolean) => {
+    const signal = runs.next();
     setState({ kind: 'loading' });
+    if (wait && !(await waitUnlessAborted(RERUN_DELAY_MS, signal))) return;
     try {
-      const r = await request();
-      if (current()) setState({ kind: 'loaded', data: r });
+      const r = await request(signal);
+      if (!signal.aborted) setState({ kind: 'loaded', data: r });
     } catch (err: unknown) {
-      if (current()) setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+      if (!signal.aborted) setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
   useEffect(() => {
-    void run();
-    return gate.cancel;
-  }, [run, gate]);
-  return { state, reload: () => void run() };
+    const wait = started.current;
+    started.current = true;
+    void run(wait);
+    return runs.stop;
+  }, [run, runs]);
+  return { state, reload: () => void run(false) };
 }
 
 /** The rows being ordinated: combined selected groups, request paths, and
@@ -491,9 +498,9 @@ function PcaView({ deps, data, extraPaths, groups, rows, columns, transformation
   );
   const latest = useLatest({ request, rowUuids });
   const settingsKey = JSON.stringify([request.columns, request.transformation]);
-  const { state: computed, reload } = useOrdination<ForRows<PcaResponse>>(async () => {
+  const { state: computed, reload } = useOrdination<ForRows<PcaResponse>>(async (signal) => {
     const { request: current, rowUuids: uuids } = latest.current;
-    return { uuids, result: await deps.ordination.pca(current) };
+    return { uuids, result: await deps.ordination.pca(current, { signal }) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deps, rowsKey, settingsKey]);
   const state = useMemo((): AsyncState<PcaResponse> => {
@@ -543,9 +550,9 @@ function UmapView({ deps, data, extraPaths, groups, rows, columns, transformatio
   };
   const latest = useLatest({ request, rowUuids });
   const settingsKey = JSON.stringify([request.columns, request.transformation]);
-  const { state } = useOrdination<ForRows<UmapResponse>>(async () => {
+  const { state } = useOrdination<ForRows<UmapResponse>>(async (signal) => {
     const { request: current, rowUuids: uuids } = latest.current;
-    return { uuids, result: await deps.ordination.umap(current) };
+    return { uuids, result: await deps.ordination.umap(current, { signal }) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deps, rowsKey, settingsKey]);
   const result = useMemo(
@@ -689,14 +696,17 @@ export function LdaView({
     defaultGroupColumn ?? data.descriptive_columns[0] ?? '',
   );
   const { state } = useOrdination<LdaResponse>(
-    () =>
-      deps.ordination.lda({
-        path: data.path,
-        extra_paths: [...extraPaths],
-        columns: [...(columns ?? data.elemental_columns)],
-        transformation: transformation ?? null,
-        group_column: groupColumn,
-      }),
+    (signal) =>
+      deps.ordination.lda(
+        {
+          path: data.path,
+          extra_paths: [...extraPaths],
+          columns: [...(columns ?? data.elemental_columns)],
+          transformation: transformation ?? null,
+          group_column: groupColumn,
+        },
+        { signal },
+      ),
     [deps, data, extraPaths, groupColumn, columns, transformation],
   );
 

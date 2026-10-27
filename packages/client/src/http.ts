@@ -75,6 +75,7 @@ import {
   type FilesService,
   type GroupsService,
   type ImportsService,
+  type CallOptions,
   type OrdinationService,
   type ClusteringService,
   type AnalysisJobsService,
@@ -166,9 +167,10 @@ export class HttpTransport implements Transport {
   private async request<T>(
     method: string,
     path: string,
-    options?: { query?: Record<string, string>; body?: unknown; raw?: Uint8Array },
+    options?: { query?: Record<string, string>; body?: unknown; raw?: Uint8Array; signal?: AbortSignal },
   ): Promise<T> {
     const init: RequestInit = { method };
+    if (options?.signal) init.signal = options.signal;
     if (options?.body !== undefined) {
       init.headers = { 'content-type': 'application/json' };
       init.body = JSON.stringify(options.body);
@@ -304,9 +306,14 @@ export class HttpTransport implements Transport {
 
   private makeOrdination(): OrdinationService {
     return {
-      pca: (request: PcaRequest) => this.request('POST', '/api/v1/ordination/pca', { body: request }),
-      lda: (request: LdaRequest) => this.request('POST', '/api/v1/ordination/lda', { body: request }),
-      umap: (request: UmapRequest) => this.request('POST', '/api/v1/ordination/umap', { body: request }),
+      // Aborting cancels the fetch; the hosted server finishes or drops the
+      // work on its own (it has no per-request cancel route).
+      pca: (request: PcaRequest, options?: CallOptions) =>
+        this.request('POST', '/api/v1/ordination/pca', { body: request, signal: options?.signal }),
+      lda: (request: LdaRequest, options?: CallOptions) =>
+        this.request('POST', '/api/v1/ordination/lda', { body: request, signal: options?.signal }),
+      umap: (request: UmapRequest, options?: CallOptions) =>
+        this.request('POST', '/api/v1/ordination/umap', { body: request, signal: options?.signal }),
     };
   }
 

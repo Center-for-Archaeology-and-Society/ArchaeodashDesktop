@@ -433,6 +433,18 @@ impl OrdinationService {
     /// values) were already ordinated with the same settings, whichever
     /// files hold them.
     pub fn pca(&self, req: &PcaRequest) -> Result<PcaResponse, DomainError> {
+        self.pca_with_cancel(req, &CancellationToken::new())
+    }
+
+    /// [`Self::pca`] that stops with `analysis_cancelled` once `cancel`
+    /// fires: checked before reading, before computing, and after waiting
+    /// for another caller computing the same entry.
+    pub fn pca_with_cancel(
+        &self,
+        req: &PcaRequest,
+        cancel: &CancellationToken,
+    ) -> Result<PcaResponse, DomainError> {
+        cancel.check()?;
         if req.columns.is_empty() {
             return Err(validation(
                 "ordination_empty",
@@ -452,6 +464,7 @@ impl OrdinationService {
         };
         let file = content_cache_file(&self.root, "pca", &key, &canonical);
         let mut result: PcaResponse = cached_or_compute(file.as_deref(), || {
+            cancel.check()?;
             Self::compute_pca(req, &canonical, &input.context())
         })?;
         result.scores = to_input_order(result.scores, &order);
@@ -463,8 +476,19 @@ impl OrdinationService {
     /// LDA, served from the cache when this exact request already ran on
     /// the same input files.
     pub fn lda(&self, req: &LdaRequest) -> Result<LdaResponse, DomainError> {
+        self.lda_with_cancel(req, &CancellationToken::new())
+    }
+
+    /// [`Self::lda`] that stops with `analysis_cancelled` once `cancel`
+    /// fires (checked before and after reading the inputs).
+    pub fn lda_with_cancel(
+        &self,
+        req: &LdaRequest,
+        cancel: &CancellationToken,
+    ) -> Result<LdaResponse, DomainError> {
+        cancel.check()?;
         let file = self.cache_file("lda", req, &req.path, &req.extra_paths);
-        cached_or_compute(file.as_deref(), || self.compute_lda(req))
+        cached_or_compute(file.as_deref(), || self.compute_lda(req, cancel))
     }
 
     /// UMAP, served from the cache when possible (see [`Self::pca`]). UMAP
@@ -474,6 +498,18 @@ impl OrdinationService {
     /// 7, class D), with a deterministic seed replacing the legacy unseeded
     /// global stream.
     pub fn umap(&self, req: &UmapRequest) -> Result<UmapResponse, DomainError> {
+        self.umap_with_cancel(req, &CancellationToken::new())
+    }
+
+    /// [`Self::umap`] that stops with `analysis_cancelled` once `cancel`
+    /// fires; the UMAP itself checks it throughout the neighbour search and
+    /// the layout epochs.
+    pub fn umap_with_cancel(
+        &self,
+        req: &UmapRequest,
+        cancel: &CancellationToken,
+    ) -> Result<UmapResponse, DomainError> {
+        cancel.check()?;
         if req.columns.is_empty() {
             return Err(validation(
                 "ordination_empty",
@@ -493,7 +529,7 @@ impl OrdinationService {
             req.transformation.as_ref(),
             req.seed.unwrap_or(DEFAULT_SEED),
             &input.context(),
-            &CancellationToken::new(),
+            cancel,
         )?;
         result.embedding = to_input_order(result.embedding, &order);
         result.path = req.path.clone();
@@ -547,7 +583,12 @@ impl OrdinationService {
 
     /// lda-parity LDA (Section 15.4 procedure 8) over one group file, with
     /// the legacy `validate_lda_groups` three-group minimum.
-    fn compute_lda(&self, req: &LdaRequest) -> Result<LdaResponse, DomainError> {
+    fn compute_lda(
+        &self,
+        req: &LdaRequest,
+        cancel: &CancellationToken,
+    ) -> Result<LdaResponse, DomainError> {
+        cancel.check()?;
         if req.columns.is_empty() {
             return Err(validation(
                 "ordination_empty",
@@ -560,6 +601,7 @@ impl OrdinationService {
             &req.columns,
             req.transformation.as_ref(),
         )?;
+        cancel.check()?;
         let groups = if req.group_by_file {
             input.file_group_labels()
         } else {

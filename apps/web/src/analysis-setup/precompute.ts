@@ -23,7 +23,8 @@ const RUN_ORDER: readonly OrdinationKind[] = ['pca', 'lda', 'umap'];
 
 export interface PrecomputeJob {
   readonly kind: OrdinationKind;
-  readonly run: (ordination: OrdinationService) => Promise<void>;
+  /** Aborting `signal` stops the job and cancels its backend work. */
+  readonly run: (ordination: OrdinationService, signal?: AbortSignal) => Promise<void>;
 }
 
 export interface PrecomputePlan {
@@ -56,11 +57,11 @@ export function planPrecompute(setup: TransformationDefinition | null, candidate
     if (kind === 'pca') {
       const request: PcaRequest = { ...base };
       requests.pca = request;
-      jobs.push({ kind, run: async (o) => { await o.pca(request); } });
+      jobs.push({ kind, run: async (o, signal) => { await o.pca(request, { signal }); } });
     } else if (kind === 'umap') {
       const request: UmapRequest = { ...base, seed: UMAP_SEED };
       requests.umap = request;
-      jobs.push({ kind, run: async (o) => { await o.umap(request); } });
+      jobs.push({ kind, run: async (o, signal) => { await o.umap(request, { signal }); } });
     } else if (ready.length < 3) {
       skipped.push({ kind, reason: 'needs three or more groups' });
     } else {
@@ -69,7 +70,7 @@ export function planPrecompute(setup: TransformationDefinition | null, candidate
       const byFile: LdaRequest = { ...base, group_column: '', group_by_file: true };
       const byColumn: LdaRequest = { ...base, group_column: syntheticGroupColumn(descriptive) };
       requests.lda.push(byFile, byColumn);
-      jobs.push({ kind, run: async (o) => { await o.lda(byFile); await o.lda(byColumn); } });
+      jobs.push({ kind, run: async (o, signal) => { await o.lda(byFile, { signal }); await o.lda(byColumn, { signal }); } });
     }
   }
   return { jobs, skipped, requests };

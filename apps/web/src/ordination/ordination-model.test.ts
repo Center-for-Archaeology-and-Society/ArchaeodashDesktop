@@ -12,7 +12,6 @@ import {
   ldaDimensions,
   ldaLayout,
   ldaVectors,
-  requestGate,
   variableContrib,
   variableCoords,
 } from './ordination-model.ts';
@@ -106,14 +105,4 @@ test('LDA vectors end at each variable scaling on LD1/LD2', () => {
 test('rows group by first appearance; mismatched groups collapse to one', () => {
   assert.deepEqual(indicesByGroup(3, ['a', 'b', 'a']), [['a', [0, 2]], ['b', [1]]]);
   assert.deepEqual(indicesByGroup(2, ['a']), [['All rows', [0, 1]]]);
-});
-
-test('request gate keeps only the latest request current', () => {
-  const gate = requestGate();
-  const first = gate.begin();
-  const second = gate.begin();
-  assert.equal(first(), false, 'superseded request is stale');
-  assert.equal(second(), true);
-  gate.cancel();
-  assert.equal(second(), false, 'cancel (unmount/input change) invalidates');
 });
