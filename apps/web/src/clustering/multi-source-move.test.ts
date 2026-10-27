@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { BatchTransferUnitsRequest, TransactionResponse, TransferUnitsRequest } from '@archaeodash/client';
-import { moveAcrossSources } from './multi-source-move.ts';
+import { includedAfterMove, moveAcrossSources } from './multi-source-move.ts';
 
 function recorder() {
   const calls: { kind: string; request: TransferUnitsRequest | BatchTransferUnitsRequest }[] = [];
@@ -115,5 +115,65 @@ test('a failure part-way reports how many units already moved', async () => {
       context,
     ),
     /conflict \(1 units had already moved\.\)/,
+  );
+});
+
+test('a move into a new group reports it as created, and the group is included', async () => {
+  const r = recorder();
+  const out = await moveAcrossSources(
+    r.groups,
+    {
+      action: 'move',
+      source_path: 'A',
+      destination_path: 'N',
+      destination_group_name: 'New',
+      selected_uuids: ['a1', 'c1'],
+      expected_source_revision: 'A#0',
+    },
+    context,
+  );
+  // Created once, though two sources moved into it.
+  assert.deepEqual(out.createdGroups, ['N']);
+  assert.deepEqual(includedAfterMove(['A', 'B', 'C', 'N'], ['A', 'C'], out.createdGroups), ['A', 'C', 'N']);
+});
+
+test('a move into an existing unchecked group leaves it unchecked', async () => {
+  const r = recorder();
+  const out = await moveAcrossSources(
+    r.groups,
+    { action: 'move', source_path: 'A', destination_path: 'B', selected_uuids: ['a1'], expected_source_revision: 'A#0' },
+    context,
+  );
+  // The transaction rewrites B, but B already existed.
+  assert.ok(out.transactions[0]!.outputs.some((o) => o.path === 'B'));
+  assert.deepEqual(out.createdGroups, []);
+  // B was unchecked (only A and C included) and stays unchecked.
+  assert.deepEqual(includedAfterMove(['A', 'B', 'C'], ['A', 'C'], out.createdGroups), ['A', 'C']);
+  // A checked destination stays checked.
+  assert.deepEqual(includedAfterMove(['A', 'B', 'C'], ['A', 'B'], out.createdGroups), ['A', 'B']);
+});
+
+test('a batch move includes only the new destinations, not existing unchecked ones', async () => {
+  const r = recorder();
+  const out = await moveAcrossSources(
+    r.groups,
+    {
+      source_path: 'A',
+      expected_source_revision: 'A#0',
+      targets: [
+        { destination_path: 'N', destination_group_name: 'New', expected_destination_revision: null, selected_uuids: ['a1', 'c1'] },
+        { destination_path: 'B', expected_destination_revision: 'B#0', selected_uuids: ['a2'] },
+      ],
+    },
+    context,
+  );
+  assert.deepEqual(out.createdGroups, ['N']);
+  assert.deepEqual(includedAfterMove(['A', 'B', 'C', 'N'], ['A', 'C'], out.createdGroups), ['A', 'C', 'N']);
+});
+
+test('created groups match scanned paths whatever the separator', () => {
+  assert.deepEqual(
+    includedAfterMove(['g\\A.parquet', 'g\\B.parquet', 'g\\New.parquet'], ['g\\A.parquet'], ['g/New.parquet']),
+    ['g\\A.parquet', 'g\\New.parquet'],
   );
 });

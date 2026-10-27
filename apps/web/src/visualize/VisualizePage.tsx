@@ -40,7 +40,7 @@ import {
   type PaletteTheme,
   type Selection,
 } from './visualize-model.ts';
-import { moveAcrossSources } from '../clustering/multi-source-move.ts';
+import { includedAfterMove, moveAcrossSources } from '../clustering/multi-source-move.ts';
 import { plotlyText } from '../charts/plotly-text.ts';
 import { ValueMultiSelect } from './ValueMultiSelect.tsx';
 import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
@@ -550,7 +550,9 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
     // Set before the move: a multi-source move can create the group and then
     // fail part-way, and the group should still become the target.
     if (isNew) setCreatedTarget(destinationPath);
-    const keep = (all: string[]) => all.filter((p) => p === destinationPath || selectedPaths.includes(p));
+    // Include a group this move creates; an existing destination keeps its
+    // inclusion (an unchecked group stays unchecked).
+    const keep = (all: string[]) => includedAfterMove(all, selectedPaths, isNew ? [destinationPath] : []);
     try {
       const outcome = await moveAcrossSources(
         deps.groups,
@@ -567,7 +569,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       setSelection(replaceSelection([]));
       setAssignState({ kind: 'loaded', data: outcome.moved });
       // Rescan (a new group may exist, an emptied one may be gone) and keep
-      // the current selection plus the destination group. The new revisions
+      // the current selection plus a newly created destination group. The new revisions
       // reload only the files that changed; plot coordinates are kept by
       // sample, so PCA and UMAP are not recomputed.
       await rescan(keep);

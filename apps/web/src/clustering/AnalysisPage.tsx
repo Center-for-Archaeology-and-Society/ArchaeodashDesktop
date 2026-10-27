@@ -2,7 +2,7 @@ import { runAnalysisJob } from './job-workflow.ts';
 import {
   analysisColumns, defaultIdColumn, groupEligibility, pcCountOptions, projectionLabels, sourceFeatureCount, sourceOptions, uniqueIdColumns,
 } from './input-options.ts';
-import { moveAcrossSources } from './multi-source-move.ts';
+import { includedAfterMove, moveAcrossSources } from './multi-source-move.ts';
 import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
 import { useGroupFiles } from '../datasets/useGroupFiles.ts';
 import { rowContentKey } from '../datasets/rowKeys.ts';
@@ -411,11 +411,11 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
         ? `Moved ${outcome.moved} analytical units. Recompute analysis for the updated data.`
         : `Moved ${outcome.moved} analytical units. The clustering still applies to the same samples; assign more clusters or recompute.`);
       try {
-        // Keep the selection, plus any group a move created.
-        const created = outcome.transactions.flatMap(tx => tx.outputs.map(o => o.path));
+        // Keep the selection, plus any group the move created. An existing
+        // destination keeps its inclusion (an unchecked group stays unchecked).
         const selected = dataset.selectedPaths;
         // The new revisions reload only the files the move changed.
-        await dataset.rescan(all => all.filter(p => selected.includes(p) || created.includes(p)));
+        await dataset.rescan(all => includedAfterMove(all, selected, outcome.createdGroups));
         notifyGroupsChanged();
       } catch (e) {
         setError(`Move committed, but reloading failed. Reopen the dataset. ${e instanceof Error ? e.message : String(e)}`);

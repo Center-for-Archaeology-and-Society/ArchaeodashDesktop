@@ -8,6 +8,10 @@
  *
  * Steps run one after another, so a failure part-way leaves earlier steps
  * committed; the error says how many units had already moved.
+ *
+ * After a move, `includedAfterMove` keeps the groups that were included
+ * and adds only the groups the move created: an existing destination keeps
+ * its inclusion (an unchecked group stays unchecked).
  */
 import type {
   BatchTransferUnitsRequest,
@@ -28,6 +32,24 @@ export interface MultiSourceContext {
 export interface MultiSourceOutcome {
   readonly moved: number;
   readonly transactions: TransactionResponse[];
+  /** Destination paths this move created (new groups), in creation order. */
+  readonly createdGroups: string[];
+}
+
+const slashed = (path: string) => path.replace(/\\/g, '/');
+
+/**
+ * Groups to include once a move is done: those included before it, plus the
+ * groups it created. Existing destinations are not added, so their inclusion
+ * is left as it was.
+ */
+export function includedAfterMove(
+  all: readonly string[],
+  included: readonly string[],
+  createdGroups: readonly string[],
+): string[] {
+  const created = new Set(createdGroups.map(slashed));
+  return all.filter((p) => included.includes(p) || created.has(slashed(p)));
 }
 
 type GroupsMover = Pick<GroupsService, 'transferUnits' | 'batchTransferUnits'>;
@@ -43,7 +65,9 @@ export async function moveAcrossSources(
   context: MultiSourceContext,
 ): Promise<MultiSourceOutcome> {
   const revisions = new Map(context.revisions);
+  // Destinations addressed by an earlier step (named only once).
   const created = new Set<string>();
+  const createdGroups: string[] = [];
   const transactions: TransactionResponse[] = [];
   let moved = 0;
   const fromSource = (uuids: readonly string[], source: string) =>
@@ -76,6 +100,7 @@ export async function moveAcrossSources(
         transactions.push(tx);
         track(revisions, tx);
         for (const t of targets) {
+          if (t.destination_group_name != null && !created.has(t.destination_path)) createdGroups.push(t.destination_path);
           created.add(t.destination_path);
           moved += t.selected_uuids.length;
         }
@@ -94,6 +119,7 @@ export async function moveAcrossSources(
         });
         transactions.push(tx);
         track(revisions, tx);
+        if (name !== null) createdGroups.push(request.destination_path);
         created.add(request.destination_path);
         moved += uuids.length;
       }
@@ -102,5 +128,5 @@ export async function moveAcrossSources(
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(moved > 0 ? `${message} (${moved} units had already moved.)` : message);
   }
-  return { moved, transactions };
+  return { moved, transactions, createdGroups };
 }
