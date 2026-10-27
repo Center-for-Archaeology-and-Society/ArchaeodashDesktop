@@ -44,7 +44,7 @@ The Data Manager (left sidebar) lists the project's group files, organized in **
 - A **folder** is one grouping of your samples. Each group is one file inside a folder, and a sample may appear at most once per folder.
 - Analyses use one folder at a time — the folder with the filled circle (badge *In analyses*). Click the circle beside another folder to use it instead.
 - Tick or untick groups to include or exclude them from analyses. **All**, **None**, **Invert**, and **Only selected** change the inclusion quickly; the view filter shows all, included, or excluded groups.
-- Toolbar actions: **New folder…**, **Rename…** (a folder, or a single group), **Copy to…** / **Move to…** (copy or move whole groups into another folder, for example to start a new grouping of the same samples), **Merge** (groups in the same folder), **Add column…** (add a descriptive column with a default value to every group in a folder; replacing an existing column asks for confirmation), and **Delete** (groups, or an empty folder).
+- Toolbar actions: **New folder…**, **Rename folder…** (the selected folder), **Rename group…** (one highlighted group and its file; it stays checked or unchecked for analyses; F2 renames whichever is focused), **Copy to…** / **Move to…** (copy or move whole groups into another folder, for example to start a new grouping of the same samples), **Merge** (groups in the same folder), **Add column…** (add a descriptive column with a default value to every group in a folder; replacing an existing column asks for confirmation), and **Delete** (groups, or an empty folder).
 - Every change is a journaled transaction: it is either applied to every affected file or to none, and a change is refused if a file changed since you loaded it.
 
 ### Import data

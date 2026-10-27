@@ -1,7 +1,7 @@
 /**
  * Data Manager sidebar: a compact file manager for the project's group files.
- * Toolbar (Import…, Export…, Refresh, New folder…, Rename… (folder or one
- * group), Add column…, Copy to…, Move to…, Merge, Delete), a keyboard-accessible
+ * Toolbar (Import…, Export…, Refresh, New folder…, Rename folder…, Rename
+ * group…, Add column…, Copy to…, Move to…, Merge, Delete), a keyboard-accessible
  * tree (role="tree") with multi-select, inline name/confirm forms, a details
  * panel for the selected file, and the import wizard in a modal dialog.
  */
@@ -107,6 +107,62 @@ export function pathLike(like: string, path: string): string {
 export function renamedExclusions(excluded: Iterable<string>, from: string, to: string): string[] {
   const renamed = pathLike(from, to);
   return [...excluded].map((path) => (path === from ? renamed : path));
+}
+
+/** A character no group or folder name may contain (Windows, macOS, Linux), control characters included. */
+const invalidNameChar = (c: string) => {
+  const code = c.codePointAt(0) ?? 0;
+  return code < 0x20 || (code >= 0x7f && code <= 0x9f) || '<>:"/\\|?*'.includes(c);
+};
+
+/** File name stem the backend gives a group name (`sanitize_group_name`). */
+export function groupFileStem(name: string): string {
+  return name.replace(/[^\p{L}\p{N}._-]/gu, '_') || 'group';
+}
+
+/** A name Windows reserves for devices (`CON`, `COM1`, `LPT3.txt`, ...). */
+function windowsReserved(name: string): boolean {
+  const stem = name.toUpperCase().split('.')[0] ?? '';
+  return /^(CON|PRN|AUX|NUL|COM\d|LPT\d)$/.test(stem);
+}
+
+/**
+ * Why `newName` cannot be the new name of the group at `path` ('' when it
+ * can). Same rules as the backend: not empty, a portable file name, and no
+ * other group in the same folder with that name or that group file.
+ */
+export function groupNameProblem(entries: readonly GroupFileEntry[], path: string, newName: string): string {
+  const name = newName.trim();
+  if (!name) return 'Enter a group name.';
+  if ([...name].length > 100) return 'A group name can have at most 100 characters.';
+  if (name.startsWith('.')) return 'A group name cannot start with a dot.';
+  if ([...name].some(invalidNameChar)) return 'A group name cannot contain < > : " / \\ | ? *';
+  const stem = groupFileStem(name);
+  if (windowsReserved(stem)) return `“${name}” would give a group file name that Windows reserves.`;
+  const folder = folderOf(path);
+  const others = entries.filter((entry) => entry.path !== path && folderOf(entry.path) === folder);
+  const sameName = others.find((entry) => entry.name.toLowerCase() === name.toLowerCase());
+  if (sameName) return `${quoted(folder)} already has a group named “${sameName.name}”.`;
+  const file = `${stem}.parquet`;
+  const sameFile = others.find((entry) => basename(entry.path).toLowerCase() === file.toLowerCase());
+  if (sameFile) return `${quoted(folder)} already has the group file ${file} (${sameFile.name}).`;
+  return '';
+}
+
+/**
+ * Renames one group through the backend. Returns its new path, written with
+ * the scanned path's separators, and the exclusions with that path in place
+ * of the old one, so the group stays included in (or left out of) analyses.
+ */
+export async function renameGroupFile(
+  rename: NonNullable<DataManagerTransport['groups']['renameGroup']>,
+  entry: { readonly path: string; readonly revision: string },
+  newName: string,
+  excluded: Iterable<string>,
+): Promise<{ path: string; excluded: string[] }> {
+  const result = await rename({ path: entry.path, expected_revision: entry.revision, new_name: newName.trim() });
+  const path = pathLike(entry.path, result.outputs[0]?.path ?? entry.path);
+  return { path, excluded: renamedExclusions(excluded, entry.path, path) };
 }
 
 export async function loadGroupFiles(groups: DataManagerTransport['groups']): Promise<GroupFileEntry[]> {
@@ -285,7 +341,12 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
       const nextSelected = await work();
       setPending(null);
       await refresh();
-      if (nextSelected) { setSelection({ selected: nextSelected, anchor: nextSelected[0] ?? null }); setSelectedFolder(null); }
+      if (nextSelected) {
+        setSelection({ selected: nextSelected, anchor: nextSelected[0] ?? null });
+        setSelectedFolder(null);
+        // One resulting group (a rename) keeps the keyboard focus too.
+        if (nextSelected.length === 1) setFocusId(nextSelected[0]!);
+      }
       setStatus(done);
       onDataChanged?.();
     } catch (cause) {
@@ -359,14 +420,13 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     const entry = selectedEntries.length === 1 ? selectedEntries[0] : undefined;
     if (pending?.kind !== 'rename-group' || !rename || !entry?.revision) return;
     const name = pending.name.trim();
-    if (!name || name === entry.name) return;
+    if (name === entry.name || groupNameProblem(entries, entry.path, name)) return;
+    const revision = entry.revision;
     void runChange(async () => {
-      const result = await rename({ path: entry.path, expected_revision: entry.revision!, new_name: name });
-      // Same separators as the scanned paths, so selection and inclusion match.
-      const renamed = pathLike(entry.path, result.outputs[0]?.path ?? entry.path);
+      const renamed = await renameGroupFile(rename, { path: entry.path, revision }, name, inclusion?.excluded ?? []);
       // Keep the group's inclusion in analyses with its new file name.
-      if (inclusion && renamed !== entry.path) inclusion.setExcluded(renamedExclusions(inclusion.excluded, entry.path, renamed));
-      return [renamed];
+      if (inclusion && renamed.path !== entry.path) inclusion.setExcluded(renamed.excluded);
+      return [renamed.path];
     }, `Renamed ${entry.name} to ${name}.`, `Renaming ${entry.name}…`);
   };
 
@@ -471,10 +531,8 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
   const renameTarget = selectedEntries.length === 1 && !selectedEntries[0]!.error && selectedEntries[0]!.revision ? selectedEntries[0]! : null;
   const canRenameGroup = !busy && !!transport.groups.renameGroup && renameTarget !== null;
   const canRenameFolder = !busy && supportsFolders && !!selectedFolderNode && selectedFolderNode.path !== '' && !!transport.groups.renameFolder;
-  const startRename = () => {
-    if (selectedFolderNode) setPending({ kind: 'rename-folder', name: selectedFolderNode.name });
-    else if (renameTarget) setPending({ kind: 'rename-group', name: renameTarget.name });
-  };
+  const startRenameFolder = () => { if (selectedFolderNode) setPending({ kind: 'rename-folder', name: selectedFolderNode.name }); };
+  const startRenameGroup = () => { if (renameTarget) setPending({ kind: 'rename-group', name: renameTarget.name }); };
   // Add column… applies to one folder: the selected folder, or the folder of
   // the highlighted groups, or the folder analyses use.
   const columnFolder = selectedFolderNode ? selectedFolderNode.path : selectedFolders.length === 1 ? selectedFolders[0]! : selectedEntries.length === 0 ? activeFolder : null;
@@ -596,7 +654,12 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
           {supportsFolders && (
             <span className="fm-tool-group">
               <button type="button" className="fm-tool" disabled={busy || !transport.groups.createFolder} aria-pressed={pending?.kind === 'new-folder'} onClick={() => setPending({ kind: 'new-folder', name: 'New grouping' })} title="Create an empty folder for a new grouping of the samples">New folder…</button>
-              <button type="button" className="fm-tool" disabled={!(selectedFolderNode ? canRenameFolder : canRenameGroup)} aria-pressed={pending?.kind === 'rename-folder' || pending?.kind === 'rename-group'} onClick={startRename} title="Rename the selected folder or the one highlighted group (F2)">Rename…</button>
+              <button type="button" className="fm-tool" disabled={!canRenameFolder} aria-pressed={pending?.kind === 'rename-folder'} onClick={startRenameFolder} title="Rename the selected folder (F2)">Rename folder…</button>
+            </span>
+          )}
+          {transport.groups.renameGroup && (
+            <span className="fm-tool-group">
+              <button type="button" className="fm-tool" disabled={!canRenameGroup} aria-pressed={pending?.kind === 'rename-group'} onClick={startRenameGroup} title="Rename the one highlighted group and its file (F2)">Rename group…</button>
             </span>
           )}
           {transport.groups.addColumn && (
@@ -641,16 +704,15 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
         </form>
       )}
       {pending?.kind === 'rename-group' && renameTarget && (
-        <form className="fm-inline" onSubmit={submitRenameGroup} aria-label="Rename group">
-          <label>New name for {renameTarget.name}
-            <input autoFocus value={pending.name} disabled={busy} onChange={(event) => setPending({ kind: 'rename-group', name: event.target.value })} onKeyDown={escapeCancels} />
-          </label>
-          <p className="fm-hint">The group file is renamed too. Its samples and their identities stay the same.</p>
-          <div className="fm-inline-actions">
-            <button type="submit" disabled={busy || !pending.name.trim() || pending.name.trim() === renameTarget.name}><BusyLabel busy={busy}>Rename</BusyLabel></button>
-            <button type="button" disabled={busy} onClick={() => setPending(null)}>Cancel</button>
-          </div>
-        </form>
+        <RenameGroupForm
+          current={renameTarget.name}
+          name={pending.name}
+          problem={groupNameProblem(entries, renameTarget.path, pending.name)}
+          busy={busy}
+          onChange={(name) => setPending({ kind: 'rename-group', name })}
+          onSubmit={submitRenameGroup}
+          onCancel={() => setPending(null)}
+        />
       )}
       {pending?.kind === 'add-column' && (
         <AddColumnForm
@@ -1035,6 +1097,39 @@ export function AddColumnForm({ pending, problem, existing, groupCount, busy = f
       {!shownProblem && existing.length > 0 && <p className="fm-hint">{column} already exists in {plural(existing.length, 'group')}; you will be asked before its values are replaced.</p>}
       <div className="fm-inline-actions">
         <button type="submit" disabled={busy || !column || Boolean(problem)}><BusyLabel busy={busy}>Add column</BusyLabel></button>
+        <button type="button" disabled={busy} onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+export interface RenameGroupFormProps {
+  /** The group's current name. */
+  readonly current: string;
+  readonly name: string;
+  /** Why the new name is refused ('' when fine). */
+  readonly problem: string;
+  readonly busy?: boolean;
+  readonly onChange: (name: string) => void;
+  readonly onSubmit: (event: FormEvent) => void;
+  readonly onCancel: () => void;
+}
+
+/** Rename one group (its name and its file), separate from renaming its folder. */
+export function RenameGroupForm({ current, name, problem, busy = false, onChange, onSubmit, onCancel }: RenameGroupFormProps): ReactElement {
+  const trimmed = name.trim();
+  const unchanged = trimmed === current;
+  const shownProblem = trimmed && !unchanged ? problem : '';
+  return (
+    <form className="fm-inline" onSubmit={onSubmit} aria-label="Rename group">
+      <label>New name for {current}
+        <input autoFocus value={name} disabled={busy} aria-invalid={shownProblem ? true : undefined} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') onCancel(); }} />
+      </label>
+      {shownProblem
+        ? <p className="fm-hint" role="alert">{shownProblem}</p>
+        : <p className="fm-hint">The group file is renamed too. Its samples, their identities, and whether it is in analyses stay the same.</p>}
+      <div className="fm-inline-actions">
+        <button type="submit" disabled={busy || !trimmed || unchanged || Boolean(problem)}><BusyLabel busy={busy}>Rename</BusyLabel></button>
         <button type="button" disabled={busy} onClick={onCancel}>Cancel</button>
       </div>
     </form>

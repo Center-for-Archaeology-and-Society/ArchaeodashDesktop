@@ -89,17 +89,8 @@ pub fn validate_folder_name(name: &str) -> Result<String, StoreError> {
     if name.is_empty() {
         return Err(StoreError::Validation("folder name is empty".to_string()));
     }
-    if name.chars().count() > 100 {
-        return Err(invalid("is longer than 100 characters"));
-    }
-    if name.starts_with('.') {
-        return Err(invalid("cannot start with a dot"));
-    }
-    if name
-        .chars()
-        .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
-    {
-        return Err(invalid("cannot contain < > : \" / \\ | ? *"));
+    if let Some(why) = portable_name_problem(&name) {
+        return Err(invalid(why));
     }
     if windows_reserved(&name)
         || RESERVED_FOLDERS
@@ -109,6 +100,42 @@ pub fn validate_folder_name(name: &str) -> Result<String, StoreError> {
         return Err(invalid("is reserved"));
     }
     Ok(name)
+}
+
+/// Why `name` cannot be a portable file or folder name (`None` when it
+/// can): at most 100 characters, not hidden, and no path separators or
+/// characters invalid in Windows, macOS, or Linux file names.
+fn portable_name_problem(name: &str) -> Option<&'static str> {
+    if name.chars().count() > 100 {
+        Some("is longer than 100 characters")
+    } else if name.starts_with('.') {
+        Some("cannot start with a dot")
+    } else if name
+        .chars()
+        .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
+    {
+        Some("cannot contain < > : \" / \\ | ? *")
+    } else {
+        None
+    }
+}
+
+/// Checks a new name for one group (rename): not empty after trimming, and
+/// the portable-name rules of folder names, applied to the name and to the
+/// group file it gives. Returns the trimmed name.
+pub fn validate_group_name(name: &str) -> Result<String, StoreError> {
+    let name = name.trim();
+    let invalid = |why: &str| StoreError::Validation(format!("group name {name:?} {why}"));
+    if name.is_empty() {
+        return Err(StoreError::Validation("group name is empty".to_string()));
+    }
+    if let Some(why) = portable_name_problem(name) {
+        return Err(invalid(why));
+    }
+    if windows_reserved(&sanitize_group_name(name)) {
+        return Err(invalid("gives a group file that Windows reserves"));
+    }
+    Ok(name.to_string())
 }
 
 /// A file or folder name Windows reserves (`CON`, `COM1`, `LPT3.txt`, ...).
@@ -139,17 +166,8 @@ pub fn cluster_name_prefix(prefix: Option<&str>) -> Result<String, StoreError> {
             "cluster name prefix is empty".to_string(),
         ));
     }
-    if prefix.chars().count() > 100 {
-        return Err(invalid("is longer than 100 characters"));
-    }
-    if prefix.starts_with('.') {
-        return Err(invalid("cannot start with a dot"));
-    }
-    if prefix
-        .chars()
-        .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
-    {
-        return Err(invalid("cannot contain < > : \" / \\ | ? *"));
+    if let Some(why) = portable_name_problem(prefix) {
+        return Err(invalid(why));
     }
     if windows_reserved(&sanitize_group_name(&format!("{prefix}1"))) {
         return Err(invalid("gives group files that Windows reserves"));
@@ -1606,10 +1624,8 @@ impl GroupService {
         &self,
         req: &RenameGroupRequest,
     ) -> Result<TransactionResponse, StoreError> {
-        let name = req.new_name.trim();
-        if name.is_empty() {
-            return Err(StoreError::Validation("group name is empty".to_string()));
-        }
+        let name = validate_group_name(&req.new_name)?;
+        let name = name.as_str();
         let data = self.store.read_group(&req.path)?;
         if data.profile.revision_id != req.expected_revision {
             return Err(StoreError::RevisionConflict {
@@ -2909,6 +2925,21 @@ mod tests {
             .expect_err("name in use");
         assert!(clash.to_string().contains("already has a group named"));
         assert!(service.rename_group(&request("  ", "rev-1")).is_err());
+        // Path separators and characters invalid in file names are refused.
+        for bad in [
+            "Site/Baca",
+            "Site\\Baca",
+            "Baca:1",
+            "Baca?",
+            ".hidden",
+            "CON",
+        ] {
+            let err = service.rename_group(&request(bad, "rev-1")).expect_err(bad);
+            assert!(
+                matches!(err, StoreError::Validation(ref m) if m.starts_with("group name")),
+                "{bad}: {err}"
+            );
+        }
         assert!(matches!(
             service.rename_group(&request("Other", "rev-9")),
             Err(StoreError::RevisionConflict { .. })

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { GroupCandidate, GroupSummary } from '@archaeodash/contracts';
-import { AddColumnForm, DataManager, GroupDetails, GroupFileTree, columnNameProblem, folderNodes, groupsWithColumn, loadGroupFiles, pathLike, renamedExclusions, type DataManagerTransport, type GroupFileEntry } from './DataManager.tsx';
+import { AddColumnForm, DataManager, GroupDetails, GroupFileTree, RenameGroupForm, columnNameProblem, folderNodes, groupFileStem, groupNameProblem, groupsWithColumn, loadGroupFiles, pathLike, renameGroupFile, renamedExclusions, type DataManagerTransport, type GroupFileEntry } from './DataManager.tsx';
 import { ImportWizard } from './ImportWizard.tsx';
 import { DEFAULT_VALUE_OPTIONS, ImportValueOptions, recipeFromOptions } from './ImportValueOptions.tsx';
 import { ImportProgress, elapsedLabel, importStepLabel } from './ImportProgress.tsx';
@@ -269,7 +269,9 @@ test('file manager shows folder actions when the transport supports folders', ()
     groups: { scan: async () => [], folders: async () => [], createFolder: async () => ({ path: 'x', name: 'x', group_count: 0 }), renameFolder: async () => ({ path: 'x', name: 'x', group_count: 0 }), deleteFolder: async () => {}, copyGroups: async () => { throw new Error('unused'); } },
   } as unknown as DataManagerTransport;
   const html = renderToStaticMarkup(<DataManager transport={transport} projectName="Sample" />);
-  for (const label of ['New folder…', 'Rename…', 'Copy to…', 'Move to…']) assert.ok(html.includes(label), `missing ${label}`);
+  for (const label of ['New folder…', 'Rename folder…', 'Copy to…', 'Move to…']) assert.ok(html.includes(label), `missing ${label}`);
+  // Without a group rename in the transport there is no Rename group… button.
+  assert.ok(!html.includes('Rename group…'));
 });
 
 test('the tree shows one row per folder with its groups, and the analysis-folder switch', () => {
@@ -329,11 +331,80 @@ test('add-column form asks a second time before overwriting', () => {
   assert.match(refused, /<button type="submit" disabled="">/);
 });
 
-test('toolbar offers Add column… and Rename… when the transport supports them', () => {
+test('toolbar offers Add column…, Rename folder… and a separate Rename group… when the transport supports them', () => {
   const transport = { kind: 'http', groups: { scan: async () => [], folders: async () => [], copyGroups: async () => { throw new Error('unused'); }, renameFolder: async () => { throw new Error('unused'); }, renameGroup: async () => { throw new Error('unused'); }, addColumn: async () => { throw new Error('unused'); } } } as unknown as DataManagerTransport;
   const html = renderToStaticMarkup(<DataManager transport={transport} projectName="Sample" />);
   assert.match(html, /disabled="" aria-pressed="false" title="Add a descriptive column[^"]*">Add column…<\/button>/);
-  assert.match(html, /title="Rename the selected folder or the one highlighted group \(F2\)">Rename…<\/button>/);
+  assert.match(html, /disabled="" aria-pressed="false" title="Rename the selected folder \(F2\)">Rename folder…<\/button>/);
+  assert.match(html, /disabled="" aria-pressed="false" title="Rename the one highlighted group and its file \(F2\)">Rename group…<\/button>/);
+});
+
+const siteEntries: GroupFileEntry[] = [
+  { path: 'Site/Baca.parquet', name: 'Baca', summary: { ...summary('Baca', 3), path: 'Site/Baca.parquet' }, revision: 'rev-1', error: '' },
+  { path: 'Site/Hooper.parquet', name: 'Hooper', summary: { ...summary('Hooper', 2), path: 'Site/Hooper.parquet' }, revision: 'rev-1', error: '' },
+  { path: 'Other/Pueblo.parquet', name: 'Pueblo', summary: { ...summary('Pueblo', 2), path: 'Other/Pueblo.parquet' }, revision: 'rev-1', error: '' },
+];
+
+test('rename group: a valid new name passes, including a name used in another folder', () => {
+  assert.equal(groupNameProblem(siteEntries, 'Site/Baca.parquet', 'Baca Pueblo'), '');
+  assert.equal(groupNameProblem(siteEntries, 'Site/Baca.parquet', 'Pueblo'), '', 'other folders do not clash');
+  assert.equal(groupNameProblem(siteEntries, 'Site/Baca.parquet', 'BACA'), '', 'a case-only rename of itself');
+  assert.equal(groupFileStem('Baca Pueblo'), 'Baca_Pueblo');
+});
+
+test('rename group: invalid names are refused', () => {
+  assert.match(groupNameProblem(siteEntries, 'Site/Baca.parquet', '   '), /Enter a group name/);
+  for (const bad of ['Site/Baca', 'Site\\Baca', 'Baca:1', 'Baca?', 'A<B', 'tab\tname']) {
+    assert.match(groupNameProblem(siteEntries, 'Site/Baca.parquet', bad), /cannot contain/, bad);
+  }
+  assert.match(groupNameProblem(siteEntries, 'Site/Baca.parquet', '.hidden'), /cannot start with a dot/);
+  assert.match(groupNameProblem(siteEntries, 'Site/Baca.parquet', 'CON'), /Windows reserves/);
+  assert.match(groupNameProblem(siteEntries, 'Site/Baca.parquet', 'x'.repeat(101)), /at most 100/);
+  const form = renderToStaticMarkup(<RenameGroupForm current="Baca" name="Site/Baca" problem={groupNameProblem(siteEntries, 'Site/Baca.parquet', 'Site/Baca')} onChange={() => {}} onSubmit={() => {}} onCancel={() => {}} />);
+  assert.match(form, /aria-label="Rename group"/);
+  assert.match(form, /role="alert"/);
+  assert.match(form, /<button type="submit" disabled="">/);
+});
+
+test('rename group: a name or file clash in the same folder is refused', () => {
+  assert.match(groupNameProblem(siteEntries, 'Site/Baca.parquet', 'hooper'), /“Site” already has a group named “Hooper”/);
+  // Same group file as another group, though the name differs.
+  const withFile: GroupFileEntry[] = [...siteEntries, { path: 'Site\\Baca_Pueblo.parquet', name: 'BP', summary: null, revision: 'rev-1', error: '' }];
+  assert.match(groupNameProblem(withFile, 'Site/Baca.parquet', 'Baca Pueblo'), /already has the group file Baca_Pueblo\.parquet \(BP\)/);
+  const form = renderToStaticMarkup(<RenameGroupForm current="Baca" name="Hooper" problem={groupNameProblem(siteEntries, 'Site/Baca.parquet', 'Hooper')} onChange={() => {}} onSubmit={() => {}} onCancel={() => {}} />);
+  assert.match(form, /already has a group named/);
+  assert.match(form, /<button type="submit" disabled="">/);
+  // A clash the backend finds (another window) rejects the rename.
+  const refuse = async () => { throw new Error('folder “Site” already has a group named “Hooper”'); };
+  return assert.rejects(renameGroupFile(refuse, { path: 'Site/Baca.parquet', revision: 'rev-1' }, 'Hooper', []), /already has a group named/);
+});
+
+test('rename group: success sends the request and returns the new path with the scanned separators', async () => {
+  const calls: unknown[] = [];
+  const rename = async (request: { path: string; expected_revision: string; new_name: string }) => {
+    calls.push(request);
+    return { transaction_id: 't1', action: 'rename_group', outputs: [{ ...summary('Baca Pueblo', 3), path: 'Site/Baca_Pueblo.parquet' }], deleted_paths: [request.path] };
+  };
+  const renamed = await renameGroupFile(rename, { path: 'Site\\Baca.parquet', revision: 'rev-1' }, '  Baca Pueblo ', []);
+  assert.deepEqual(calls, [{ path: 'Site\\Baca.parquet', expected_revision: 'rev-1', new_name: 'Baca Pueblo' }]);
+  assert.equal(renamed.path, 'Site\\Baca_Pueblo.parquet');
+  const form = renderToStaticMarkup(<RenameGroupForm current="Baca" name="Baca Pueblo" problem="" onChange={() => {}} onSubmit={() => {}} onCancel={() => {}} />);
+  assert.match(form, /<button type="submit">/);
+  assert.doesNotMatch(form, /role="alert"/);
+});
+
+test('rename group: the group keeps its inclusion in analyses', async () => {
+  const rename = async (request: { path: string }) => ({
+    transaction_id: 't1', action: 'rename_group', outputs: [{ ...summary('New', 3), path: request.path.replace(/[^/]+$/, 'New.parquet') }], deleted_paths: [request.path],
+  });
+  // A group left out of analyses stays left out under its new path.
+  const unchecked = await renameGroupFile(rename, { path: 'Site/Baca.parquet', revision: 'rev-1' }, 'New', ['Site/Baca.parquet', 'Site/Hooper.parquet']);
+  assert.deepEqual(unchecked.excluded, ['Site/New.parquet', 'Site/Hooper.parquet']);
+  assert.deepEqual(includedAmong(['Site/New.parquet', 'Site/Hooper.parquet'], new Set(unchecked.excluded)), []);
+  // An included group stays included: its new path is not excluded.
+  const checked = await renameGroupFile(rename, { path: 'Site/Baca.parquet', revision: 'rev-1' }, 'New', ['Site/Hooper.parquet']);
+  assert.deepEqual(checked.excluded, ['Site/Hooper.parquet']);
+  assert.deepEqual(includedAmong(['Site/New.parquet', 'Site/Hooper.parquet'], new Set(checked.excluded)), ['Site/New.parquet']);
 });
 
 test('a renamed group keeps the separators of the scanned path (Windows)', () => {
