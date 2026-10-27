@@ -17,7 +17,7 @@
 //! golden layouts), while every deterministic stage (k-nn graph,
 //! `smooth.knn.dist` binary search, fuzzy-set weights, Laplacian spectrum,
 //! `a`/`b` curve fit) is pinned against the oracle at full precision in the
-//! parity test. The eigensolver runs under `Parallelism::Serial` so same-seed
+//! parity test. The eigensolver runs with `Par::Seq` so same-seed
 //! runs are bit-identical across repeated calls.
 //!
 //! Scale: the neighbor search is exact brute force, computed in parallel
@@ -32,7 +32,7 @@
 use std::collections::BTreeMap;
 
 use archaeodash_domain::DomainError;
-use faer::{Mat, Side};
+use faer::Mat;
 use rand::RngExt;
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
@@ -404,14 +404,33 @@ fn laplacian_dense(edges: &[(usize, usize, f64)], v: usize) -> Option<Mat<f64>> 
 /// ascending magnitude. (RSpectra's `eigs(which = "SM")`, which the oracle
 /// uses, returns the same selection in DESCENDING modulus order; callers
 /// that mirror R's column slicing must reorder accordingly.)
-/// Runs under `Parallelism::Serial` for run-to-run bit determinism.
+/// Runs with `Par::Seq` for run-to-run bit determinism. The solver gets the
+/// setting directly (this is what `SelfAdjointEigen::new` does with the
+/// global setting), so concurrent analyses never race on faer's
+/// process-wide parallelism.
 fn smallest_eigenpairs(l: &Mat<f64>, k: usize) -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
-    let previous = faer::get_global_parallelism();
-    faer::set_global_parallelism(faer::Par::Seq);
-    let eigen = faer::linalg::solvers::SelfAdjointEigen::new(l.as_ref(), Side::Lower);
-    faer::set_global_parallelism(previous);
-    let eigen = eigen.ok()?;
-    let values: Vec<f64> = eigen.S().column_vector().iter().copied().collect();
+    use faer::dyn_stack::{MemBuffer, MemStack};
+    use faer::linalg::evd::{self_adjoint_evd, self_adjoint_evd_scratch, ComputeEigenvectors};
+    let par = faer::Par::Seq;
+    let n = l.nrows();
+    let mut u = Mat::<f64>::zeros(n, n);
+    let mut s = faer::diag::Diag::<f64>::zeros(n);
+    let mut buffer = MemBuffer::new(self_adjoint_evd_scratch::<f64>(
+        n,
+        ComputeEigenvectors::Yes,
+        par,
+        Default::default(),
+    ));
+    self_adjoint_evd(
+        l.as_ref(),
+        s.as_mut(),
+        Some(u.as_mut()),
+        par,
+        MemStack::new(&mut buffer),
+        Default::default(),
+    )
+    .ok()?;
+    let values: Vec<f64> = s.column_vector().iter().copied().collect();
     let mut order: Vec<usize> = (0..values.len()).collect();
     order.sort_by(|&x, &y| values[x].abs().total_cmp(&values[y].abs()));
     let picked: Vec<usize> = order.into_iter().take(k).collect();
@@ -420,7 +439,7 @@ fn smallest_eigenpairs(l: &Mat<f64>, k: usize) -> Option<(Vec<f64>, Vec<Vec<f64>
     let mut vectors = vec![vec![0.0f64; picked.len()]; v];
     for (c, &eig_idx) in picked.iter().enumerate() {
         for (i, row) in vectors.iter_mut().enumerate() {
-            row[c] = *eigen.U().get(i, eig_idx);
+            row[c] = u[(i, eig_idx)];
         }
     }
     Some((picked_values, vectors))

@@ -212,15 +212,13 @@ pub fn group_mem_probs_tracked_cancellable(
                     ))
                 }
                 None => {
-                    let table = mahalanobis_cells(&cells, groups, &eligible, cancel);
-                    cancel.check()?;
+                    let table = mahalanobis_cells(&cells, groups, &eligible, cancel)?;
                     (non_finite_to_inf(table), MembershipMethod::Mahalanobis)
                 }
             }
         }
         MembershipMethod::Mahalanobis => {
-            let table = mahalanobis_cells(&cells, groups, &eligible, cancel);
-            cancel.check()?;
+            let table = mahalanobis_cells(&cells, groups, &eligible, cancel)?;
             (non_finite_to_inf(table), MembershipMethod::Mahalanobis)
         }
     };
@@ -291,8 +289,64 @@ fn non_finite_to_inf(cells: Vec<Vec<f64>>) -> Vec<Vec<f64>> {
         .collect()
 }
 
+/// Rows per parallel block in the membership tables. A row outside a group
+/// costs one quadratic form per group; a row inside a group also rebuilds its
+/// leave-one-out covariance, so blocks stay small for load balance.
+const MEMBERSHIP_ROW_BLOCK: usize = 16;
+
+/// Row indices of each eligible group (ascending, so leave-one-out row sets
+/// keep R's `which()` order) and each row's eligible-group index, if any.
+fn group_members(groups: &[String], eligible: &[String]) -> (Vec<Vec<usize>>, Vec<Option<usize>>) {
+    let index: std::collections::HashMap<&str, usize> = eligible
+        .iter()
+        .enumerate()
+        .map(|(gi, grp)| (grp.as_str(), gi))
+        .collect();
+    let mut members = vec![Vec::new(); eligible.len()];
+    let row_group: Vec<Option<usize>> = groups
+        .iter()
+        .enumerate()
+        .map(|(i, grp)| {
+            let gi = index.get(grp.as_str()).copied();
+            if let Some(gi) = gi {
+                members[gi].push(i);
+            }
+            gi
+        })
+        .collect();
+    (members, row_group)
+}
+
+/// Every row of `members`, in order: what a row outside the group sees.
+fn rows_of<'a>(cells: &'a [Vec<f64>], members: &[usize]) -> Vec<&'a [f64]> {
+    members.iter().map(|&i| cells[i].as_slice()).collect()
+}
+
+/// The rows of `members` other than `skip`, in order: R's
+/// `setdiff(which(data[[group]] == grp), r)`.
+fn rows_except<'a>(cells: &'a [Vec<f64>], members: &[usize], skip: usize) -> Vec<&'a [f64]> {
+    members
+        .iter()
+        .filter(|&&i| i != skip)
+        .map(|&i| cells[i].as_slice())
+        .collect()
+}
+
+/// Internal marker for a Hotellings pair that hit an R error; it stops the
+/// parallel pass and becomes the whole-table Mahalanobis fallback.
+fn hotellings_pair_failed() -> DomainError {
+    DomainError::validation("membership_hotellings_failed", "Hotellings pair failed")
+}
+
 /// Hotellings pass over every (row, group) pair; `None` replicates the R
-/// error path that triggers the whole-table Mahalanobis fallback.
+/// error path that triggers the whole-table Mahalanobis fallback (and is
+/// also returned on cancellation, which the caller checks).
+///
+/// A row outside a group is tested against the whole group, so that group's
+/// mean and inverse pooled covariance are computed once and shared; a row
+/// inside a group gets its own leave-one-out statistics. Rows run in
+/// parallel and each cell uses the same arithmetic as a direct
+/// [`hotellings_p_value`] call, so results do not depend on scheduling.
 fn hotellings_table(
     cells: &[Vec<f64>],
     groups: &[String],
@@ -305,39 +359,57 @@ fn hotellings_table(
         return None;
     }
     let p = cells.first().map_or(0, Vec::len);
-    let mut out = vec![vec![f64::NAN; eligible.len()]; n];
-    for r in 0..n {
-        if cancel.is_cancelled() {
-            return None;
+    let (members, row_group) = group_members(groups, eligible);
+    // A failed whole-group solve only matters once a row outside the group
+    // uses it, exactly as in the per-pair R loop.
+    let whole = crate::pairwise::par_row_blocks(eligible.len(), 1, |range| {
+        cancel.check()?;
+        let gi = range.start;
+        Ok(hotellings_group(&rows_of(cells, &members[gi]), p))
+    })
+    .ok()?;
+    let blocks = crate::pairwise::par_row_blocks(n, MEMBERSHIP_ROW_BLOCK, |rows| {
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            cancel.check()?;
+            let mut row_cells = vec![f64::NAN; eligible.len()];
+            for (gi, cell) in row_cells.iter_mut().enumerate() {
+                let pair = if row_group[r] == Some(gi) {
+                    hotellings_p_value(&cells[r], &rows_except(cells, &members[gi], r), p)
+                } else {
+                    whole[gi]
+                        .as_ref()
+                        .map(|group| hotellings_row(&cells[r], group, p))
+                        .map_err(|_| ())
+                };
+                let p_value = pair.map_err(|()| hotellings_pair_failed())?;
+                *cell = if p_value.is_finite() {
+                    p_value
+                } else {
+                    f64::NAN
+                };
+            }
+            out.push(row_cells);
         }
-        for (gi, grp) in eligible.iter().enumerate() {
-            // grpindx <- setdiff(which(data[[group]] == grp), r)
-            let grp_rows: Vec<&[f64]> = (0..n)
-                .filter(|&i| i != r && &groups[i] == grp)
-                .map(|i| cells[i].as_slice())
-                .collect();
-            let p_value = match hotellings_p_value(&cells[r], &grp_rows, p) {
-                Ok(v) => v,
-                Err(()) => return None,
-            };
-            out[r][gi] = if p_value.is_finite() {
-                p_value
-            } else {
-                f64::NAN
-            };
-        }
-    }
-    Some(out)
+        Ok(out)
+    })
+    .ok()?;
+    Some(blocks.into_iter().flatten().collect())
 }
 
-/// `ICSNP::HotellingsT2.default(X, Y)$p.value %>% round(., 5) * 100` for the
-/// one-row `X` versus the group rows `Y` (two-sample `test = "f"` path).
-/// `Err(())` mirrors an R error (singular `solve`) reaching the fallback.
-fn hotellings_p_value(x_row: &[f64], y_rows: &[&[f64]], p: usize) -> Result<f64, ()> {
+/// The group (`Y`) side of the Hotellings test: its size, mean, and inverse
+/// pooled covariance.
+struct HotellingsGroup {
+    n2: f64,
+    ymean: Vec<f64>,
+    s_inv: Vec<Vec<f64>>,
+}
+
+/// Builds the [`HotellingsGroup`] for `y_rows`. `Err(())` mirrors an R
+/// error (singular `solve`) reaching the fallback.
+fn hotellings_group(y_rows: &[&[f64]], p: usize) -> Result<HotellingsGroup, ()> {
     let n1 = 1.0_f64;
     let n2 = y_rows.len() as f64;
-    let pf_df1 = p as f64;
-    let pf_df2 = n1 + n2 - pf_df1 - 1.0;
     let denom = n1 + n2 - 2.0;
     let ymean: Vec<f64> = (0..p)
         .map(|j| sum(y_rows.iter().map(|r| r[j])) / n2)
@@ -354,15 +426,30 @@ fn hotellings_p_value(x_row: &[f64], y_rows: &[&[f64]], p: usize) -> Result<f64,
                 / denom;
         }
     }
-    // X.diff is exactly zero (single-row X vs its own mean), so
-    // t(X.diff) %*% X.diff contributes nothing to S.pooled.
-    let d: Vec<f64> = (0..p).map(|j| x_row[j] - ymean[j]).collect();
     let s_inv = r_solve_inverse(&s, R_DOUBLE_EPS).ok_or(())?;
+    Ok(HotellingsGroup { n2, ymean, s_inv })
+}
+
+/// The `X` side of the Hotellings test for one row against a prepared group.
+fn hotellings_row(x_row: &[f64], group: &HotellingsGroup, p: usize) -> f64 {
+    let n1 = 1.0_f64;
+    let n2 = group.n2;
+    let pf_df1 = p as f64;
+    let pf_df2 = n1 + n2 - pf_df1 - 1.0;
+    let d: Vec<f64> = (0..p).map(|j| x_row[j] - group.ymean[j]).collect();
+    let s_inv = &group.s_inv;
     let q: f64 = sum((0..p).map(|j| sum((0..p).map(|k| d[k] * s_inv[k][j])) * d[j]));
     let base = n1 * n2 / (n1 + n2);
     let t2 = base * q * (n1 + n2 - pf_df1 - 1.0) / (pf_df1 * (n1 + n2 - 2.0));
     let p_value = 1.0 - pf(t2, pf_df1, pf_df2);
-    Ok(r_round(p_value, 5) * 100.0)
+    r_round(p_value, 5) * 100.0
+}
+
+/// `ICSNP::HotellingsT2.default(X, Y)$p.value %>% round(., 5) * 100` for the
+/// one-row `X` versus the group rows `Y` (two-sample `test = "f"` path).
+/// `Err(())` mirrors an R error (singular `solve`) reaching the fallback.
+fn hotellings_p_value(x_row: &[f64], y_rows: &[&[f64]], p: usize) -> Result<f64, ()> {
+    Ok(hotellings_row(x_row, &hotellings_group(y_rows, p)?, p))
 }
 
 /// R `pf(q, df1, df2)` (central F CDF) via
@@ -476,10 +563,34 @@ fn mahalanobis_distance(row: &[f64], data: &[&[f64]]) -> f64 {
     if data.len() < 2 || row.is_empty() {
         return f64::INFINITY;
     }
-    // keep_cols <- is.finite(row_vec)
-    let keep: Vec<usize> = (0..row.len()).filter(|&j| row[j].is_finite()).collect();
-    if keep.is_empty() {
-        return f64::INFINITY;
+    mahalanobis_row(row, &mahalanobis_group(&finite_columns(row), data))
+}
+
+/// `keep_cols <- is.finite(row_vec)`.
+fn finite_columns(row: &[f64]) -> Vec<usize> {
+    (0..row.len()).filter(|&j| row[j].is_finite()).collect()
+}
+
+/// Everything in `getMahalanobis` that does not use the row's own values:
+/// it depends only on the group rows and the row's finite columns, so rows
+/// with the same group rows and finite-column pattern share it.
+enum MahalanobisGroup {
+    /// A fallback-ladder step that returns `Inf` for any such row.
+    Infinite,
+    Ready {
+        /// Kept, variable columns (indices into the full row).
+        cols: Vec<usize>,
+        means: Vec<f64>,
+        s_inv: Vec<Vec<f64>>,
+    },
+}
+
+/// The group-side steps of [`mahalanobis_distance`] for the finite columns
+/// `keep` (callers handle `data.len() < 2`).
+fn mahalanobis_group(keep: &[usize], data: &[&[f64]]) -> MahalanobisGroup {
+    use MahalanobisGroup::Infinite;
+    if data.len() < 2 || keep.is_empty() {
+        return Infinite;
     }
     // complete.cases over the kept columns (NaN dropped; Inf is not NA).
     let cases: Vec<&[f64]> = data
@@ -488,11 +599,11 @@ fn mahalanobis_distance(row: &[f64], data: &[&[f64]]) -> f64 {
         .copied()
         .collect();
     if cases.len() < 2 {
-        return f64::INFINITY;
+        return Infinite;
     }
     // variable_cols: at least two finite values and var(na.rm = TRUE) > 0.
     let mut variable: Vec<bool> = Vec::with_capacity(keep.len());
-    for &j in &keep {
+    for &j in keep {
         let finite: Vec<f64> = cases
             .iter()
             .map(|r| r[j])
@@ -507,25 +618,19 @@ fn mahalanobis_distance(row: &[f64], data: &[&[f64]]) -> f64 {
         variable.push(var > 0.0);
     }
     if !variable.iter().any(|&v| v) {
-        return f64::INFINITY;
+        return Infinite;
     }
-    let row_vec: Vec<f64> = keep
+    let cols: Vec<usize> = keep
         .iter()
         .zip(&variable)
         .filter(|&(_, &v)| v)
-        .map(|(&j, _)| row[j])
+        .map(|(&j, _)| j)
         .collect();
     let mat: Vec<Vec<f64>> = cases
         .iter()
-        .map(|r| {
-            keep.iter()
-                .zip(&variable)
-                .filter(|&(_, &v)| v)
-                .map(|(&j, _)| r[j])
-                .collect()
-        })
+        .map(|r| cols.iter().map(|&j| r[j]).collect())
         .collect();
-    let p = row_vec.len();
+    let p = cols.len();
     let n = mat.len() as f64;
     let means: Vec<f64> = (0..p).map(|j| sum(mat.iter().map(|r| r[j])) / n).collect();
     let mut cov = vec![vec![0.0_f64; p]; p];
@@ -535,25 +640,34 @@ fn mahalanobis_distance(row: &[f64], data: &[&[f64]]) -> f64 {
         }
     }
     if cov.iter().any(|c| c.iter().any(|v| !v.is_finite())) {
-        return f64::INFINITY;
+        return Infinite;
     }
-    let d: Vec<f64> = (0..p).map(|j| row_vec[j] - means[j]).collect();
-    let quadratic =
-        |s_inv: &[Vec<f64>]| sum((0..p).map(|j| sum((0..p).map(|k| d[k] * s_inv[k][j])) * d[j]));
-    let value = match r_solve_inverse(&cov, 1e-8) {
-        Some(s_inv) => quadratic(&s_inv),
+    let s_inv = match r_solve_inverse(&cov, 1e-8) {
+        Some(s_inv) => s_inv,
         None => {
             // cov + diag(1e-8) retry, else Inf.
-            let mut reg = cov.clone();
+            let mut reg = cov;
             for (j, row) in reg.iter_mut().enumerate() {
                 row[j] += 1e-8;
             }
             match r_solve_inverse(&reg, 1e-8) {
-                Some(s_inv) => quadratic(&s_inv),
-                None => return f64::INFINITY,
+                Some(s_inv) => s_inv,
+                None => return Infinite,
             }
         }
     };
+    MahalanobisGroup::Ready { cols, means, s_inv }
+}
+
+/// The row-side step of [`mahalanobis_distance`]: the quadratic form of the
+/// row's deviation from the prepared group mean.
+fn mahalanobis_row(row: &[f64], group: &MahalanobisGroup) -> f64 {
+    let MahalanobisGroup::Ready { cols, means, s_inv } = group else {
+        return f64::INFINITY;
+    };
+    let p = cols.len();
+    let d: Vec<f64> = (0..p).map(|j| row[cols[j]] - means[j]).collect();
+    let value = sum((0..p).map(|j| sum((0..p).map(|k| d[k] * s_inv[k][j])) * d[j]));
     if value.is_finite() {
         value
     } else {
@@ -561,27 +675,95 @@ fn mahalanobis_distance(row: &[f64], data: &[&[f64]]) -> f64 {
     }
 }
 
+/// `getMahalanobis` for every (row, eligible group) pair.
+///
+/// A row outside a group is measured against the whole group, so the group
+/// side is prepared once per (group, finite-column pattern) and shared; a
+/// row inside a group gets its own leave-one-out preparation. Rows run in
+/// parallel and each cell uses the same arithmetic as a direct
+/// [`mahalanobis_distance`] call, so results do not depend on scheduling.
 fn mahalanobis_cells(
     cells: &[Vec<f64>],
     groups: &[String],
     eligible: &[String],
     cancel: &CancellationToken,
-) -> Vec<Vec<f64>> {
+) -> Result<Vec<Vec<f64>>, DomainError> {
     let n = cells.len();
-    let mut out = vec![vec![f64::NAN; eligible.len()]; n];
+    let (members, row_group) = group_members(groups, eligible);
+    // Distinct finite-column patterns (usually just one: every column).
+    let mut pattern_index: std::collections::HashMap<Vec<usize>, usize> =
+        std::collections::HashMap::new();
+    let mut patterns: Vec<Vec<usize>> = Vec::new();
+    let row_pattern: Vec<usize> = cells
+        .iter()
+        .map(|row| {
+            let keep = finite_columns(row);
+            *pattern_index.entry(keep.clone()).or_insert_with(|| {
+                patterns.push(keep);
+                patterns.len() - 1
+            })
+        })
+        .collect();
+    // Prepare only the (group, pattern) pairs some outside row uses, so the
+    // work never exceeds the per-pair loop even when every row differs.
+    let mut needed = vec![vec![false; patterns.len()]; eligible.len()];
     for r in 0..n {
-        if cancel.is_cancelled() {
-            return out;
-        }
-        for (gi, grp) in eligible.iter().enumerate() {
-            let grp_rows: Vec<&[f64]> = (0..n)
-                .filter(|&i| i != r && &groups[i] == grp)
-                .map(|i| cells[i].as_slice())
-                .collect();
-            out[r][gi] = mahalanobis_distance(&cells[r], &grp_rows);
+        for (gi, flags) in needed.iter_mut().enumerate() {
+            if row_group[r] != Some(gi) {
+                flags[row_pattern[r]] = true;
+            }
         }
     }
-    out
+    let tasks: Vec<(usize, usize)> = needed
+        .iter()
+        .enumerate()
+        .flat_map(|(gi, flags)| {
+            flags
+                .iter()
+                .enumerate()
+                .filter(|&(_, &used)| used)
+                .map(move |(pi, _)| (gi, pi))
+        })
+        .collect();
+    let prepared = crate::pairwise::par_row_blocks(tasks.len(), 1, |range| {
+        cancel.check()?;
+        let (gi, pi) = tasks[range.start];
+        Ok(mahalanobis_group(
+            &patterns[pi],
+            &rows_of(cells, &members[gi]),
+        ))
+    })?;
+    let mut whole: Vec<Vec<Option<MahalanobisGroup>>> = (0..eligible.len())
+        .map(|_| (0..patterns.len()).map(|_| None).collect())
+        .collect();
+    for (&(gi, pi), group) in tasks.iter().zip(prepared) {
+        whole[gi][pi] = Some(group);
+    }
+    let blocks = crate::pairwise::par_row_blocks(n, MEMBERSHIP_ROW_BLOCK, |rows| {
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            cancel.check()?;
+            let row_cells: Vec<f64> = (0..eligible.len())
+                .map(|gi| {
+                    if row_group[r] == Some(gi) {
+                        mahalanobis_distance(&cells[r], &rows_except(cells, &members[gi], r))
+                    } else {
+                        // Every outside row's pair was prepared above; the
+                        // direct call is only a defensive equivalent. The
+                        // data.len() < 2 check of getMahalanobis lives in
+                        // mahalanobis_group, and rows are never empty here.
+                        match whole[gi][row_pattern[r]].as_ref() {
+                            Some(group) => mahalanobis_row(&cells[r], group),
+                            None => mahalanobis_distance(&cells[r], &rows_of(cells, &members[gi])),
+                        }
+                    }
+                })
+                .collect();
+            out.push(row_cells);
+        }
+        Ok(out)
+    })?;
+    Ok(blocks.into_iter().flatten().collect())
 }
 
 /// R `solve(a, tol)`: LU with partial pivoting (LAPACK `dgesv`); errors when
@@ -980,6 +1162,157 @@ mod tests {
         // Zero-variance columns all dropped -> Inf.
         let refs: Vec<&[f64]> = vec![&[1.0, 1.0], &[2.0, 2.0], &[3.0, 3.0]];
         assert_eq!(mahalanobis_distance(&[1.0, 1.0], &refs), f64::INFINITY);
+    }
+
+    /// The original per-(row, group) loop, kept as the reference the shared
+    /// and parallel tables must match bit for bit.
+    fn reference_rows<'a>(
+        cells: &'a [Vec<f64>],
+        groups: &[String],
+        grp: &str,
+        r: usize,
+    ) -> Vec<&'a [f64]> {
+        (0..cells.len())
+            .filter(|&i| i != r && groups[i] == grp)
+            .map(|i| cells[i].as_slice())
+            .collect()
+    }
+
+    fn reference_hotellings(
+        cells: &[Vec<f64>],
+        groups: &[String],
+        eligible: &[String],
+    ) -> Option<Vec<Vec<f64>>> {
+        if cells.iter().any(|row| row.iter().any(|v| v.is_nan())) {
+            return None;
+        }
+        let p = cells[0].len();
+        let mut out = vec![vec![f64::NAN; eligible.len()]; cells.len()];
+        for r in 0..cells.len() {
+            for (gi, grp) in eligible.iter().enumerate() {
+                let v = hotellings_p_value(&cells[r], &reference_rows(cells, groups, grp, r), p)
+                    .ok()?;
+                out[r][gi] = if v.is_finite() { v } else { f64::NAN };
+            }
+        }
+        Some(out)
+    }
+
+    fn reference_mahalanobis(
+        cells: &[Vec<f64>],
+        groups: &[String],
+        eligible: &[String],
+    ) -> Vec<Vec<f64>> {
+        (0..cells.len())
+            .map(|r| {
+                eligible
+                    .iter()
+                    .map(|grp| {
+                        mahalanobis_distance(&cells[r], &reference_rows(cells, groups, grp, r))
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn assert_same_bits(actual: &[Vec<f64>], expected: &[Vec<f64>]) {
+        assert_eq!(actual.len(), expected.len());
+        for (r, (a, e)) in actual.iter().zip(expected).enumerate() {
+            assert_eq!(a.len(), e.len());
+            for (gi, (x, y)) in a.iter().zip(e).enumerate() {
+                assert!(
+                    x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan()),
+                    "row {r} group {gi}: {x} vs {y}"
+                );
+            }
+        }
+    }
+
+    /// 150 rows (several parallel blocks) in four groups; D is not eligible.
+    fn membership_fixture() -> (Vec<Vec<f64>>, Vec<String>, Vec<String>) {
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut cells = Vec::new();
+        let mut groups = Vec::new();
+        for (grp, count, shift) in [
+            ("A", 60, 0.0),
+            ("B", 50, 3.0),
+            ("C", 30, -2.0),
+            ("D", 10, 1.0),
+        ] {
+            for _ in 0..count {
+                cells.push(
+                    (0..4)
+                        .map(|j| shift + j as f64 + next() * 2.0)
+                        .collect::<Vec<f64>>(),
+                );
+                groups.push(grp.to_string());
+            }
+        }
+        // Interleave the groups so members are not contiguous.
+        let mut order: Vec<usize> = (0..cells.len()).collect();
+        order.sort_by_key(|&i| (i * 37) % cells.len());
+        let cells = order.iter().map(|&i| cells[i].clone()).collect();
+        let groups = order.iter().map(|&i| groups[i].clone()).collect();
+        let eligible = ["A", "B", "C"].iter().map(|s| s.to_string()).collect();
+        (cells, groups, eligible)
+    }
+
+    #[test]
+    fn shared_hotellings_table_matches_per_pair_loop_bit_for_bit() {
+        let (cells, groups, eligible) = membership_fixture();
+        let token = CancellationToken::default();
+        let table = hotellings_table(&cells, &groups, &eligible, &token).expect("solvable");
+        let expected = reference_hotellings(&cells, &groups, &eligible).expect("solvable");
+        assert_same_bits(&table, &expected);
+
+        // A constant column in group C makes its covariance singular: both
+        // paths fail and fall back.
+        let mut singular = cells.clone();
+        for (row, grp) in singular.iter_mut().zip(&groups) {
+            if grp == "C" {
+                row[2] = 5.0;
+            }
+        }
+        assert!(reference_hotellings(&singular, &groups, &eligible).is_none());
+        assert!(hotellings_table(&singular, &groups, &eligible, &token).is_none());
+    }
+
+    #[test]
+    fn shared_mahalanobis_table_matches_per_pair_loop_bit_for_bit() {
+        let (mut cells, groups, eligible) = membership_fixture();
+        // Missing and infinite values give several finite-column patterns;
+        // a constant column in C exercises the zero-variance drop.
+        cells[3][1] = f64::NAN;
+        cells[17][0] = f64::NAN;
+        cells[17][3] = f64::NAN;
+        cells[40][2] = f64::INFINITY;
+        cells[41] = vec![f64::NAN; 4];
+        cells[90][1] = f64::NEG_INFINITY;
+        for (row, grp) in cells.iter_mut().zip(&groups) {
+            if grp == "C" {
+                row[3] = 7.0;
+            }
+        }
+        let token = CancellationToken::default();
+        let table = mahalanobis_cells(&cells, &groups, &eligible, &token).expect("not cancelled");
+        assert_same_bits(&table, &reference_mahalanobis(&cells, &groups, &eligible));
+        assert!(table[41].iter().all(|v| *v == f64::INFINITY));
+    }
+
+    #[test]
+    fn membership_tables_stop_on_cancellation() {
+        let (cells, groups, eligible) = membership_fixture();
+        let token = CancellationToken::new();
+        token.cancel();
+        let err = mahalanobis_cells(&cells, &groups, &eligible, &token).unwrap_err();
+        assert!(err.to_string().contains("analysis_cancelled"));
+        assert!(hotellings_table(&cells, &groups, &eligible, &token).is_none());
     }
 
     #[test]
