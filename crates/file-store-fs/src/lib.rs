@@ -16,8 +16,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use archaeodash_data_io::{
-    read_group_file, scan_project, sync_dir, validate_group_file, write_group_rows, GroupFileData,
-    GroupProfile, ScanCandidate,
+    read_group_file, scan_folder, scan_project, sync_dir, validate_group_file, write_group_rows,
+    GroupFileData, GroupProfile, ScanCandidate,
 };
 use archaeodash_storage::{
     BackupRecord, GroupFileStore, StoreError, Transaction, TransactionIntent,
@@ -168,6 +168,15 @@ impl FsGroupFileStore {
     pub fn scan_candidates_snapshot(&self) -> Result<Vec<ScanCandidate>, StoreError> {
         let _project_lock = self.project_read_lock()?;
         scan_project(&self.root).map_err(StoreError::from)
+    }
+
+    /// Same as [`Self::scan_candidates_snapshot`] for the group files
+    /// directly inside one folder (`""` is the project root without its
+    /// subfolders).
+    pub fn scan_folder_snapshot(&self, folder: &str) -> Result<Vec<ScanCandidate>, StoreError> {
+        let dir = self.resolve(folder)?;
+        let _project_lock = self.project_read_lock()?;
+        scan_folder(&dir).map_err(StoreError::from)
     }
 
     fn rollback_transaction(

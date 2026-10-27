@@ -680,6 +680,17 @@ pub struct ScanCandidate {
 /// Recursively discovers Parquet candidates under a project root, skipping
 /// dot-directories and the reserved `.archaeodash` transaction area.
 pub fn scan_project(root: &Path) -> Result<Vec<ScanCandidate>, ImportError> {
+    scan_dirs(root, true)
+}
+
+/// Like [`scan_project`], but only the `.parquet` files directly inside
+/// `dir` (one group folder, or the project root without its subfolders).
+/// Cheaper when only one folder matters, e.g. checking a rename for clashes.
+pub fn scan_folder(dir: &Path) -> Result<Vec<ScanCandidate>, ImportError> {
+    scan_dirs(dir, false)
+}
+
+fn scan_dirs(root: &Path, recursive: bool) -> Result<Vec<ScanCandidate>, ImportError> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -689,7 +700,7 @@ pub fn scan_project(root: &Path) -> Result<Vec<ScanCandidate>, ImportError> {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
             if path.is_dir() {
-                if !name.starts_with('.') {
+                if recursive && !name.starts_with('.') {
                     stack.push(path);
                 }
             } else if name.ends_with(".parquet") {
@@ -927,6 +938,38 @@ mod tests {
         assert_eq!(a, b);
         let swapped = vec![vec![Some(2.0), Some(1.0)], vec![None, Some(3.5)]];
         assert_ne!(a, measured_elemental_checksum(&uuids, &cols, &swapped));
+    }
+
+    #[test]
+    fn scan_folder_skips_subfolders_that_scan_project_reads() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("Site")).expect("mkdir");
+        std::fs::write(dir.path().join("root.parquet"), b"not parquet").expect("write");
+        std::fs::write(dir.path().join("Site").join("a.parquet"), b"not parquet").expect("write");
+        let names = |found: Vec<ScanCandidate>| -> Vec<String> {
+            found
+                .iter()
+                .map(|c| {
+                    c.path
+                        .strip_prefix(dir.path())
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                })
+                .collect()
+        };
+        assert_eq!(
+            names(scan_folder(dir.path()).unwrap()),
+            vec!["root.parquet"]
+        );
+        assert_eq!(
+            names(scan_folder(&dir.path().join("Site")).unwrap()),
+            vec!["Site/a.parquet"]
+        );
+        assert_eq!(
+            names(scan_project(dir.path()).unwrap()),
+            vec!["Site/a.parquet", "root.parquet"]
+        );
     }
 }
 

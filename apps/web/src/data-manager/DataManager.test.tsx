@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { GroupCandidate, GroupSummary } from '@archaeodash/contracts';
-import { AddColumnForm, DataManager, GroupDetails, GroupFileTree, RenameGroupForm, columnNameProblem, folderNodes, groupFileStem, groupNameProblem, groupsWithColumn, loadGroupFiles, pathLike, renameGroupFile, renamedExclusions, type DataManagerTransport, type GroupFileEntry } from './DataManager.tsx';
+import { AddColumnForm, DataManager, GroupDetails, GroupFileTree, RENAME_SETTLE_MS, RenameGroupForm, columnNameProblem, exclusionsAfterRename, folderNodes, groupFileStem, groupNameProblem, groupsWithColumn, loadGroupFiles, pathLike, renameGroupFile, renamedEntry, renamedExclusions, withoutStaleExclusions, type DataManagerTransport, type GroupFileEntry } from './DataManager.tsx';
+import { RERUN_DELAY_MS } from '../ordination/rerun.ts';
 import { ImportWizard } from './ImportWizard.tsx';
 import { DEFAULT_VALUE_OPTIONS, ImportValueOptions, recipeFromOptions } from './ImportValueOptions.tsx';
 import { ImportProgress, elapsedLabel, importStepLabel } from './ImportProgress.tsx';
@@ -376,35 +377,69 @@ test('rename group: a name or file clash in the same folder is refused', () => {
   assert.match(form, /<button type="submit" disabled="">/);
   // A clash the backend finds (another window) rejects the rename.
   const refuse = async () => { throw new Error('folder “Site” already has a group named “Hooper”'); };
-  return assert.rejects(renameGroupFile(refuse, { path: 'Site/Baca.parquet', revision: 'rev-1' }, 'Hooper', []), /already has a group named/);
+  return assert.rejects(renameGroupFile(refuse, { path: 'Site/Baca.parquet', revision: 'rev-1' }, 'Hooper'), /already has a group named/);
 });
 
-test('rename group: success sends the request and returns the new path with the scanned separators', async () => {
+test('rename group: success sends the request and updates the entry from the answer, without a rescan', async () => {
   const calls: unknown[] = [];
   const rename = async (request: { path: string; expected_revision: string; new_name: string }) => {
     calls.push(request);
-    return { transaction_id: 't1', action: 'rename_group', outputs: [{ ...summary('Baca Pueblo', 3), path: 'Site/Baca_Pueblo.parquet' }], deleted_paths: [request.path] };
+    return { transaction_id: 't1', action: 'rename_group', outputs: [{ ...summary('Baca Pueblo', 3), path: 'Site/Baca_Pueblo.parquet', revision_id: 'rev-2' }], deleted_paths: [request.path] };
   };
-  const renamed = await renameGroupFile(rename, { path: 'Site\\Baca.parquet', revision: 'rev-1' }, '  Baca Pueblo ', []);
+  const renamed = await renameGroupFile(rename, { path: 'Site\\Baca.parquet', revision: 'rev-1' }, '  Baca Pueblo ');
   assert.deepEqual(calls, [{ path: 'Site\\Baca.parquet', expected_revision: 'rev-1', new_name: 'Baca Pueblo' }]);
   assert.equal(renamed.path, 'Site\\Baca_Pueblo.parquet');
+  assert.equal(renamed.summary?.path, 'Site\\Baca_Pueblo.parquet');
+  const entry = renamedEntry({ ...siteEntries[0]!, path: 'Site\\Baca.parquet', renaming: true }, renamed.path, 'Baca Pueblo', renamed.summary);
+  assert.deepEqual([entry.path, entry.name, entry.revision, entry.error, entry.renaming], ['Site\\Baca_Pueblo.parquet', 'Baca Pueblo', 'rev-2', '', undefined]);
   const form = renderToStaticMarkup(<RenameGroupForm current="Baca" name="Baca Pueblo" problem="" onChange={() => {}} onSubmit={() => {}} onCancel={() => {}} />);
   assert.match(form, /<button type="submit">/);
   assert.doesNotMatch(form, /role="alert"/);
 });
 
-test('rename group: the group keeps its inclusion in analyses', async () => {
-  const rename = async (request: { path: string }) => ({
-    transaction_id: 't1', action: 'rename_group', outputs: [{ ...summary('New', 3), path: request.path.replace(/[^/]+$/, 'New.parquet') }], deleted_paths: [request.path],
-  });
-  // A group left out of analyses stays left out under its new path.
-  const unchecked = await renameGroupFile(rename, { path: 'Site/Baca.parquet', revision: 'rev-1' }, 'New', ['Site/Baca.parquet', 'Site/Hooper.parquet']);
-  assert.deepEqual(unchecked.excluded, ['Site/New.parquet', 'Site/Hooper.parquet']);
-  assert.deepEqual(includedAmong(['Site/New.parquet', 'Site/Hooper.parquet'], new Set(unchecked.excluded)), []);
+test('rename group: the tree shows the new name while it is saved, and back-to-back renames see it', () => {
+  const saving: GroupFileEntry[] = [{ ...siteEntries[0]!, name: 'Baca Pueblo', renaming: true }, siteEntries[1]!];
+  const html = renderToStaticMarkup(<GroupFileTree entries={saving} selected={[]} />);
+  assert.match(html, /aria-label="Baca Pueblo, 3 rows, renaming"/);
+  assert.match(html, /Renaming…/);
+  // The next rename cannot take the name or the file of one still being saved.
+  assert.match(groupNameProblem(saving, 'Site/Hooper.parquet', 'baca pueblo'), /already has a group named “Baca Pueblo”/);
+  assert.match(groupNameProblem(saving, 'Site/Hooper.parquet', 'Baca_Pueblo'), /already has the group file Baca_Pueblo\.parquet/);
+  // Its old name is free again.
+  assert.equal(groupNameProblem(saving, 'Site/Hooper.parquet', 'Baca2'), '');
+});
+
+test('rename group: the group keeps its inclusion in analyses', () => {
+  const ready = (paths: string[]) => paths;
+  // A group left out of analyses stays left out under its new path; the old
+  // path stays excluded too until renaming settles (other pages still list it).
+  const unchecked = exclusionsAfterRename(['Site/Baca.parquet', 'Site/Hooper.parquet'], 'Site/Baca.parquet', 'Site/New.parquet', new Set());
+  assert.deepEqual(unchecked.excluded.sort(), ['Site/Baca.parquet', 'Site/Hooper.parquet', 'Site/New.parquet']);
+  assert.deepEqual(unchecked.stale, ['Site/Baca.parquet']);
+  assert.deepEqual(includedAmong(ready(['Site/New.parquet', 'Site/Hooper.parquet']), new Set(unchecked.excluded)), []);
+  assert.deepEqual(includedAmong(ready(['Site/Baca.parquet', 'Site/Hooper.parquet']), new Set(unchecked.excluded)), [], 'pages not yet rescanned');
+  // Once settled the old path is dropped.
+  const settled = withoutStaleExclusions(unchecked.excluded, new Set(unchecked.stale), ['Site/New.parquet', 'Site/Hooper.parquet']);
+  assert.deepEqual(settled.sort(), ['Site/Hooper.parquet', 'Site/New.parquet']);
   // An included group stays included: its new path is not excluded.
-  const checked = await renameGroupFile(rename, { path: 'Site/Baca.parquet', revision: 'rev-1' }, 'New', ['Site/Hooper.parquet']);
+  const checked = exclusionsAfterRename(['Site/Hooper.parquet'], 'Site/Baca.parquet', 'Site/New.parquet', new Set());
   assert.deepEqual(checked.excluded, ['Site/Hooper.parquet']);
+  assert.deepEqual(checked.stale, []);
   assert.deepEqual(includedAmong(['Site/New.parquet', 'Site/Hooper.parquet'], new Set(checked.excluded)), ['Site/New.parquet']);
+  // Renamed twice before settling (A → B → C): only C stays excluded.
+  const first = exclusionsAfterRename(['Site/A.parquet'], 'Site/A.parquet', 'Site/B.parquet', new Set());
+  const second = exclusionsAfterRename(first.excluded, 'Site/B.parquet', 'Site/C.parquet', new Set(first.stale));
+  assert.deepEqual(withoutStaleExclusions(second.excluded, new Set(second.stale), ['Site/C.parquet']), ['Site/C.parquet']);
+  // An included group renamed onto a path a left-out group just gave up stays included.
+  const reused = exclusionsAfterRename(first.excluded, 'Site/X.parquet', 'Site/A.parquet', new Set(first.stale));
+  assert.deepEqual(reused.excluded, ['Site/B.parquet']);
+  assert.deepEqual(withoutStaleExclusions(['Site/A.parquet'], new Set(['Site/A.parquet']), ['Site/A.parquet']), ['Site/A.parquet'], 'a path in use again is kept');
+  // A case-only rename keeps the path and changes nothing.
+  assert.deepEqual(exclusionsAfterRename(['Site/A.parquet'], 'Site/A.parquet', 'Site/A.parquet', new Set()), { excluded: ['Site/A.parquet'], stale: [] });
+});
+
+test('rename group: renaming settles after a pause before pages refresh', () => {
+  assert.ok(RENAME_SETTLE_MS > RERUN_DELAY_MS, 'longer than the rerun delay, so a run of renames starts one refresh');
 });
 
 test('a renamed group keeps the separators of the scanned path (Windows)', () => {

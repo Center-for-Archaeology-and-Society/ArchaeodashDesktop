@@ -16,7 +16,7 @@ import { useDataCache } from '../datasets/DataCache.tsx';
 import { AnalysisSetupPanel } from './AnalysisSetupPanel.tsx';
 import { ImportDialog } from './ImportDialog.tsx';
 import { ImportWizard } from './ImportWizard.tsx';
-import { onGroupsChanged } from './events.ts';
+import { notifyGroupsChanged, onGroupsChanged } from './events.ts';
 import { applySelection, pruneSelection, type SelectionState } from './selection.ts';
 import type { DataManagerTransport } from './types.ts';
 import './file-manager.css';
@@ -31,6 +31,8 @@ export interface GroupFileEntry {
   readonly revision: string | null;
   /** Validation error; empty when the file is valid. */
   readonly error: string;
+  /** A rename to `name` is still being saved. */
+  readonly renaming?: boolean;
 }
 
 export interface DataManagerProps {
@@ -144,26 +146,74 @@ export function groupNameProblem(entries: readonly GroupFileEntry[], path: strin
   const sameName = others.find((entry) => entry.name.toLowerCase() === name.toLowerCase());
   if (sameName) return `${quoted(folder)} already has a group named “${sameName.name}”.`;
   const file = `${stem}.parquet`;
-  const sameFile = others.find((entry) => basename(entry.path).toLowerCase() === file.toLowerCase());
+  // A group still being renamed will take the file of its new name.
+  const fileOf = (entry: GroupFileEntry) => (entry.renaming ? [basename(entry.path), `${groupFileStem(entry.name)}.parquet`] : [basename(entry.path)]);
+  const sameFile = others.find((entry) => fileOf(entry).some((f) => f.toLowerCase() === file.toLowerCase()));
   if (sameFile) return `${quoted(folder)} already has the group file ${file} (${sameFile.name}).`;
   return '';
 }
 
 /**
+ * Wait after the last group rename (with no rename form open) before other
+ * pages rescan and the background precompute runs again, so renaming several
+ * groups in a row starts one refresh, not one per group.
+ */
+export const RENAME_SETTLE_MS = 1500;
+
+/**
  * Renames one group through the backend. Returns its new path, written with
- * the scanned path's separators, and the exclusions with that path in place
- * of the old one, so the group stays included in (or left out of) analyses.
+ * the scanned path's separators, and its new summary.
  */
 export async function renameGroupFile(
   rename: NonNullable<DataManagerTransport['groups']['renameGroup']>,
   entry: { readonly path: string; readonly revision: string },
   newName: string,
-  excluded: Iterable<string>,
-): Promise<{ path: string; excluded: string[] }> {
+): Promise<{ path: string; summary: GroupSummary | null }> {
   const result = await rename({ path: entry.path, expected_revision: entry.revision, new_name: newName.trim() });
-  const path = pathLike(entry.path, result.outputs[0]?.path ?? entry.path);
-  return { path, excluded: renamedExclusions(excluded, entry.path, path) };
+  const output = result.outputs[0];
+  const path = pathLike(entry.path, output?.path ?? entry.path);
+  return { path, summary: output ? { ...output, path } : null };
 }
+
+/** The tree entry of a renamed group, from the backend's answer (no rescan needed). */
+export function renamedEntry(entry: GroupFileEntry, path: string, name: string, summary: GroupSummary | null): GroupFileEntry {
+  return { path, name: summary?.group_name || name, summary: summary ?? entry.summary, revision: summary?.revision_id ?? entry.revision, error: '' };
+}
+
+/**
+ * Exclusions after the group at `from` moved to `to`, so it stays included
+ * in (or left out of) analyses. A left-out group's old path stays excluded
+ * as well, listed in `stale`, until renaming settles: other pages keep
+ * listing the old path until they rescan. An included group's new path is
+ * never excluded.
+ */
+export function exclusionsAfterRename(
+  excluded: Iterable<string>,
+  from: string,
+  to: string,
+  stale: ReadonlySet<string>,
+): { excluded: string[]; stale: string[] } {
+  const next = new Set(excluded);
+  const nextStale = new Set(stale);
+  if (from !== to) {
+    nextStale.delete(to);
+    if (next.has(from)) {
+      next.add(to);
+      nextStale.add(from);
+    } else {
+      next.delete(to);
+    }
+  }
+  return { excluded: [...next], stale: [...nextStale] };
+}
+
+/** `excluded` without the old paths of renamed groups, unless a group uses that path again. */
+export function withoutStaleExclusions(excluded: Iterable<string>, stale: ReadonlySet<string>, current: readonly string[]): string[] {
+  const live = new Set(current);
+  return [...excluded].filter((path) => !stale.has(path) || live.has(path));
+}
+
+const sameMembers = (list: readonly string[], set: ReadonlySet<string>) => list.length === set.size && list.every((item) => set.has(item));
 
 export async function loadGroupFiles(groups: DataManagerTransport['groups']): Promise<GroupFileEntry[]> {
   const found = await groups.scan();
@@ -187,7 +237,22 @@ export async function loadGroupFiles(groups: DataManagerTransport['groups']): Pr
 }
 
 export function DataManager({ transport, projectName = '', onDataChanged, onRevealProject, revealLabel = 'Open project folder' }: DataManagerProps): ReactElement {
-  const [entries, setEntries] = useState<GroupFileEntry[]>([]);
+  const [scannedEntries, setEntries] = useState<GroupFileEntry[]>([]);
+  /** Renames being saved, oldest first (path → new name); the tree shows the new names already. */
+  const [renaming, setRenaming] = useState<ReadonlyMap<string, string>>(new Map());
+  /** Groups were renamed and other pages, the precompute, and the preload have not caught up yet. */
+  const [renameUnsettled, setRenameUnsettled] = useState(false);
+  const renameQueue = useRef<Promise<void>>(Promise.resolve());
+  const staleExclusions = useRef<ReadonlySet<string>>(new Set());
+  /** Set while this panel announces its own change, so it does not rescan itself. */
+  const ownNotice = useRef(false);
+  const entries = useMemo(
+    () => (renaming.size === 0 ? scannedEntries : scannedEntries.map((entry) => {
+      const name = renaming.get(entry.path);
+      return name === undefined ? entry : { ...entry, name, renaming: true };
+    })),
+    [scannedEntries, renaming],
+  );
   const [listedFolders, setListedFolders] = useState<GroupFolder[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -232,7 +297,7 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
 
   useEffect(() => {
     void refresh();
-    return onGroupsChanged(() => void refresh());
+    return onGroupsChanged(() => { if (!ownNotice.current) void refresh(); });
   }, [refresh]);
 
   const allFolders = useMemo(() => folderNodes(entries, listedFolders), [entries, listedFolders]);
@@ -241,6 +306,10 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
   // Dataset picker. Analyses use one folder at a time; files that need
   // attention cannot be included.
   const inclusion = useGroupInclusion();
+  const inclusionRef = useRef(inclusion);
+  inclusionRef.current = inclusion;
+  const entryPaths = useRef<string[]>([]);
+  entryPaths.current = scannedEntries.map((entry) => entry.path);
   const readyPaths = entries.filter((entry) => entry.summary && !entry.error).map((entry) => entry.path);
   const activeFolder = inclusion ? activeFolderAmong(readyPaths, inclusion.activeFolder) : null;
   const activeReady = inFolder(readyPaths, activeFolder);
@@ -289,14 +358,15 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
   const cache = useDataCache();
   const preloadKey = `${activeFolder ?? ''}|${entries.map((entry) => `${entry.path}@${entry.revision ?? ''}`).join('|')}`;
   useEffect(() => {
-    if (!cache) return;
+    // Wait until renaming settles; renamed files are then read once.
+    if (!cache || renameUnsettled) return;
     const ready = entries.filter((entry) => entry.summary && !entry.error && entry.revision && (activeFolder === null || folderOf(entry.path) === activeFolder));
     const excluded = inclusion?.excluded;
     const ordered = [...ready.filter((e) => !excluded?.has(e.path)), ...ready.filter((e) => excluded?.has(e.path))];
     void cache.preload(transport.groups, ordered.map((e) => ({ path: e.path, revision: e.revision, rowCount: e.summary?.row_count })));
     // `preloadKey` captures the folder, file list, and revisions.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cache, preloadKey, transport.groups]);
+  }, [cache, preloadKey, transport.groups, renameUnsettled]);
   const visibleIds = folders.flatMap((folder) => [folderId(folder.path), ...(closedFolders.has(folder.path) ? [] : folder.entries.map((e) => e.path))]);
   const currentFocus = visibleIds.includes(focusId) ? focusId : (visibleIds[0] ?? '');
 
@@ -418,17 +488,71 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     event.preventDefault();
     const rename = transport.groups.renameGroup;
     const entry = selectedEntries.length === 1 ? selectedEntries[0] : undefined;
-    if (pending?.kind !== 'rename-group' || !rename || !entry?.revision) return;
+    if (pending?.kind !== 'rename-group' || !rename || !entry?.revision || entry.renaming) return;
     const name = pending.name.trim();
     if (name === entry.name || groupNameProblem(entries, entry.path, name)) return;
+    const from = entry.path;
     const revision = entry.revision;
-    void runChange(async () => {
-      const renamed = await renameGroupFile(rename, { path: entry.path, revision }, name, inclusion?.excluded ?? []);
-      // Keep the group's inclusion in analyses with its new file name.
-      if (inclusion && renamed.path !== entry.path) inclusion.setExcluded(renamed.excluded);
-      return [renamed.path];
-    }, `Renamed ${entry.name} to ${name}.`, `Renaming ${entry.name}…`);
+    const oldName = entry.name;
+    // The tree shows the new name at once and the panel stays usable, so
+    // several groups can be renamed in a row. The backend renames one group
+    // at a time; nothing else is rescanned or rerun until renaming settles.
+    setPending(null);
+    setError('');
+    setStatus('');
+    setRenameUnsettled(true);
+    setRenaming((current) => new Map(current).set(from, name));
+    renameQueue.current = renameQueue.current.then(async () => {
+      try {
+        const done = await renameGroupFile(rename, { path: from, revision }, name);
+        setEntries((list) => list.map((e) => (e.path === from ? renamedEntry(e, done.path, name, done.summary) : e)));
+        setSelection((current) => ({ selected: current.selected.map((p) => (p === from ? done.path : p)), anchor: current.anchor === from ? done.path : current.anchor }));
+        setFocusId((current) => (current === from ? done.path : current));
+        // Keep the group's inclusion in analyses with its new file name.
+        const shared = inclusionRef.current;
+        if (shared) {
+          const next = exclusionsAfterRename(shared.excluded, from, done.path, staleExclusions.current);
+          staleExclusions.current = new Set(next.stale);
+          if (!sameMembers(next.excluded, shared.excluded)) shared.setExcluded(next.excluded);
+        }
+        setStatus(`Renamed ${oldName} to ${name}.`);
+      } catch (cause) {
+        setError(`Could not rename ${oldName}: ${message(cause)}`);
+      } finally {
+        setRenaming((current) => {
+          const next = new Map(current);
+          next.delete(from);
+          return next;
+        });
+      }
+    });
   };
+
+  // Renaming settled (nothing being saved, no rename form open): other pages
+  // rescan once and the precompute and preload resume. Group names are not
+  // data, so PCA/UMAP come from their content-keyed results; only views
+  // labelled by group (LDA) recompute. The pages are not remounted
+  // (onDataChanged would drop their results).
+  const renameFormOpen = pending?.kind === 'rename-group';
+  useEffect(() => {
+    if (!renameUnsettled || renaming.size > 0 || renameFormOpen) return;
+    const timer = setTimeout(() => {
+      const shared = inclusionRef.current;
+      if (shared && staleExclusions.current.size > 0) {
+        const next = withoutStaleExclusions(shared.excluded, staleExclusions.current, entryPaths.current);
+        if (!sameMembers(next, shared.excluded)) shared.setExcluded(next);
+      }
+      staleExclusions.current = new Set();
+      setRenameUnsettled(false);
+      ownNotice.current = true;
+      try {
+        notifyGroupsChanged();
+      } finally {
+        ownNotice.current = false;
+      }
+    }, RENAME_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [renameUnsettled, renaming.size, renameFormOpen]);
 
   const submitAddColumn = (event: FormEvent) => {
     event.preventDefault();
@@ -500,7 +624,10 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
   const exportPaths = selectedReady.length > 0 ? selectedReady : (includedPaths ?? readyPaths);
   const exportNames = entries.filter((entry) => exportPaths.includes(entry.path)).map((entry) => entry.name);
   const exportScope = selectedReady.length > 0 ? 'selected' : includedPaths ? 'included in analyses' : 'in the project';
-  const canExport = !busy && !!transport.exports && exportPaths.length > 0;
+  // While renames are being saved, other file actions wait (they could act
+  // on a group whose file is about to move); renaming more groups does not.
+  const blocked = busy || renaming.size > 0;
+  const canExport = !blocked && !!transport.exports && exportPaths.length > 0;
 
   const submitExport = async (event: FormEvent) => {
     event.preventDefault();
@@ -528,20 +655,20 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
   };
 
   const selectedFolderNode = selectedFolder === null ? null : allFolders.find((f) => f.path === selectedFolder) ?? null;
-  const renameTarget = selectedEntries.length === 1 && !selectedEntries[0]!.error && selectedEntries[0]!.revision ? selectedEntries[0]! : null;
+  const renameTarget = selectedEntries.length === 1 && !selectedEntries[0]!.error && selectedEntries[0]!.revision && !selectedEntries[0]!.renaming ? selectedEntries[0]! : null;
   const canRenameGroup = !busy && !!transport.groups.renameGroup && renameTarget !== null;
-  const canRenameFolder = !busy && supportsFolders && !!selectedFolderNode && selectedFolderNode.path !== '' && !!transport.groups.renameFolder;
+  const canRenameFolder = !blocked && supportsFolders && !!selectedFolderNode && selectedFolderNode.path !== '' && !!transport.groups.renameFolder;
   const startRenameFolder = () => { if (selectedFolderNode) setPending({ kind: 'rename-folder', name: selectedFolderNode.name }); };
   const startRenameGroup = () => { if (renameTarget) setPending({ kind: 'rename-group', name: renameTarget.name }); };
   // Add column… applies to one folder: the selected folder, or the folder of
   // the highlighted groups, or the folder analyses use.
   const columnFolder = selectedFolderNode ? selectedFolderNode.path : selectedFolders.length === 1 ? selectedFolders[0]! : selectedEntries.length === 0 ? activeFolder : null;
   const columnFolderGroups = columnFolder === null ? 0 : entries.filter((entry) => folderOf(entry.path) === columnFolder && entry.summary && !entry.error).length;
-  const canAddColumn = !busy && !!transport.groups.addColumn && columnFolder !== null && columnFolderGroups > 0;
-  const canCopy = !busy && supportsFolders && selectedEntries.length > 0 && selectedEntries.every((entry) => entry.revision && !entry.error);
-  const canMerge = !busy && selectedEntries.length >= 2 && selectedEntries.every((entry) => !entry.error) && new Set(selectedEntries.map((e) => folderOf(e.path))).size === 1;
-  const canDeleteGroups = !busy && selectedEntries.length > 0 && selectedEntries.every((entry) => entry.revision);
-  const canDeleteFolder = !busy && !!transport.groups.deleteFolder && selectedFolderNode !== null && selectedFolderNode.entries.length === 0 && selectedFolderNode.path !== '';
+  const canAddColumn = !blocked && !!transport.groups.addColumn && columnFolder !== null && columnFolderGroups > 0;
+  const canCopy = !blocked && supportsFolders && selectedEntries.length > 0 && selectedEntries.every((entry) => entry.revision && !entry.error);
+  const canMerge = !blocked && selectedEntries.length >= 2 && selectedEntries.every((entry) => !entry.error) && new Set(selectedEntries.map((e) => folderOf(e.path))).size === 1;
+  const canDeleteGroups = !blocked && selectedEntries.length > 0 && selectedEntries.every((entry) => entry.revision);
+  const canDeleteFolder = !blocked && !!transport.groups.deleteFolder && selectedFolderNode !== null && selectedFolderNode.entries.length === 0 && selectedFolderNode.path !== '';
   const canDelete = canDeleteGroups || canDeleteFolder;
   const startDelete = () => setPending(canDeleteGroups ? { kind: 'delete' } : { kind: 'delete-folder' });
   const copyChoices = allFolders.map((f) => f.path).filter((p) => p !== '');
@@ -601,7 +728,7 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
         if (canDelete) { event.preventDefault(); startDelete(); }
         break;
       case 'F2':
-        if (onFolder && supportsFolders && folder !== '') { event.preventDefault(); selectFolder(folder); setPending({ kind: 'rename-folder', name: folderLabel(folder) }); }
+        if (onFolder && supportsFolders && folder !== '' && !blocked) { event.preventDefault(); selectFolder(folder); setPending({ kind: 'rename-folder', name: folderLabel(folder) }); }
         else if (!onFolder && canRenameGroup && renameTarget?.path === currentFocus) { event.preventDefault(); setPending({ kind: 'rename-group', name: renameTarget.name }); }
         break;
       case 'Escape':
@@ -636,7 +763,7 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
         </span>
         <div className="fm-toolbar" role="toolbar" aria-label="File actions">
           <span className="fm-tool-group">
-            <button type="button" className="fm-tool fm-tool-primary" disabled={busy} onClick={() => setImportOpen(true)}>Import…</button>
+            <button type="button" className="fm-tool fm-tool-primary" disabled={blocked} onClick={() => setImportOpen(true)}>Import…</button>
             {transport.exports && (
               <button
                 type="button"
@@ -649,11 +776,11 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
                 Export…
               </button>
             )}
-            <button type="button" className="fm-tool fm-tool-icon" disabled={busy || loading} onClick={() => { setStatus(''); void refresh(); }} aria-label="Refresh" title="Refresh">⟳</button>
+            <button type="button" className="fm-tool fm-tool-icon" disabled={blocked || loading} onClick={() => { setStatus(''); void refresh(); }} aria-label="Refresh" title="Refresh">⟳</button>
           </span>
           {supportsFolders && (
             <span className="fm-tool-group">
-              <button type="button" className="fm-tool" disabled={busy || !transport.groups.createFolder} aria-pressed={pending?.kind === 'new-folder'} onClick={() => setPending({ kind: 'new-folder', name: 'New grouping' })} title="Create an empty folder for a new grouping of the samples">New folder…</button>
+              <button type="button" className="fm-tool" disabled={blocked || !transport.groups.createFolder} aria-pressed={pending?.kind === 'new-folder'} onClick={() => setPending({ kind: 'new-folder', name: 'New grouping' })} title="Create an empty folder for a new grouping of the samples">New folder…</button>
               <button type="button" className="fm-tool" disabled={!canRenameFolder} aria-pressed={pending?.kind === 'rename-folder'} onClick={startRenameFolder} title="Rename the selected folder (F2)">Rename folder…</button>
             </span>
           )}
@@ -864,6 +991,7 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
         groups={transport.groups}
         ordination={transport.ordination}
         dataKey={entries.map((entry) => `${entry.path}@${entry.revision ?? ''}`).join('|')}
+        hold={renameUnsettled}
       />
 
       {selectedFolderNode ? (
@@ -1003,7 +1131,7 @@ export function GroupFileTree({
                       aria-selected={isSelected}
                       aria-checked={included && includable ? isIncluded : undefined}
                       aria-invalid={entry.error ? true : undefined}
-                      aria-label={`${entry.name}${rows === undefined ? '' : `, ${plural(rows, 'row')}`}${entry.error ? `, needs attention: ${entry.error}` : ''}`}
+                      aria-label={`${entry.name}${rows === undefined ? '' : `, ${plural(rows, 'row')}`}${entry.renaming ? ', renaming' : ''}${entry.error ? `, needs attention: ${entry.error}` : ''}`}
                       tabIndex={rovingFocus === entry.path ? 0 : -1}
                       ref={setRef?.(entry.path)}
                       title={entry.error ? `Needs attention: ${entry.error}` : entry.path}
@@ -1033,6 +1161,7 @@ export function GroupFileTree({
                         )}
                         <FileIcon />
                         <span className="fm-name">{entry.name}</span>
+                        {entry.renaming && <span className="fm-meta" title="Saving the new name"><Spinner />Renaming…</span>}
                         <span className="fm-meta">{rows === undefined ? '' : plural(rows, 'row')}</span>
                         {entry.error && (
                           <span className="fm-warn" role="img" aria-label={`Needs attention: ${entry.error}`}>⚠</span>

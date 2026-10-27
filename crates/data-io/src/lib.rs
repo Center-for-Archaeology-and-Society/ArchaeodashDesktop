@@ -15,7 +15,7 @@ pub use export::{csv_field, sync_dir, write_atomic, write_text_csv};
 pub use group_profile::{
     assert_no_derived_columns, build_group_rows, check_group_read_limits,
     measured_elemental_checksum, partition_by_group, read_group_file, read_group_uuids,
-    read_profile_metadata, sanitize_group_name, scan_project, validate_group_file,
+    read_profile_metadata, sanitize_group_name, scan_folder, scan_project, validate_group_file,
     write_group_file, write_group_rows, CandidateStatus, ColumnRoles, GroupFileData, GroupProfile,
     GroupRow, ImportRecipe, Partition, ScanCandidate, IDENTITY_COLUMN, LEGACY_ROWID_COLUMN,
     PROFILE_KEY, PROFILE_VERSION,

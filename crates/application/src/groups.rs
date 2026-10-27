@@ -205,6 +205,19 @@ impl GroupService {
     /// membership is never an eligibility gate).
     pub fn scan_candidates(&self) -> Result<Vec<GroupCandidate>, StoreError> {
         let candidates = self.store.scan_candidates_snapshot()?;
+        Ok(self.to_candidates(candidates))
+    }
+
+    /// Candidates directly inside one folder (`""`: the project root only).
+    fn folder_candidates(&self, folder: &str) -> Result<Vec<GroupCandidate>, StoreError> {
+        let candidates = self.store.scan_folder_snapshot(folder)?;
+        Ok(self.to_candidates(candidates))
+    }
+
+    fn to_candidates(
+        &self,
+        candidates: Vec<archaeodash_data_io::ScanCandidate>,
+    ) -> Vec<GroupCandidate> {
         let mut out = Vec::new();
         for candidate in candidates {
             let path = candidate
@@ -224,7 +237,7 @@ impl GroupService {
             };
             out.push(GroupCandidate { path, ready, group });
         }
-        Ok(out)
+        out
     }
 
     /// Runs a transaction after checking that no folder it writes would hold
@@ -1641,7 +1654,9 @@ impl GroupService {
         }
         let from = req.path.replace('\\', "/");
         let folder = folder_of(&from);
-        let candidates = self.scan_candidates()?;
+        // Only this folder can clash; scanning the whole project made each
+        // rename read every group file's footer.
+        let candidates = self.folder_candidates(&folder)?;
         let taken = candidates.iter().any(|c| {
             let path = c.path.replace('\\', "/");
             let group_name = c.group.as_ref().map(|g| g.group_name.as_str());
@@ -2909,6 +2924,42 @@ mod tests {
             .expect("case-only rename");
         assert_eq!(response.outputs[0].path, "groups/Baca_Pueblo.parquet");
         assert!(response.deleted_paths.is_empty());
+    }
+
+    #[test]
+    fn rename_group_only_checks_its_own_folder() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, paths) = commit_two_groups(dir.path());
+        let hooper = read_group_file(&dir.path().join(&paths[1])).expect("read");
+        let copied = service
+            .copy_groups(&CopyGroupsRequest {
+                sources: vec![archaeodash_contracts::GroupRevisionRef {
+                    path: paths[1].clone(),
+                    expected_revision: hooper.profile.revision_id.clone(),
+                }],
+                destination_folder: "Other".into(),
+                remove_sources: false,
+            })
+            .expect("copy");
+        let copy = copied.outputs[0].clone();
+        // "Baca" is taken in groups/ but not in Other/.
+        let response = service
+            .rename_group(&RenameGroupRequest {
+                path: copy.path.clone(),
+                expected_revision: copy.revision_id.clone(),
+                new_name: "Baca".into(),
+            })
+            .expect("rename in another folder");
+        assert_eq!(response.outputs[0].path, "Other/Baca.parquet");
+        // groups/ still refuses it.
+        let clash = service
+            .rename_group(&RenameGroupRequest {
+                path: paths[1].clone(),
+                expected_revision: hooper.profile.revision_id.clone(),
+                new_name: "baca".into(),
+            })
+            .expect_err("name in use in groups/");
+        assert!(clash.to_string().contains("already has a group named"));
     }
 
     #[test]

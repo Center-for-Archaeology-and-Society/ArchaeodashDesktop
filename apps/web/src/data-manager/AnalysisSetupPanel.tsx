@@ -45,15 +45,17 @@ export interface AnalysisSetupPanelProps {
   readonly ordination?: OrdinationService;
   /** Changes whenever group files change, so precomputed results refresh. */
   readonly dataKey?: string;
+  /** Do not start the precompute yet (e.g. groups are being renamed); it runs once this clears. */
+  readonly hold?: boolean;
 }
 
-export function AnalysisSetupPanel({ elements, groups, ordination, dataKey = '' }: AnalysisSetupPanelProps): ReactElement | null {
+export function AnalysisSetupPanel({ elements, groups, ordination, dataKey = '', hold = false }: AnalysisSetupPanelProps): ReactElement | null {
   const { setup, loaded, save, reset, saved, saveAs, loadSaved, deleteSaved, preview } = useAnalysisSetup();
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState('');
   // Precompute the groups the pages analyze, so their requests hit the cache.
   const inclusion = useGroupInclusion();
-  const precompute = usePrecompute(setup, groups, ordination, dataKey, inclusion?.excluded, inclusion?.activeFolder);
+  const precompute = usePrecompute(setup, groups, ordination, dataKey, inclusion?.excluded, inclusion?.activeFolder, hold);
   const headingId = useId();
   if (!save) return null;
   // Ratio preview: raw ratios over the groups the pages analyze.
@@ -127,6 +129,7 @@ function usePrecompute(
   dataKey: string,
   excluded: ReadonlySet<string> | undefined,
   activeFolder: string | null | undefined,
+  hold = false,
 ): [OrdinationKind, PrecomputeState][] {
   const [states, setStates] = useState<[OrdinationKind, PrecomputeState][]>([]);
   useEffect(() => {
@@ -134,6 +137,9 @@ function usePrecompute(
       setStates([]);
       return;
     }
+    // Held: start nothing (a running job was aborted by the cleanup); the
+    // latest inputs run once the hold clears.
+    if (hold) return;
     const controller = new AbortController();
     const { signal } = controller;
     const update = (kind: OrdinationKind, state: PrecomputeState) => {
@@ -163,7 +169,7 @@ function usePrecompute(
       }
     })().catch(() => { if (!signal.aborted) setStates([]); });
     return () => controller.abort();
-  }, [setup, groups, ordination, dataKey, excluded, activeFolder]);
+  }, [setup, groups, ordination, dataKey, excluded, activeFolder, hold]);
   return states;
 }
 
