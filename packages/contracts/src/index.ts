@@ -267,6 +267,9 @@ export interface ApplyClustersRequest {
   sources: GroupRevisionRef[];
   clusters: string[][];
   mode: ApplyClustersMode;
+  /** Text before each cluster number in the new group names (`Cluster 5-`
+   *  gives `Cluster 5-1`, `Cluster 5-2`, ...). Absent means `Cluster `. */
+  name_prefix?: string;
 }
 
 /** Rename one group (profile name/id and file name), journaled. */

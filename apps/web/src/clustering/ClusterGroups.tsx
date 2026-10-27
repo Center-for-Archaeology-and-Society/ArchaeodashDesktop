@@ -1,6 +1,8 @@
 import { useMemo, useState, type ReactElement } from 'react';
 import type { ApplyClustersMode, ApplyClustersRequest, ClusterFitResponse, GroupRevisionRef } from '@archaeodash/client';
-import { buildApplyClustersRequest, clusterMembers, folderOfPath } from './cluster-groups.ts';
+import {
+  DEFAULT_CLUSTER_NAME_PREFIX, buildApplyClustersRequest, clusterGroupNames, clusterMembers, clusterNamePrefixProblem, folderOfPath,
+} from './cluster-groups.ts';
 import { BusyLabel } from '../ui/Busy.tsx';
 
 /** The analyzed group files a clustering can be turned into groups from. */
@@ -17,10 +19,12 @@ const folderLabel = (folder: string) => {
 
 /**
  * Turns every sample of a cluster result into groups named Cluster 1,
- * Cluster 2, ...: replacing the analyzed groups in their folder, or in a new
- * folder beside it. Names can be changed later in the Data Manager.
+ * Cluster 2, ... (or another name prefix, such as `Cluster 5-` for
+ * Cluster 5-1, Cluster 5-2, ...): replacing the analyzed groups in their
+ * folder, or in a new folder beside it. Names can be changed later in the
+ * Data Manager.
  */
-export function ClusterGroupsAssignment({ data, cutK, mode, sources, busy, onApply, onReviewChange }: {
+export function ClusterGroupsAssignment({ data, cutK, mode, sources, busy, onApply, onReviewChange, initialPrefix = DEFAULT_CLUSTER_NAME_PREFIX }: {
   data: ClusterFitResponse;
   cutK: number;
   mode: ApplyClustersMode;
@@ -28,9 +32,13 @@ export function ClusterGroupsAssignment({ data, cutK, mode, sources, busy, onApp
   busy: boolean;
   onApply: (request: ApplyClustersRequest) => void;
   onReviewChange: (reviewing: boolean) => void;
+  /** Starting text of the name-prefix field. */
+  initialPrefix?: string;
 }): ReactElement {
   const [prepared, setPrepared] = useState<ApplyClustersRequest | null>(null);
   const [error, setError] = useState('');
+  const [prefix, setPrefix] = useState(initialPrefix);
+  const prefixProblem = clusterNamePrefixProblem(prefix);
   const plan = useMemo(() => {
     try {
       const clusters = clusterMembers(data, cutK).filter((members) => members.length > 0);
@@ -41,20 +49,23 @@ export function ClusterGroupsAssignment({ data, cutK, mode, sources, busy, onApp
   }, [data, cutK]);
   const folder = folderOfPath(sources.refs[0]?.path ?? '');
   const groups = sources.names.map((name) => `“${name}”`).join(', ');
-  const names = plan.clusters === 1 ? 'Cluster 1' : `Cluster 1 to Cluster ${plan.clusters}`;
+  const names = clusterGroupNames(prefixProblem ? DEFAULT_CLUSTER_NAME_PREFIX : prefix, plan.clusters);
   const description = mode === 'replace'
     ? `All ${plan.samples.toLocaleString()} samples become ${plan.clusters} groups named ${names} in ${folderLabel(folder)}, replacing the analyzed ${sources.names.length === 1 ? 'group' : 'groups'} ${groups}. Other groups in the folder stay as they are.`
     : `All ${plan.samples.toLocaleString()} samples are copied into ${plan.clusters} groups named ${names} in a new folder beside ${folderLabel(folder)}. The analyzed groups stay as they are.`;
   function review() {
     try {
-      setPrepared(buildApplyClustersRequest(data, cutK, sources.refs, mode));
+      setPrepared(buildApplyClustersRequest(data, cutK, sources.refs, mode, prefix));
       onReviewChange(true);
       setError('');
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   }
   return <section aria-label={mode === 'replace' ? 'Replace groups with clusters' : 'New folder of cluster groups'}>
+    <label className="field">Group name prefix <input value={prefix} disabled={busy || !!prepared} aria-invalid={!!prefixProblem}
+      onChange={(event) => { setPrefix(event.target.value); setError(''); }} />
+      <span className="field-hint">{prefixProblem ?? 'Text before each cluster number: “Cluster 5-” gives Cluster 5-1, Cluster 5-2, …'}</span></label>
     <p>{plan.error || description} Rename the new groups later in the Data Manager.</p>
-    {!prepared && <button type="button" disabled={busy || !!plan.error || plan.clusters === 0} onClick={review}>Review</button>}
+    {!prepared && <button type="button" disabled={busy || !!plan.error || plan.clusters === 0 || !!prefixProblem} onClick={review}>Review</button>}
     {prepared && <div role="group" aria-label="Confirm cluster groups">
       <p><strong>{mode === 'replace'
         ? `Replace ${groups} with ${plan.clusters} cluster groups?`

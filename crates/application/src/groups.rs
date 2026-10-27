@@ -11,7 +11,7 @@ use archaeodash_contracts::{
     DeleteGroupRequest, DuplicateGroupRequest, GroupCandidate, GroupFolder, GroupRowDto,
     GroupRowsResponse, GroupSummary, MergeGroupsRequest, PatchDescriptiveValuesRequest,
     RenameFolderRequest, RenameGroupRequest, TransactionResponse, TransferAction,
-    TransferUnitsRequest,
+    TransferUnitsRequest, DEFAULT_CLUSTER_NAME_PREFIX,
 };
 use archaeodash_data_io::{sanitize_group_name, GroupFileData, GroupProfile, GroupRow};
 use archaeodash_file_store_fs::FsGroupFileStore;
@@ -101,13 +101,7 @@ pub fn validate_folder_name(name: &str) -> Result<String, StoreError> {
     {
         return Err(invalid("cannot contain < > : \" / \\ | ? *"));
     }
-    let upper = name.to_ascii_uppercase();
-    let stem = upper.split('.').next().unwrap_or("");
-    let windows_reserved = matches!(stem, "CON" | "PRN" | "AUX" | "NUL")
-        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.len() == 4
-            && stem.as_bytes()[3].is_ascii_digit());
-    if windows_reserved
+    if windows_reserved(&name)
         || RESERVED_FOLDERS
             .iter()
             .any(|r| r.eq_ignore_ascii_case(&name))
@@ -115,6 +109,52 @@ pub fn validate_folder_name(name: &str) -> Result<String, StoreError> {
         return Err(invalid("is reserved"));
     }
     Ok(name)
+}
+
+/// A file or folder name Windows reserves (`CON`, `COM1`, `LPT3.txt`, ...).
+fn windows_reserved(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    let stem = upper.split('.').next().unwrap_or("");
+    matches!(stem, "CON" | "PRN" | "AUX" | "NUL")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit())
+}
+
+/// Checks the text put before each cluster number in the names of new
+/// cluster groups (`None` is [`DEFAULT_CLUSTER_NAME_PREFIX`]). The names it
+/// gives (`<prefix>1`, ...) follow the folder-name rules: not empty, at most
+/// 100 characters, not hidden, no path separators or characters invalid in
+/// file names, and no Windows-reserved file. Leading spaces are dropped; a
+/// trailing space is kept (`Cluster ` gives `Cluster 1`).
+pub fn cluster_name_prefix(prefix: Option<&str>) -> Result<String, StoreError> {
+    let Some(prefix) = prefix else {
+        return Ok(DEFAULT_CLUSTER_NAME_PREFIX.to_string());
+    };
+    let prefix = prefix.trim_start();
+    let invalid =
+        |why: &str| StoreError::Validation(format!("cluster name prefix {prefix:?} {why}"));
+    if prefix.is_empty() {
+        return Err(StoreError::Validation(
+            "cluster name prefix is empty".to_string(),
+        ));
+    }
+    if prefix.chars().count() > 100 {
+        return Err(invalid("is longer than 100 characters"));
+    }
+    if prefix.starts_with('.') {
+        return Err(invalid("cannot start with a dot"));
+    }
+    if prefix
+        .chars()
+        .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
+    {
+        return Err(invalid("cannot contain < > : \" / \\ | ? *"));
+    }
+    if windows_reserved(&sanitize_group_name(&format!("{prefix}1"))) {
+        return Err(invalid("gives group files that Windows reserves"));
+    }
+    Ok(prefix.to_string())
 }
 
 /// Group operations rooted at one local project directory. Construction runs
@@ -630,8 +670,9 @@ impl GroupService {
     }
 
     /// Turns a clustering of whole groups into groups named `Cluster 1`,
-    /// `Cluster 2`, ... in one journaled transaction. Rows keep their
-    /// identities, values, and descriptive cells, in source order.
+    /// `Cluster 2`, ... (or `<name_prefix>1`, ...) in one journaled
+    /// transaction. Rows keep their identities, values, and descriptive
+    /// cells, in source order.
     ///
     /// - `Replace`: the analyzed groups are replaced by the cluster groups in
     ///   their folder; the folder's other groups are untouched, and a cluster
@@ -647,6 +688,7 @@ impl GroupService {
         req: &ApplyClustersRequest,
     ) -> Result<TransactionResponse, StoreError> {
         let invalid = |message: &str| StoreError::Validation(message.to_string());
+        let prefix = cluster_name_prefix(req.name_prefix.as_deref())?;
         if req.sources.is_empty() {
             return Err(invalid("choose at least one analyzed group"));
         }
@@ -771,7 +813,7 @@ impl GroupService {
             if rows.is_empty() {
                 continue;
             }
-            let base = format!("Cluster {}", cluster + 1);
+            let base = format!("{prefix}{}", cluster + 1);
             let mut name = base.clone();
             let mut suffix = 2;
             let file = loop {
@@ -2512,6 +2554,7 @@ mod tests {
                 vec![baca[1].clone()],
             ],
             mode: ApplyClustersMode::NewFolder,
+            name_prefix: None,
         };
         let created = service.apply_clusters(&request).expect("new folder");
         let paths: Vec<&str> = created.outputs.iter().map(|o| o.path.as_str()).collect();
@@ -2540,6 +2583,7 @@ mod tests {
                 sources: vec![reference("groups/Baca.parquet")],
                 clusters: vec![vec![baca[0].clone()], vec![baca[1].clone()]],
                 mode: ApplyClustersMode::Replace,
+                name_prefix: None,
             })
             .expect("replace");
         assert_eq!(replaced.deleted_paths, ["groups/Baca.parquet"]);
@@ -2555,6 +2599,7 @@ mod tests {
                 sources: vec![reference("groups/Hooper.parquet")],
                 clusters: vec![hooper.clone()],
                 mode: ApplyClustersMode::Replace,
+                name_prefix: None,
             })
             .expect("suffix");
         assert_eq!(suffixed.outputs[0].group_name, "Cluster 1 (2)");
@@ -2569,6 +2614,7 @@ mod tests {
                 ],
                 clusters: vec![baca.clone()],
                 mode: ApplyClustersMode::Replace,
+                name_prefix: None,
             })
             .expect("rerun");
         assert_eq!(rerun.outputs[0].path, "groups/Cluster_1.parquet");
@@ -2588,6 +2634,7 @@ mod tests {
                     sources,
                     clusters,
                     mode: ApplyClustersMode::Replace,
+                    name_prefix: None,
                 })
                 .expect_err("refused")
                 .to_string()
@@ -2597,6 +2644,7 @@ mod tests {
                 sources: vec![stale],
                 clusters: vec![baca.clone()],
                 mode: ApplyClustersMode::Replace,
+                name_prefix: None,
             }),
             Err(StoreError::RevisionConflict { .. })
         ));
@@ -2609,6 +2657,135 @@ mod tests {
         )
         .contains("more than one cluster"));
         assert_eq!(names("groups/Cluster_1.parquet"), ["A1", "A2"]);
+    }
+
+    #[test]
+    fn cluster_name_prefix_defaults_and_refuses_unsafe_names() {
+        assert_eq!(cluster_name_prefix(None).unwrap(), "Cluster ");
+        assert_eq!(cluster_name_prefix(Some("Cluster ")).unwrap(), "Cluster ");
+        assert_eq!(
+            cluster_name_prefix(Some("  Cluster 5-")).unwrap(),
+            "Cluster 5-"
+        );
+        assert_eq!(cluster_name_prefix(Some("COM ")).unwrap(), "COM ");
+        for (prefix, why) in [
+            ("", "empty"),
+            ("   ", "empty"),
+            ("a/b ", "cannot contain"),
+            ("a\\b ", "cannot contain"),
+            ("k: ", "cannot contain"),
+            ("why? ", "cannot contain"),
+            ("tab\t", "cannot contain"),
+            (".hidden ", "dot"),
+            ("com", "Windows reserves"),
+        ] {
+            let error = cluster_name_prefix(Some(prefix)).expect_err(prefix);
+            assert!(
+                matches!(&error, StoreError::Validation(m) if m.contains(why)),
+                "{prefix:?}: {error}"
+            );
+        }
+        assert!(cluster_name_prefix(Some(&"x".repeat(101))).is_err());
+    }
+
+    #[test]
+    fn apply_clusters_uses_the_name_prefix() {
+        use archaeodash_contracts::{ApplyClustersMode, ApplyClustersRequest, GroupRevisionRef};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, _) = commit_two_groups(dir.path());
+        let read = |p: &str| read_group_file(&dir.path().join(p)).expect("read");
+        let reference = |p: &str| GroupRevisionRef {
+            path: p.to_string(),
+            expected_revision: read(p).profile.revision_id,
+        };
+        let uuids =
+            |p: &str| -> Vec<String> { read(p).rows.iter().map(|r| r.uuid.to_string()).collect() };
+        let baca = uuids("groups/Baca.parquet");
+        let hooper = uuids("groups/Hooper.parquet");
+        let request = |sources: Vec<GroupRevisionRef>,
+                       clusters: Vec<Vec<String>>,
+                       mode: ApplyClustersMode,
+                       prefix: &str| ApplyClustersRequest {
+            sources,
+            clusters,
+            mode,
+            name_prefix: Some(prefix.to_string()),
+        };
+
+        // A custom prefix names the groups and their files.
+        let created = service
+            .apply_clusters(&request(
+                vec![reference("groups/Baca.parquet")],
+                vec![vec![baca[0].clone()], vec![baca[1].clone()]],
+                ApplyClustersMode::NewFolder,
+                "Cluster 5-",
+            ))
+            .expect("custom prefix");
+        let named: Vec<(&str, &str)> = created
+            .outputs
+            .iter()
+            .map(|o| (o.group_name.as_str(), o.path.as_str()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("Cluster 5-1", "groups clusters/Cluster_5-1.parquet"),
+                ("Cluster 5-2", "groups clusters/Cluster_5-2.parquet"),
+            ]
+        );
+        assert_eq!(
+            read("groups clusters/Cluster_5-2.parquet")
+                .profile
+                .group_name,
+            "Cluster 5-2"
+        );
+
+        // The default prefix, sent explicitly, matches an absent one.
+        let default = service
+            .apply_clusters(&request(
+                vec![reference("groups/Baca.parquet")],
+                vec![baca.clone()],
+                ApplyClustersMode::NewFolder,
+                "Cluster ",
+            ))
+            .expect("default prefix");
+        assert_eq!(default.outputs[0].group_name, "Cluster 1");
+        assert_eq!(
+            default.outputs[0].path,
+            "groups clusters 2/Cluster_1.parquet"
+        );
+
+        // Usual clash rule: a name kept by a group that stays gets a suffix.
+        service
+            .apply_clusters(&request(
+                vec![reference("groups/Baca.parquet")],
+                vec![baca.clone()],
+                ApplyClustersMode::Replace,
+                "Site ",
+            ))
+            .expect("replace Baca");
+        let suffixed = service
+            .apply_clusters(&request(
+                vec![reference("groups/Hooper.parquet")],
+                vec![hooper.clone()],
+                ApplyClustersMode::Replace,
+                "Site ",
+            ))
+            .expect("replace Hooper");
+        assert_eq!(suffixed.outputs[0].group_name, "Site 1 (2)");
+
+        // An invalid prefix is refused before anything is written.
+        let refused = service
+            .apply_clusters(&request(
+                vec![reference("groups/Site_1.parquet")],
+                vec![baca.clone()],
+                ApplyClustersMode::NewFolder,
+                "bad/name ",
+            ))
+            .expect_err("invalid prefix");
+        assert!(matches!(refused, StoreError::Validation(m) if m.contains("cannot contain")));
+        assert!(!dir.path().join("groups clusters 3").exists());
+        assert_eq!(uuids("groups/Site_1.parquet"), baca);
     }
 
     #[test]

@@ -16,7 +16,7 @@ Cluster assignment failed with "The analysis result has no safe source path or r
   - Exposed as the desktop command `apply_clusters` and `POST /api/v1/groups/apply-clusters`.
   - Client method: `groups.applyClusters`.
 - One transaction:
-  - Group names are `Cluster 1..k`; empty clusters are skipped.
+  - Group names are `Cluster 1..k`; empty clusters are skipped. (2026-10-27: the `Cluster ` prefix is now settable; see [[Cluster_Group_Name_Prefix_2026-10-27]].)
   - Rows keep UUIDs, values and descriptive cells, in source order.
   - The sources must share a folder and a schema, and have current revisions.
   - The clusters must cover every source row exactly once; otherwise "run the analysis again".

@@ -440,10 +440,14 @@ pub enum ApplyClustersMode {
     NewFolder,
 }
 
+/// Default [`ApplyClustersRequest::name_prefix`]: groups `Cluster 1`,
+/// `Cluster 2`, ...
+pub const DEFAULT_CLUSTER_NAME_PREFIX: &str = "Cluster ";
+
 /// `POST /groups/apply-clusters` request: turn a clustering of the analyzed
-/// groups into groups named `Cluster 1`, `Cluster 2`, ... in one journaled
-/// transaction. The clusters must cover every row of the sources exactly
-/// once.
+/// groups into groups named `Cluster 1`, `Cluster 2`, ... (or
+/// `<name_prefix>1`, ...) in one journaled transaction. The clusters must
+/// cover every row of the sources exactly once.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApplyClustersRequest {
     /// The analyzed group files, at the revisions the caller read.
@@ -452,6 +456,11 @@ pub struct ApplyClustersRequest {
     /// clusters create no group.
     pub clusters: Vec<Vec<String>>,
     pub mode: ApplyClustersMode,
+    /// Text before each cluster number in the new group names (`Cluster 5-`
+    /// gives `Cluster 5-1`, `Cluster 5-2`, ...). Absent means
+    /// [`DEFAULT_CLUSTER_NAME_PREFIX`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_prefix: Option<String>,
 }
 
 /// `POST /groups/rename` request: rename one group (profile name and id,
@@ -1698,6 +1707,22 @@ mod tests {
         };
         let json = serde_json::to_string(&info).unwrap();
         assert_eq!(serde_json::from_str::<AppInfo>(&json).unwrap(), info);
+    }
+
+    #[test]
+    fn apply_clusters_name_prefix_is_optional() {
+        let legacy: ApplyClustersRequest =
+            serde_json::from_str(r#"{"sources":[],"clusters":[],"mode":"replace"}"#).unwrap();
+        assert_eq!(legacy.name_prefix, None);
+        assert!(!serde_json::to_string(&legacy)
+            .unwrap()
+            .contains("name_prefix"));
+        let custom: ApplyClustersRequest = serde_json::from_str(
+            r#"{"sources":[],"clusters":[],"mode":"new_folder","name_prefix":"Cluster 5-"}"#,
+        )
+        .unwrap();
+        assert_eq!(custom.name_prefix.as_deref(), Some("Cluster 5-"));
+        assert_eq!(custom.mode, ApplyClustersMode::NewFolder);
     }
 
     #[test]
