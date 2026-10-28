@@ -60,6 +60,51 @@ pub struct ProjectLockGuard {
     _lock: fs::File,
 }
 
+fn shared_project_lock(root: &Path) -> Result<fs::File, StoreError> {
+    let dir = root.join(ARCHAEODASH_DIR);
+    fs::create_dir_all(&dir).map_err(io_err)?;
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("project.lock"))
+        .map_err(io_err)?;
+    lock.lock_shared().map_err(io_err)?;
+    Ok(lock)
+}
+
+/// Replaces `destination` with `staged`. On Windows a program outside the
+/// app that has the destination open for a moment (a virus scanner, the
+/// search indexer) makes the replace fail with "Access is denied", so it is
+/// retried briefly (under a second in all) before giving up.
+fn replace_file(staged: &Path, destination: &Path) -> std::io::Result<()> {
+    const RETRY_WAITS_MS: [u64; 5] = [25, 50, 100, 200, 400];
+    let mut waits = RETRY_WAITS_MS.iter();
+    loop {
+        match fs::rename(staged, destination) {
+            Err(e) if cfg!(windows) && e.kind() == std::io::ErrorKind::PermissionDenied => {
+                match waits.next() {
+                    Some(ms) => std::thread::sleep(std::time::Duration::from_millis(*ms)),
+                    None => return Err(e),
+                }
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Takes the shared project lock for code that reads group files of the
+/// project at `root` directly (analysis inputs). It waits while a store
+/// transaction is publishing, so readers never see a half-published change
+/// and never hold a file the transaction is replacing (on Windows that makes
+/// the replace fail with "Access is denied"). Released when dropped.
+pub fn lock_project_shared(root: &Path) -> Result<ProjectLockGuard, StoreError> {
+    Ok(ProjectLockGuard {
+        _lock: shared_project_lock(root)?,
+    })
+}
+
 impl FsGroupFileStore {
     pub fn new(root: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let root = root.into();
@@ -119,17 +164,7 @@ impl FsGroupFileStore {
     }
 
     fn project_read_lock(&self) -> Result<fs::File, StoreError> {
-        let dir = self.root.join(ARCHAEODASH_DIR);
-        fs::create_dir_all(&dir).map_err(io_err)?;
-        let lock = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(dir.join("project.lock"))
-            .map_err(io_err)?;
-        lock.lock_shared().map_err(io_err)?;
-        Ok(lock)
+        shared_project_lock(&self.root)
     }
 
     // Used by execute while it already owns the exclusive project lock.
@@ -533,11 +568,18 @@ impl GroupFileStore for FsGroupFileStore {
                     Err(e) => Err(e),
                 }
             } else {
-                fs::rename(staged_path, destination)
+                replace_file(staged_path, Path::new(destination))
             };
             if let Err(e) = publish_result {
                 abort(&tx_dir, &backups, &created_by_tx)?;
-                return Err(StoreError::Io(format!("publish failed: {e}")));
+                let hint = if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    " (is it open in another program?)"
+                } else {
+                    ""
+                };
+                return Err(StoreError::Io(format!(
+                    "publish failed: could not replace {rel}{hint}: {e}"
+                )));
             }
         }
         // 6. Delete vacated source files.

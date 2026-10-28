@@ -176,7 +176,9 @@ impl ClusterService {
         path: &str,
         extra_paths: &[String],
     ) -> Result<CombinedInput, DomainError> {
-        CombinedInput::read_with(path, extra_paths, |rel| self.read_group(rel))
+        super::combined::read_locked(&self.root, || {
+            CombinedInput::read_with(path, extra_paths, |rel| self.read_group(rel))
+        })
     }
 
     fn validate_dimensions(

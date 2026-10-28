@@ -52,6 +52,21 @@ fn import_err(e: archaeodash_data_io::ImportError) -> DomainError {
     DomainError::Internal(Box::new(e))
 }
 
+/// Runs `read` while holding the project's shared lock. Group changes
+/// (moves, assignments, renames) publish under the exclusive lock, so the
+/// read waits for a change being saved instead of reading a half-published
+/// set of files or keeping a file open that the change must replace (which
+/// makes the save fail with "Access is denied" on Windows). The lock is
+/// released before returning.
+pub(crate) fn read_locked<T>(
+    root: &Path,
+    read: impl FnOnce() -> Result<T, DomainError>,
+) -> Result<T, DomainError> {
+    let _shared = archaeodash_file_store_fs::lock_project_shared(root)
+        .map_err(|e| DomainError::Internal(Box::new(e)))?;
+    read()
+}
+
 /// Per-file metadata kept for validation messages.
 #[derive(Debug, Clone)]
 pub struct CombinedSource {
@@ -75,14 +90,17 @@ pub struct CombinedInput {
 }
 
 impl CombinedInput {
-    /// Reads `path` then each `extra_paths` entry from a local project root.
+    /// Reads `path` then each `extra_paths` entry from a local project root,
+    /// under the shared project lock (see [`read_locked`]).
     pub fn read_local(
         root: &Path,
         path: &str,
         extra_paths: &[String],
     ) -> Result<Self, DomainError> {
-        Self::read_with(path, extra_paths, |rel| {
-            read_group_file(&root.join(rel)).map_err(import_err)
+        read_locked(root, || {
+            Self::read_with(path, extra_paths, |rel| {
+                read_group_file(&root.join(rel)).map_err(import_err)
+            })
         })
     }
 
@@ -529,5 +547,46 @@ mod tests {
             err,
             DomainError::Validation { ref code, .. } if code == "duplicate_input_path"
         ));
+    }
+
+    #[test]
+    fn read_local_waits_while_a_change_is_being_saved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        for (rel, data) in two_files() {
+            let path = root.join(&rel);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+            archaeodash_data_io::write_group_rows(&path, data.profile, &data.rows)
+                .expect("write group");
+        }
+        // A group change holds the exclusive project lock while it publishes.
+        let store = archaeodash_file_store_fs::FsGroupFileStore::new(&root).expect("store");
+        let saving = store.lock_exclusive().expect("exclusive lock");
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let reader_root = root.clone();
+        let reader = std::thread::spawn(move || {
+            let input = CombinedInput::read_local(
+                &reader_root,
+                "groups/A.parquet",
+                &["groups/B.parquet".to_string()],
+            );
+            let _ = done_tx.send(());
+            input
+        });
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "the read finished while a change was being saved"
+        );
+        drop(saving);
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the read finishes once the change is saved");
+        let input = reader
+            .join()
+            .expect("reader thread")
+            .expect("combined input");
+        assert_eq!(input.sources.len(), 2);
     }
 }
