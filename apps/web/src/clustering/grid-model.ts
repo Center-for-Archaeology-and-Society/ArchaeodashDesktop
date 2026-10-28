@@ -13,7 +13,8 @@ export interface GridColumn {
   readonly digits?: number;
 }
 
-export type SortState = { readonly column: number; readonly direction: 'asc' | 'desc' } | null;
+export type SortKey = { readonly column: number; readonly direction: 'asc' | 'desc' };
+export type SortState = SortKey | null;
 
 /** Display text of a cell. */
 export function formatCell(value: TableCell | undefined, digits?: number): string {
@@ -22,29 +23,82 @@ export function formatCell(value: TableCell | undefined, digits?: number): strin
   return String(value);
 }
 
-const COMPARATOR = /^(<=|>=|<|>|=)\s*(-?\d+(?:\.\d+)?(?:e[-+]?\d+)?)$/i;
+const NUMBER = String.raw`(-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?)`;
+const COMPARATOR = new RegExp(String.raw`^(<=|>=|<|>|=|≤|≥)\s*` + NUMBER + '$', 'i');
+const RANGE = new RegExp('^' + NUMBER + String.raw`\s*\.\.\s*` + NUMBER + '$', 'i');
+
+/** Operators of a number filter; `between` is inclusive. */
+export type NumberFilterOp = '>=' | '<=' | '>' | '<' | '=' | 'between';
+
+export interface NumberFilter {
+  readonly op: NumberFilterOp;
+  readonly a: number;
+  /** Upper bound of `between`. */
+  readonly b?: number;
+}
+
+/** A number filter typed as `>= 50`, `< 10`, `= 3` or `10..50`; null otherwise. */
+export function parseNumberFilter(filter: string): NumberFilter | null {
+  const query = filter.trim();
+  const range = RANGE.exec(query);
+  if (range) {
+    const a = Number(range[1]);
+    const b = Number(range[2]);
+    return { op: 'between', a: Math.min(a, b), b: Math.max(a, b) };
+  }
+  const comparison = COMPARATOR.exec(query);
+  if (!comparison) return null;
+  const symbol = comparison[1]!;
+  const op = (symbol === '≥' ? '>=' : symbol === '≤' ? '<=' : symbol) as NumberFilterOp;
+  return { op, a: Number(comparison[2]) };
+}
+
+/** The filter text for a number filter (inverse of `parseNumberFilter`). */
+export function numberFilterText(op: NumberFilterOp | '', a: string, b = ''): string {
+  if (!op || a.trim() === '' || !Number.isFinite(Number(a))) return '';
+  if (op === 'between') return b.trim() !== '' && Number.isFinite(Number(b)) ? `${a.trim()}..${b.trim()}` : '';
+  return `${op} ${a.trim()}`;
+}
+
+/** Whether a number passes a number filter. */
+export function numberPasses(value: number, filter: NumberFilter): boolean {
+  switch (filter.op) {
+    case '<': return value < filter.a;
+    case '<=': return value <= filter.a;
+    case '>': return value > filter.a;
+    case '>=': return value >= filter.a;
+    case 'between': return value >= filter.a && value <= (filter.b ?? filter.a);
+    default: return value === filter.a;
+  }
+}
 
 /**
  * Whether one cell passes one filter. Text matches case-insensitively as a
- * substring of the displayed value; on numeric cells `>`, `<`, `>=`, `<=`
- * and `=` compare numerically (e.g. `>= 50`).
+ * substring of the displayed value; on numeric cells `>`, `<`, `>=`, `<=`,
+ * `=` and ranges `a..b` compare numerically (e.g. `>= 50`, `10..50`).
  */
 export function cellMatches(value: TableCell | undefined, filter: string, digits?: number): boolean {
   const query = filter.trim();
   if (!query) return true;
-  const comparison = COMPARATOR.exec(query);
-  if (comparison) {
-    if (typeof value !== 'number' || !Number.isFinite(value)) return false;
-    const bound = Number(comparison[2]);
-    switch (comparison[1]) {
-      case '<': return value < bound;
-      case '<=': return value <= bound;
-      case '>': return value > bound;
-      case '>=': return value >= bound;
-      default: return value === bound;
-    }
-  }
+  const number = parseNumberFilter(query);
+  if (number) return typeof value === 'number' && Number.isFinite(value) && numberPasses(value, number);
   return formatCell(value, digits).toLowerCase().includes(query.toLowerCase());
+}
+
+/**
+ * Whether a column holds numbers (fixed decimals, or every present cell a
+ * number), so it gets a number filter instead of a text one.
+ */
+export function isNumericColumn(rows: readonly (readonly TableCell[])[], column: number, def?: GridColumn): boolean {
+  if (def?.digits !== undefined) return true;
+  let seen = false;
+  for (const row of rows) {
+    const cell = row[column];
+    if (cell === null || cell === undefined) continue;
+    if (typeof cell !== 'number') return false;
+    seen = true;
+  }
+  return seen;
 }
 
 /** Row indices passing every column filter. */
@@ -72,17 +126,27 @@ export function compareCells(a: TableCell | undefined, b: TableCell | undefined)
   return collator.compare(String(a), String(b));
 }
 
-/** Sort row indices (stable); missing values stay last in both directions. */
-export function sortRows(rows: readonly (readonly TableCell[])[], indices: readonly number[], sort: SortState): number[] {
-  if (!sort) return [...indices];
-  const sign = sort.direction === 'asc' ? 1 : -1;
+/**
+ * Sort row indices (stable) by one key or several (first key first, ties by
+ * the next); missing values stay last in both directions.
+ */
+export function sortRows(rows: readonly (readonly TableCell[])[], indices: readonly number[], sort: SortState | readonly SortKey[]): number[] {
+  const keys: readonly SortKey[] = sort === null ? [] : 'column' in sort ? [sort] : sort;
+  if (keys.length === 0) return [...indices];
   return [...indices].sort((i, j) => {
-    const a = rows[i]?.[sort.column];
-    const b = rows[j]?.[sort.column];
-    const missingA = a === null || a === undefined || (typeof a === 'number' && !Number.isFinite(a));
-    const missingB = b === null || b === undefined || (typeof b === 'number' && !Number.isFinite(b));
-    if (missingA || missingB) return missingA === missingB ? i - j : missingA ? 1 : -1;
-    return sign * compareCells(a, b) || i - j;
+    for (const key of keys) {
+      const a = rows[i]?.[key.column];
+      const b = rows[j]?.[key.column];
+      const missingA = a === null || a === undefined || (typeof a === 'number' && !Number.isFinite(a));
+      const missingB = b === null || b === undefined || (typeof b === 'number' && !Number.isFinite(b));
+      if (missingA || missingB) {
+        if (missingA !== missingB) return missingA ? 1 : -1;
+        continue;
+      }
+      const order = (key.direction === 'asc' ? 1 : -1) * compareCells(a, b);
+      if (order) return order;
+    }
+    return i - j;
   });
 }
 

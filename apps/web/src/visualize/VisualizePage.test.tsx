@@ -213,6 +213,9 @@ test('new group names that match an existing group are refused', async () => {
   const existing = [{ path: 'groups/Group_A.parquet', name: 'Group A' }];
   assert.equal(newGroupFileName('Group A'), 'Group_A.parquet');
   assert.match(newGroupNameProblem('group a', 'groups/x.parquet', existing) ?? '', /already exists/);
-  assert.match(newGroupNameProblem('Group?A', 'groups/Group_A.parquet', existing) ?? '', /already exists/);
+  assert.match(newGroupNameProblem('Group_A', 'groups/Group_A.parquet', existing) ?? '', /already exists/);
+  // Characters invalid in file names are refused, not silently replaced.
+  assert.match(newGroupNameProblem('Group?A', 'groups/Group_A.parquet', existing) ?? '', /cannot contain \?/);
+  assert.match(newGroupNameProblem('a/b', 'groups/a_b.parquet', []) ?? '', /cannot contain \//);
   assert.equal(newGroupNameProblem('Fresh', 'groups/Fresh.parquet', existing), null);
 });

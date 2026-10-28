@@ -1102,9 +1102,10 @@ impl GroupService {
                                 "new destination requires a nonempty destination_group_name".into(),
                             )
                         })?;
+                    let name = validate_group_name(name)?;
                     create_only_paths.push(target.destination_path.clone());
-                    let id = sanitize_group_name(name);
-                    (id.clone(), name.to_string(), "rev-1".to_string())
+                    let id = sanitize_group_name(&name);
+                    (id.clone(), name, "rev-1".to_string())
                 }
             };
             if let Some(data) = &data {
@@ -1245,8 +1246,9 @@ impl GroupService {
                             .to_string(),
                     )
                 })?;
-                let id = sanitize_group_name(name);
-                (id.clone(), name.to_string(), "rev-1".to_string())
+                let name = validate_group_name(name)?;
+                let id = sanitize_group_name(&name);
+                (id.clone(), name, "rev-1".to_string())
             }
         };
 
@@ -1373,15 +1375,10 @@ impl GroupService {
             inputs.push(Self::input_of(path, &data));
             sources.push((path.clone(), data));
         }
+        let new_name = validate_group_name(&req.new_group_name)?;
         let target_revision = Self::next_revision(&sources[0].1.profile.revision_id);
-        let group_id = sanitize_group_name(&req.new_group_name);
-        let out = plan_merge(
-            &sources,
-            0,
-            &group_id,
-            &req.new_group_name,
-            &target_revision,
-        )?;
+        let group_id = sanitize_group_name(&new_name);
+        let out = plan_merge(&sources, 0, &group_id, &new_name, &target_revision)?;
         let delete_paths: Vec<String> = req.sources[1..].to_vec();
         let tx = Transaction {
             action: TransactionAction::MergeGroups,
@@ -1556,12 +1553,8 @@ impl GroupService {
                 found: source.profile.revision_id.clone(),
             });
         }
-        let group_id = sanitize_group_name(&req.new_group_name);
-        if group_id.is_empty() {
-            return Err(StoreError::Invariant(
-                "new_group_name sanitizes to an empty group id".to_string(),
-            ));
-        }
+        let new_name = validate_group_name(&req.new_group_name)?;
+        let group_id = sanitize_group_name(&new_name);
         let destination_path = match &req.destination_path {
             Some(path) => path.clone(),
             None => {
@@ -1603,7 +1596,7 @@ impl GroupService {
         let out = PlannedOutput {
             path: destination_path,
             group_id: group_id.clone(),
-            group_name: req.new_group_name.clone(),
+            group_name: new_name.clone(),
             revision_id: "rev-1".to_string(),
             rows,
             roles: source.profile.roles.clone(),
@@ -2219,6 +2212,39 @@ mod tests {
         let src = read_group_file(&dir.path().join(&paths[0])).expect("src");
         assert_eq!(src.profile.revision_id, "rev-1");
         assert_eq!(src.rows.len(), 2);
+    }
+
+    #[test]
+    fn new_group_names_must_be_portable_file_names() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, paths) = commit_two_groups(dir.path());
+        let baca = read_group_file(&dir.path().join(&paths[0])).expect("read baca");
+        let uuid = baca.rows[0].uuid.to_string();
+        for bad in ["a/b", "North: B", "why?", "CON", ".hidden", "  "] {
+            let err = service
+                .transfer_units(&TransferUnitsRequest {
+                    action: TransferAction::Move,
+                    source_path: paths[0].clone(),
+                    destination_path: "groups/new-target.parquet".into(),
+                    destination_group_name: Some(bad.into()),
+                    selected_uuids: vec![uuid.clone()],
+                    expected_source_revision: baca.profile.revision_id.clone(),
+                })
+                .expect_err(bad);
+            assert!(matches!(err, StoreError::Validation(_)), "{bad}: {err:?}");
+        }
+        let err = service
+            .merge_groups(&MergeGroupsRequest {
+                sources: paths.clone(),
+                new_group_name: "A|B".into(),
+            })
+            .expect_err("merge name");
+        assert!(matches!(err, StoreError::Validation(_)));
+        // Nothing moved or merged.
+        let src = read_group_file(&dir.path().join(&paths[0])).expect("src");
+        assert_eq!(src.profile.revision_id, "rev-1");
+        assert!(dir.path().join(&paths[1]).exists());
+        assert!(!dir.path().join("groups/new-target.parquet").exists());
     }
 
     #[test]

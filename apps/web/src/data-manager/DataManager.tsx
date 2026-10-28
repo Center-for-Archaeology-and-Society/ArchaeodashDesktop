@@ -17,6 +17,8 @@ import { AnalysisSetupPanel } from './AnalysisSetupPanel.tsx';
 import { ImportDialog } from './ImportDialog.tsx';
 import { ImportWizard } from './ImportWizard.tsx';
 import { notifyGroupsChanged, onGroupsChanged } from './events.ts';
+import { sharedScan } from '../datasets/groupUpdates.ts';
+import { groupFileStem, portableGroupNameProblem } from '../datasets/groupNames.ts';
 import { applySelection, pruneSelection, type SelectionState } from './selection.ts';
 import type { DataManagerTransport } from './types.ts';
 import './file-manager.css';
@@ -136,22 +138,7 @@ export function renamedExclusions(excluded: Iterable<string>, from: string, to: 
   return [...excluded].map((path) => (path === from ? renamed : path));
 }
 
-/** A character no group or folder name may contain (Windows, macOS, Linux), control characters included. */
-const invalidNameChar = (c: string) => {
-  const code = c.codePointAt(0) ?? 0;
-  return code < 0x20 || (code >= 0x7f && code <= 0x9f) || '<>:"/\\|?*'.includes(c);
-};
-
-/** File name stem the backend gives a group name (`sanitize_group_name`). */
-export function groupFileStem(name: string): string {
-  return name.replace(/[^\p{L}\p{N}._-]/gu, '_') || 'group';
-}
-
-/** A name Windows reserves for devices (`CON`, `COM1`, `LPT3.txt`, ...). */
-function windowsReserved(name: string): boolean {
-  const stem = name.toUpperCase().split('.')[0] ?? '';
-  return /^(CON|PRN|AUX|NUL|COM\d|LPT\d)$/.test(stem);
-}
+export { groupFileStem };
 
 /**
  * Why `newName` cannot be the new name of the group at `path` ('' when it
@@ -160,12 +147,9 @@ function windowsReserved(name: string): boolean {
  */
 export function groupNameProblem(entries: readonly GroupFileEntry[], path: string, newName: string): string {
   const name = newName.trim();
-  if (!name) return 'Enter a group name.';
-  if ([...name].length > 100) return 'A group name can have at most 100 characters.';
-  if (name.startsWith('.')) return 'A group name cannot start with a dot.';
-  if ([...name].some(invalidNameChar)) return 'A group name cannot contain < > : " / \\ | ? *';
+  const portable = portableGroupNameProblem(name);
+  if (portable) return portable;
   const stem = groupFileStem(name);
-  if (windowsReserved(stem)) return `“${name}” would give a group file name that Windows reserves.`;
   const folder = folderOf(path);
   const others = entries.filter((entry) => entry.path !== path && folderOf(entry.path) === folder);
   const sameName = others.find((entry) => entry.name.toLowerCase() === name.toLowerCase());
@@ -240,8 +224,9 @@ export function withoutStaleExclusions(excluded: Iterable<string>, stale: Readon
 
 const sameMembers = (list: readonly string[], set: ReadonlySet<string>) => list.length === set.size && list.every((item) => set.has(item));
 
-export async function loadGroupFiles(groups: DataManagerTransport['groups']): Promise<GroupFileEntry[]> {
-  const found = await groups.scan();
+export async function loadGroupFiles(groups: DataManagerTransport['groups'], afterNotice = false): Promise<GroupFileEntry[]> {
+  // After a change notice the scan is shared with the pages (see sharedScan).
+  const found = await (afterNotice ? sharedScan(groups) : groups.scan());
   return Promise.all(
     found.map(async (candidate): Promise<GroupFileEntry> => {
       const fallbackName = candidate.group?.group_name ?? stripExtension(basename(candidate.path));
@@ -300,12 +285,12 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const supportsFolders = Boolean(transport.groups.folders && transport.groups.copyGroups);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (afterNotice = false) => {
     const seq = ++loadSeq.current;
     setLoading(true);
     try {
       const [next, folders] = await Promise.all([
-        loadGroupFiles(transport.groups),
+        loadGroupFiles(transport.groups, afterNotice),
         transport.groups.folders ? transport.groups.folders().catch(() => [] as GroupFolder[]) : Promise.resolve([] as GroupFolder[]),
       ]);
       if (seq !== loadSeq.current) return;
@@ -326,7 +311,8 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
 
   useEffect(() => {
     void refresh();
-    return onGroupsChanged(() => { if (!ownNotice.current) void refresh(); });
+    // Returning the refresh lets a page that moved samples wait for the tree.
+    return onGroupsChanged(() => (ownNotice.current ? undefined : refresh(true)));
   }, [refresh]);
 
   const allFolders = useMemo(() => folderNodes(entries, listedFolders), [entries, listedFolders]);
@@ -461,7 +447,7 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     event.preventDefault();
     if (pending?.kind !== 'merge' || selectedEntries.length < 2) return;
     const name = pending.name.trim();
-    if (!name) return;
+    if (portableGroupNameProblem(name)) return;
     const sources = selectedEntries.map((entry) => entry.path);
     void runChange(async () => {
       const result = await transport.groups.mergeGroups({ sources, new_group_name: name });
@@ -962,10 +948,11 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
       {pending?.kind === 'merge' && selectedEntries.length >= 2 && (
         <form className="fm-inline" onSubmit={submitMerge} aria-label="Merge files">
           <label>Merge {selectedEntries.map((entry) => entry.name).join(', ')} into
-            <input autoFocus value={pending.name} disabled={busy} onChange={(event) => setPending({ kind: 'merge', name: event.target.value })} onKeyDown={escapeCancels} />
+            <input autoFocus value={pending.name} disabled={busy} aria-invalid={Boolean(pending.name.trim() && portableGroupNameProblem(pending.name))} onChange={(event) => setPending({ kind: 'merge', name: event.target.value })} onKeyDown={escapeCancels} />
           </label>
+          {pending.name.trim() && portableGroupNameProblem(pending.name) && <p role="alert" className="fm-hint">{portableGroupNameProblem(pending.name)}</p>}
           <div className="fm-inline-actions">
-            <button type="submit" disabled={busy || !pending.name.trim()}><BusyLabel busy={busy}>Merge</BusyLabel></button>
+            <button type="submit" disabled={busy || Boolean(portableGroupNameProblem(pending.name))}><BusyLabel busy={busy}>Merge</BusyLabel></button>
             <button type="button" disabled={busy} onClick={() => setPending(null)}>Cancel</button>
           </div>
         </form>

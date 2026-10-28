@@ -3,7 +3,7 @@
  * or CSV (first sheet). The backend formats the file (`exports.table`); the
  * client saves it through the native save dialog (desktop) or a download.
  */
-import { createContext, useContext, useState, type ReactElement, type ReactNode } from 'react';
+import { createContext, useContext, useId, useState, type ReactElement, type ReactNode } from 'react';
 import type { ExportFormat, ExportsService, TableCell } from '@archaeodash/client';
 import { downloadExportResult } from '../exports.ts';
 import { BusyLabel } from './Busy.tsx';
@@ -71,8 +71,36 @@ export function TableExport({
   );
 }
 
+const COLLAPSED_KEY = 'archaeodash.tableCollapsed';
+
+/** Collapsed table cards, by export file name (per viewer, best effort). */
+function readCollapsed(): Record<string, boolean> {
+  try {
+    const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(COLLAPSED_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, boolean>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeCollapsed(name: string, collapsed: boolean): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const all = readCollapsed();
+    if (collapsed) all[name] = true;
+    else delete all[name];
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify(all));
+  } catch {
+    // Remembering is a convenience; the card still toggles.
+  }
+}
+
 /**
  * A titled table card: heading, export buttons, and the scrolling table.
+ * The heading collapses and expands the table; the choice is remembered per
+ * table (by its export name). A collapsed table stays mounted, so its
+ * filters, sort and checked rows survive.
  */
 export function TableCard({
   title,
@@ -81,6 +109,7 @@ export function TableCard({
   children,
   note,
   bare = false,
+  defaultCollapsed = false,
 }: {
   title: ReactNode;
   fileName: string;
@@ -89,15 +118,32 @@ export function TableCard({
   note?: ReactNode;
   /** Children are not a table (e.g. a chart): no scrolling table frame. */
   bare?: boolean;
+  /** Start collapsed unless the viewer chose otherwise. */
+  defaultCollapsed?: boolean;
 }): ReactElement {
+  const bodyId = useId();
+  const [collapsed, setCollapsed] = useState(() => readCollapsed()[fileName] ?? defaultCollapsed);
+  const toggle = () => {
+    setCollapsed((current) => {
+      writeCollapsed(fileName, !current);
+      return !current;
+    });
+  };
   return (
-    <section className="card table-card">
+    <section className={collapsed ? 'card table-card is-collapsed' : 'card table-card'}>
       <header className="card-header">
-        <h3 className="card-title">{title}</h3>
+        <h3 className="card-title">
+          <button type="button" className="card-collapse" aria-expanded={!collapsed} aria-controls={bodyId} onClick={toggle}>
+            <span aria-hidden="true" className="card-collapse-icon">{collapsed ? '▸' : '▾'}</span>
+            {title}
+          </button>
+        </h3>
         <TableExport fileName={fileName} sheets={sheets} />
       </header>
-      {note && <p className="card-note">{note}</p>}
-      {bare ? children : <div className="table-scroll">{children}</div>}
+      <div id={bodyId} hidden={collapsed}>
+        {note && <p className="card-note">{note}</p>}
+        {bare ? children : <div className="table-scroll">{children}</div>}
+      </div>
     </section>
   );
 }

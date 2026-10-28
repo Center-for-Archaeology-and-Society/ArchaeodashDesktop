@@ -5,6 +5,7 @@
  * the existing file).
  */
 import type { GroupCandidate } from '@archaeodash/client';
+import { portableGroupNameProblem } from '../datasets/groupNames.ts';
 
 /** A project-relative path that stays inside the project. Windows paths use
  *  backslashes (`group2\A.parquet`), so both separators are accepted. */
@@ -26,6 +27,8 @@ const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLow
 /** Why a new group cannot use this name and path, or null when it can. */
 export function newGroupProblem(name: string, path: string, candidates: readonly GroupCandidate[]): string | null {
   if (!name.trim()) return 'Enter a name for the new group.';
+  const portable = portableGroupNameProblem(name);
+  if (portable) return portable;
   if (!safePath(path)) return 'Choose a safe, project-relative file for the new group.';
   const named = candidates.find(c => c.group?.group_name !== undefined && same(c.group.group_name, name));
   if (named) return `A group named “${named.group!.group_name}” already exists; choose it from the list or use another name.`;

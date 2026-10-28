@@ -15,6 +15,7 @@ import { includedAmong, useGroupInclusion } from './GroupInclusion.tsx';
 import { activeFolderAmong, exclusionWithin, folderOf } from './folders.ts';
 import { useDataCache } from './DataCache.tsx';
 import { onGroupsChanged } from '../data-manager/events.ts';
+import { sharedScan } from './groupUpdates.ts';
 
 export type GroupFilesLoad =
   | { kind: 'idle' }
@@ -88,8 +89,10 @@ export function useGroupFiles(groups: GroupsService): GroupFiles {
   );
 
   const rescan = useCallback(
-    async (keep?: (allReady: string[]) => string[]) => {
-      const list = await groups.scan();
+    async (keep?: (allReady: string[]) => string[], afterNotice = false) => {
+      // A rescan answering a change notice shares one scan with the other
+      // pages and the Data Manager; any other rescan scans for itself.
+      const list = await (afterNotice ? sharedScan(groups) : groups.scan());
       setCandidates(list);
       const allFolders = list.filter((c) => c.ready && c.group).map((c) => c.path);
       const shared = inclusionRef.current;
@@ -120,7 +123,7 @@ export function useGroupFiles(groups: GroupsService): GroupFiles {
   // revisions. Pages stay mounted in the background, and without this they
   // would keep showing the old rows. Only changed files are re-read, and
   // results keyed by row content (rowKeys.ts) are not recomputed.
-  useEffect(() => onGroupsChanged(() => void rescan().catch(() => undefined)), [rescan]);
+  useEffect(() => onGroupsChanged(() => rescan(undefined, true).catch(() => undefined)), [rescan]);
 
   const orderedPaths = useMemo(
     () => ready.map((c) => c.path).filter((p) => selectedPaths.includes(p)),

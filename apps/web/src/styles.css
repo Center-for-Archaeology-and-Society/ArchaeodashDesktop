@@ -840,6 +840,36 @@ button:disabled:has(.spinner) {
   font-weight: 650;
 }
 
+/* Collapsible table cards: the title is the toggle. */
+.card-collapse {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.card-collapse:focus-visible {
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.card-collapse-icon {
+  display: inline-block;
+  width: 0.9em;
+  color: var(--muted, currentColor);
+}
+
+.table-card.is-collapsed .card-header {
+  margin-bottom: 0;
+}
+
 .card-actions {
   display: flex;
   align-items: center;
@@ -1903,6 +1933,30 @@ button .spinner {
 
 .result-grid-arrow {
   font-size: 0.65rem;
+}
+
+.result-grid-sorting,
+.result-grid-sortby,
+.result-grid-show {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.result-grid-number-filter {
+  display: flex;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.result-grid-number-filter select,
+.result-grid-number-filter input {
+  min-width: 0;
+  width: auto;
+  max-width: 6.5rem;
+  font: inherit;
+  font-size: 0.8rem;
 }
 
 .result-grid-filters th {

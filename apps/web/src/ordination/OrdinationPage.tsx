@@ -28,6 +28,7 @@ import { asRowsResponse, defaultGroupColumn, inputPaths } from '../visualize/com
 import { groupColors } from '../visualize/visualize-model.ts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
 import { UMAP_DEFAULT_DIMENSIONS, UMAP_SEED, analysisInput, setupSummary, umapMaxDimensions } from '../analysis-setup/setup.ts';
+import { useGroupUpdatesHeld } from '../datasets/groupUpdates.ts';
 import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
 import { TableCard, num, type TableSheet } from '../ui/TableExport.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
@@ -427,24 +428,36 @@ function useOrdination<TResp>(
   // The first run starts at once; reruns from changed inputs (group
   // selection, setup) wait RERUN_DELAY_MS so a burst of changes runs once.
   const started = useRef(false);
+  // While samples move between groups nothing starts; afterwards a run
+  // starts only if its inputs changed since the last finished one.
+  const held = useGroupUpdatesHeld();
+  const finished = useRef<readonly unknown[] | null>(null);
   const run = useCallback(async (wait: boolean) => {
     const signal = runs.next();
     setState({ kind: 'loading' });
     if (wait && !(await waitUnlessAborted(RERUN_DELAY_MS, signal))) return;
     try {
       const r = await request(signal);
-      if (!signal.aborted) setState({ kind: 'loaded', data: r });
+      if (!signal.aborted) {
+        finished.current = deps;
+        setState({ kind: 'loaded', data: r });
+      }
     } catch (err: unknown) {
       if (!signal.aborted) setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
   useEffect(() => {
+    if (held) return;
+    const last = finished.current;
+    if (last && last.length === deps.length && last.every((value, i) => Object.is(value, deps[i]))) return;
+    finished.current = null;
     const wait = started.current;
     started.current = true;
     void run(wait);
     return runs.stop;
-  }, [run, runs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `run` stands for `deps`
+  }, [run, runs, held]);
   return { state, reload: () => void run(false) };
 }
 

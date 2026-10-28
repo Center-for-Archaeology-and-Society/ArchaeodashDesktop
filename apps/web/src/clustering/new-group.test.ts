@@ -26,6 +26,8 @@ test('Windows group paths with backslashes are safe; escapes and absolute paths 
 test('new groups refuse blank names, unsafe paths and collisions with existing groups or files', () => {
   assert.equal(newGroupProblem('Fresh', 'groups/Fresh.parquet', candidates), null);
   assert.match(newGroupProblem(' ', 'groups/x.parquet', candidates)!, /Enter a name/);
+  assert.match(newGroupProblem('North: B', 'groups/North__B.parquet', candidates)!, /cannot contain :/);
+  assert.match(newGroupProblem('CON', 'groups/CON.parquet', candidates)!, /Windows reserves/);
   assert.match(newGroupProblem('Fresh', '/abs.parquet', candidates)!, /safe/);
   assert.match(newGroupProblem(' north ', 'groups/other.parquet', candidates)!, /group named “North” already exists/);
   assert.match(newGroupProblem('Other', 'groups/NORTH.parquet', candidates)!, /already exists/);

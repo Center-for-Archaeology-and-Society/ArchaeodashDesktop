@@ -10,7 +10,7 @@ import { useGroupInclusion } from '../datasets/GroupInclusion.tsx';
 import { folderLabel, folderOf } from '../datasets/folders.ts';
 import type { ClusterGroupSources } from './ClusterGroups.tsx';
 import { asRowsResponse, defaultGroupColumn, inputPaths } from '../visualize/combine.ts';
-import { notifyGroupsChanged } from '../data-manager/events.ts';
+import { holdGroupUpdates, notifyGroupsChanged } from '../data-manager/events.ts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
 import { ANALYSIS_SETUP_NAME, UMAP_DEFAULT_DIMENSIONS, UMAP_SEED, analysisInput, setupSummary, umapMaxDimensions } from '../analysis-setup/setup.ts';
 import { ResultAssignment } from './ResultAssignment.tsx';
@@ -394,6 +394,9 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     moving.current = true;
     const ticket = generation.current;
     setBusy(true); setError(''); setNotice('');
+    // Plots and ordinations on every page wait until the move and the
+    // refreshes after it are done.
+    const release = holdGroupUpdates();
     try {
       const revisions = new Map<string, string>();
       for (const c of candidates) if (c.group?.revision_id) revisions.set(c.path, c.group.revision_id);
@@ -420,13 +423,14 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
         const selected = dataset.selectedPaths;
         // The new revisions reload only the files the move changed.
         await dataset.rescan(all => includedAfterMove(all, selected, outcome.createdGroups));
-        notifyGroupsChanged();
+        await notifyGroupsChanged();
       } catch (e) {
         setError(`Move committed, but reloading failed. Reopen the dataset. ${e instanceof Error ? e.message : String(e)}`);
       }
     } catch (e) {
       if (ticket === generation.current) setError(`Move failed; the selection was not retried. Recompute analysis if the data changed. ${e instanceof Error ? e.message : String(e)}`);
     } finally {
+      release();
       moving.current = false;
       if (ticket === generation.current) setBusy(false);
     }
@@ -439,6 +443,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     moving.current = true;
     const ticket = generation.current;
     setBusy(true); setError(''); setNotice(''); setClusterFolder(null);
+    const release = holdGroupUpdates();
     try {
       const response = await apply(request);
       if (ticket !== generation.current) return;
@@ -457,13 +462,14 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
         const selected = dataset.selectedPaths;
         const slash = (path: string) => path.replace(/\\/g, '/');
         await dataset.rescan(all => all.filter(p => selected.includes(p) || created.some(c => slash(c) === slash(p))));
-        notifyGroupsChanged();
+        await notifyGroupsChanged();
       } catch (e) {
         setError(`The cluster groups were created, but reloading failed. Reopen the dataset. ${e instanceof Error ? e.message : String(e)}`);
       }
     } catch (e) {
       if (ticket === generation.current) setError(`Could not create the cluster groups; nothing was changed. ${e instanceof Error ? e.message : String(e)}`);
     } finally {
+      release();
       moving.current = false;
       if (ticket === generation.current) setBusy(false);
     }

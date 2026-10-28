@@ -35,6 +35,7 @@ import { useGroupInclusion } from '../datasets/GroupInclusion.tsx';
 import { activeFolderAmong, folderOf } from '../datasets/folders.ts';
 import { ImportDialog } from './ImportDialog.tsx';
 import { RERUN_DELAY_MS, waitUnlessAborted } from '../ordination/rerun.ts';
+import { useGroupUpdatesHeld } from '../datasets/groupUpdates.ts';
 import { BusyLabel, Spinner } from '../ui/Busy.tsx';
 
 export interface AnalysisSetupPanelProps {
@@ -55,7 +56,9 @@ export function AnalysisSetupPanel({ elements, groups, ordination, dataKey = '',
   const [status, setStatus] = useState('');
   // Precompute the groups the pages analyze, so their requests hit the cache.
   const inclusion = useGroupInclusion();
-  const precompute = usePrecompute(setup, groups, ordination, dataKey, inclusion?.excluded, inclusion?.activeFolder, hold);
+  // Sample moves hold precompute too, until the pages have refreshed.
+  const moving = useGroupUpdatesHeld();
+  const precompute = usePrecompute(setup, groups, ordination, dataKey, inclusion?.excluded, inclusion?.activeFolder, hold || moving);
   const headingId = useId();
   if (!save) return null;
   // Ratio preview: raw ratios over the groups the pages analyze.

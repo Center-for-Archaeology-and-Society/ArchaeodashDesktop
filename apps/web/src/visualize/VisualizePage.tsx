@@ -18,7 +18,9 @@ import type {
 } from '@archaeodash/client';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
 import { UMAP_SEED, analysisInput, setupSummary } from '../analysis-setup/setup.ts';
-import { notifyGroupsChanged } from '../data-manager/events.ts';
+import { holdGroupUpdates, notifyGroupsChanged } from '../data-manager/events.ts';
+import { useGroupUpdatesHeld, useHeldValue } from '../datasets/groupUpdates.ts';
+import { portableGroupNameProblem } from '../datasets/groupNames.ts';
 import { selectionBySource } from './combine.ts';
 import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
 import { useGroupFiles } from '../datasets/useGroupFiles.ts';
@@ -87,6 +89,8 @@ export function newGroupNameProblem(
 ): string | null {
   const trimmed = name.trim();
   if (trimmed === '') return 'Enter a name for the new group.';
+  const portable = portableGroupNameProblem(trimmed);
+  if (portable) return portable;
   const clash = existing.find(
     (g) => g.name.trim().toLowerCase() === trimmed.toLowerCase() || g.path.toLowerCase() === destinationPath.toLowerCase(),
   );
@@ -229,6 +233,9 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
     setCreatedTarget(null);
   }, [ready, createdTarget]);
   const loadState = dataset.load;
+  // While samples move (and pages and the Data Manager refresh), the plot
+  // keeps its last picture and ordinations wait, then both update once.
+  const held = useGroupUpdatesHeld();
   const analysisSetup = useAnalysisSetup();
   // Results that depend only on the loaded samples and their values (PCA,
   // UMAP, element transforms) are keyed by `contentKey`, so moving samples
@@ -315,7 +322,13 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
   // Rows key of the last run: a rerun after the group selection changes
   // waits RERUN_DELAY_MS so a burst of checks/unchecks starts one run.
   const lastScoresRowsKey = useRef<string | null>(null);
+  // Inputs of the last finished run: after a hold, unchanged inputs keep it.
+  const lastScoresRun = useRef<string | null>(null);
   useEffect(() => {
+    if (held) return;
+    const runKey = JSON.stringify([source, scoresRowsKey, setupInput, analysisSetup.loaded]);
+    if (runKey === lastScoresRun.current) return;
+    lastScoresRun.current = null;
     const { files: current, rowUuids: uuids } = loadedRef.current;
     if (source === 'elements' || current.length === 0 || !analysisSetup.loaded) {
       setScores({ kind: 'idle' });
@@ -373,13 +386,16 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       if (rowsChanged && !(await waitUnlessAborted(RERUN_DELAY_MS, signal))) return;
       try {
         const s = await run();
-        if (!signal.aborted) setScores({ kind: 'loaded', data: s });
+        if (!signal.aborted) {
+          lastScoresRun.current = runKey;
+          setScores({ kind: 'loaded', data: s });
+        }
       } catch (err: unknown) {
         if (!signal.aborted) setScores({ kind: 'error', message: errorText(err) });
       }
     })();
     return () => controller.abort();
-  }, [deps, source, scoresRowsKey, setupInput, analysisSetup.loaded]);
+  }, [deps, source, scoresRowsKey, setupInput, analysisSetup.loaded, held]);
   const scoreRows = useMemo(
     () => (scores.kind === 'loaded' ? realignByUuid(scores.data.uuids, scores.data.values, rowUuids) : []),
     [scores, rowUuids],
@@ -502,6 +518,20 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       }));
   }, [combined, filteredIdx, coordinate, xIdx, yIdx, symbolColumn, symbolLevels, labelColumnName, showLabels, ellipseOn, ellipseLevel, colorOf, axisNames]);
 
+  const shownTraces = useHeldValue(traces, held);
+  const multiplotData = useHeldValue(
+    {
+      columns: elementView.columns,
+      values: elementView.values,
+      groupLabels: combined.groupOf,
+      groupNames: combined.groupNames,
+      palette: colors,
+      rowIndices: filteredIdx,
+      rowUuids,
+    },
+    held,
+  );
+
   const selectUuids = useCallback((uuids: readonly string[]) => setSelection(replaceSelection(uuids)), []);
   const clearSelected = useCallback(() => setSelection(emptySelection()), []);
 
@@ -559,6 +589,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
     // Set before the move: a multi-source move can create the group and then
     // fail part-way, and the group should still become the target.
     if (isNew) setCreatedTarget(destinationPath);
+    const release = holdGroupUpdates();
     // Include a group this move creates; an existing destination keeps its
     // inclusion (an unchecked group stays unchecked).
     const keep = (all: string[]) => includedAfterMove(all, selectedPaths, isNew ? [destinationPath] : []);
@@ -582,13 +613,15 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       // reload only the files that changed; plot coordinates are kept by
       // sample, so PCA and UMAP are not recomputed.
       await rescan(keep);
-      notifyGroupsChanged();
+      await notifyGroupsChanged();
     } catch (err: unknown) {
       setAssignState({ kind: 'error', message: errorText(err) });
       // Part of a multi-source move may have committed: refresh revisions.
       await rescan(keep).catch(() => undefined);
       dataset.reload();
-      notifyGroupsChanged();
+      await notifyGroupsChanged();
+    } finally {
+      release();
     }
   }, [deps, combined, files, selection, assignTarget, newGroupName, newDestinationPath, existingGroups, selectedPaths, rescan, dataset]);
 
@@ -754,20 +787,14 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       {scores.kind === 'loaded' && scores.data.note && <p className="muted">{scores.data.note}</p>}
       {plotMode === 'multiplot' && combined.rows.length > 0 ? (
         <Multiplot
-          columns={elementView.columns}
-          values={elementView.values}
-          groupLabels={combined.groupOf}
-          groupNames={combined.groupNames}
-          palette={colors}
-          rowIndices={filteredIdx}
-          rowUuids={rowUuids}
+          {...multiplotData}
           onSelect={selectUuids}
         />
       ) : sameAxis ? (
         <p className="muted">Pick two different axes to plot.</p>
       ) : (
         <VisualizeScatter
-          traces={traces}
+          traces={shownTraces}
           xLabel={axisLabel(xIdx, 'X')}
           yLabel={axisLabel(yIdx, 'Y')}
           dragMode="lasso"

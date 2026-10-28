@@ -74,7 +74,7 @@ test('membership results check rows in-table, round values, hide Best value and 
   assert.match(html, /aria-label="Select S2" checked=""/);
   assert.match(html, /aria-label="Select all 2 rows"/);
   assert.match(html, /<td class="num">81.23<\/td><td class="num">18.70<\/td>/);
-  assert.match(html, /aria-label="Filter North"/);
+  assert.match(html, /aria-label="Filter North: comparison"/);
   assert.match(html, /Compact table/);
   assert.doesNotMatch(html, />Best value</);
   assert.doesNotMatch(html, new RegExp(`${uuidA}|${uuidB}|hidden-path|hidden-revision`));
