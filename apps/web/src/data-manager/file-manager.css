@@ -838,3 +838,19 @@
   flex-wrap: wrap;
   gap: 0.4rem;
 }
+
+/* Drag and drop: groups dragged onto a folder are copied (Shift: moved). */
+.fm-item-file[draggable='true'] > .fm-row:active {
+  cursor: grabbing;
+}
+
+.fm-item-folder.is-drop-target {
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.fm-item-folder.is-drop-target > .fm-row {
+  background: var(--primary-soft);
+  color: var(--primary-soft-fg);
+}

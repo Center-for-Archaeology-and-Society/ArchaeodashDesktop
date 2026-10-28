@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { GroupCandidate, GroupSummary } from '@archaeodash/contracts';
-import { AddColumnForm, DataManager, GroupDetails, GroupFileTree, RENAME_SETTLE_MS, RenameGroupForm, columnNameProblem, exclusionsAfterRename, folderNodes, groupFileStem, groupNameProblem, groupsWithColumn, loadGroupFiles, pathLike, renameGroupFile, renamedEntry, renamedExclusions, withoutStaleExclusions, type DataManagerTransport, type GroupFileEntry } from './DataManager.tsx';
+import { AddColumnForm, DataManager, GroupDetails, GroupFileTree, RENAME_SETTLE_MS, RenameGroupForm, columnNameProblem, draggedGroups, dropProblem, exclusionsAfterRename, folderNodes, groupFileStem, groupNameProblem, groupsWithColumn, loadGroupFiles, pathLike, renameGroupFile, renamedEntry, renamedExclusions, withoutStaleExclusions, type DataManagerTransport, type GroupFileEntry } from './DataManager.tsx';
 import { RERUN_DELAY_MS } from '../ordination/rerun.ts';
 import { ImportWizard } from './ImportWizard.tsx';
 import { DEFAULT_VALUE_OPTIONS, ImportValueOptions, recipeFromOptions } from './ImportValueOptions.tsx';
@@ -290,6 +290,41 @@ test('the tree shows one row per folder with its groups, and the analysis-folder
   // A group in another folder is not counted as included.
   assert.equal(html.match(/fm-include is-on/g)?.length, 1);
   assert.match(html, /fm-include is-other-folder/);
+});
+
+test('dragging groups onto a folder: what is carried and where it can drop', () => {
+  // A highlighted group carries the whole selection; another carries itself.
+  assert.deepEqual(draggedGroups(['Site/A.parquet', 'Site/B.parquet'], 'Site/B.parquet'), ['Site/A.parquet', 'Site/B.parquet']);
+  assert.deepEqual(draggedGroups(['Site/A.parquet'], 'Site/C.parquet'), ['Site/C.parquet']);
+  // Another folder accepts them, Windows separators included.
+  assert.equal(dropProblem(['Site/A.parquet', String.raw`Site\B.parquet`], 'Clusters'), '');
+  assert.equal(dropProblem([String.raw`Clusters\K1.parquet`], 'Site'), '');
+  // Their own folder would hold the same samples twice (or, moving, change nothing).
+  assert.equal(dropProblem(['Site/A.parquet'], 'Site'), 'This group is already in “Site”.');
+  assert.equal(dropProblem(['Site/A.parquet', 'Site/B.parquet'], 'Site'), 'These groups are already in “Site”.');
+  assert.equal(dropProblem(['Site/A.parquet', String.raw`Clusters\K1.parquet`], 'Clusters'), '1 of the 2 groups is already in “Clusters”.');
+  // The project root is not a folder you copy into.
+  assert.equal(dropProblem(['Site/A.parquet'], ''), 'Drop groups on a folder.');
+  assert.equal(dropProblem([], 'Site'), 'Nothing to drop.');
+});
+
+test('the tree makes valid groups draggable and highlights the drop folder', () => {
+  const rows: GroupFileEntry[] = [
+    { path: 'Site/A.parquet', name: 'A', summary: summary('A', 3), revision: 'r', error: '' },
+    { path: 'Site/Bad.parquet', name: 'Bad', summary: null, revision: null, error: 'missing analytical_uuid column' },
+    { path: 'Site/R.parquet', name: 'R', summary: summary('R', 1), revision: 'r', error: '', renaming: true },
+  ];
+  const folders = folderNodes(rows, [{ path: 'Empty', name: 'Empty', group_count: 0 }]);
+  const html = renderToStaticMarkup(<GroupFileTree entries={rows} folders={folders} selected={[]} canDrag dropTarget="Empty" />);
+  // Only the valid group that is not being renamed can be dragged.
+  assert.equal(html.match(/draggable="true"/g)?.length, 1);
+  assert.match(html, /data-path="Site\/A.parquet" draggable="true"/);
+  assert.equal(html.match(/is-drop-target/g)?.length, 1);
+  assert.match(html, /fm-item-folder[^"]*is-drop-target[^>]*>[\s\S]*?Empty folder\. Drag groups here, or use Copy to…\./);
+  // While the panel is busy (canDrag false) nothing is draggable.
+  const idle = renderToStaticMarkup(<GroupFileTree entries={rows} folders={folders} selected={[]} />);
+  assert.doesNotMatch(idle, /draggable=/);
+  assert.doesNotMatch(idle, /is-drop-target/);
 });
 
 test('inclusion helpers invert and filter the tree', () => {

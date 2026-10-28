@@ -5,7 +5,7 @@
  * tree (role="tree") with multi-select, inline name/confirm forms, a details
  * panel for the selected file, and the import wizard in a modal dialog.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactElement } from 'react';
 import type { ExportFormat, GroupFolder, GroupSummary } from '@archaeodash/contracts';
 import { activeFolderAmong, exclusionWithin, folderLabel, folderOf, inFolder } from '../datasets/folders.ts';
 import { downloadExportResult } from '../exports.ts';
@@ -74,6 +74,31 @@ export interface FolderNode {
   readonly path: string;
   readonly name: string;
   readonly entries: readonly GroupFileEntry[];
+}
+
+/**
+ * Groups a drag that starts on `path` carries: every highlighted group when
+ * `path` is one of them, otherwise only `path`.
+ */
+export function draggedGroups(selected: readonly string[], path: string): string[] {
+  return selected.includes(path) ? [...selected] : [path];
+}
+
+/**
+ * Why the groups at `sources` cannot be dropped on `folder` ('' when they
+ * can). A folder holds each sample once, so a group cannot be copied into a
+ * folder that already holds it, and moving it there would change nothing.
+ */
+export function dropProblem(sources: readonly string[], folder: string): string {
+  if (!sources.length) return 'Nothing to drop.';
+  if (folder === '') return 'Drop groups on a folder.';
+  const already = sources.filter((path) => folderOf(path) === folder);
+  if (already.length) {
+    return already.length === sources.length
+      ? `${sources.length === 1 ? 'This group is' : 'These groups are'} already in ${quoted(folder)}.`
+      : `${already.length} of the ${sources.length} groups ${already.length === 1 ? 'is' : 'are'} already in ${quoted(folder)}.`;
+  }
+  return '';
 }
 
 /** Folders of the tree: listed folders (including empty ones) plus every folder that holds a group file. */
@@ -269,6 +294,10 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
   const [treeFilter, setTreeFilter] = useState<InclusionFilter>('all');
   const loadSeq = useRef(0);
   const itemRefs = useRef(new Map<string, HTMLLIElement>());
+  /** Groups being dragged onto a folder (null when no drag is under way). */
+  const dragged = useRef<readonly string[] | null>(null);
+  /** Folder a drag would drop into, highlighted in the tree. */
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
   const supportsFolders = Boolean(transport.groups.folders && transport.groups.copyGroups);
 
   const refresh = useCallback(async () => {
@@ -461,7 +490,7 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     void runChange(async () => {
       const made = await create(name);
       setSelectedFolder(made.path);
-    }, `Created the folder ${quoted(name)}. Copy groups into it with Copy to….`, `Creating ${quoted(name)}…`);
+    }, `Created the folder ${quoted(name)}. Drag groups onto it, or use Copy to….`, `Creating ${quoted(name)}…`);
   };
 
   const submitRename = (event: FormEvent) => {
@@ -600,23 +629,27 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     }, `Deleted the empty folder ${quoted(folder)}.`, `Deleting ${quoted(folder)}…`);
   };
 
-  const submitCopy = (event: FormEvent) => {
-    event.preventDefault();
+  /** Copies (or moves) whole groups into `destination`, created when missing. */
+  const copyInto = (sources: readonly GroupFileEntry[], destination: string, move: boolean) => {
     const copy = transport.groups.copyGroups;
-    if (pending?.kind !== 'copy' || !copy) return;
-    const targets = selectedEntries.filter((entry) => entry.revision && !entry.error);
-    const destination = pending.folder === NEW_FOLDER ? pending.newName.trim() : pending.folder;
-    if (!targets.length || !destination) return;
-    const verb = pending.move ? 'Moved' : 'Copied';
+    const targets = sources.filter((entry) => entry.revision && !entry.error);
+    if (!copy || !targets.length || !destination) return;
+    const verb = move ? 'Moved' : 'Copied';
     void runChange(async () => {
       const result = await copy({
         sources: targets.map((entry) => ({ path: entry.path, expected_revision: entry.revision! })),
         destination_folder: destination,
-        remove_sources: pending.move,
+        remove_sources: move,
       });
       return result.outputs.map((output) => pathLike(targets[0]?.path ?? '', output.path));
     }, `${verb} ${plural(targets.length, 'group')} to ${quoted(destination)}.${destination === activeFolder ? '' : ' Click the folder’s circle to use it in analyses.'}`,
-    `${pending.move ? 'Moving' : 'Copying'} ${plural(targets.length, 'group')} to ${quoted(destination)}…`);
+    `${move ? 'Moving' : 'Copying'} ${plural(targets.length, 'group')} to ${quoted(destination)}…`);
+  };
+
+  const submitCopy = (event: FormEvent) => {
+    event.preventDefault();
+    if (pending?.kind !== 'copy') return;
+    copyInto(selectedEntries, pending.folder === NEW_FOLDER ? pending.newName.trim() : pending.folder, pending.move);
   };
 
   // Export: the highlighted groups, or every group included in analyses
@@ -676,6 +709,55 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     const from = new Set(selectedEntries.map((e) => folderOf(e.path)));
     const first = copyChoices.find((p) => !from.has(p));
     setPending({ kind: 'copy', move, folder: first ?? NEW_FOLDER, newName: 'New grouping' });
+  };
+
+  // Drag and drop: drag groups onto a folder to copy them there; hold Shift
+  // while dropping to move them instead (as in the system file manager).
+  const canDrag = !blocked && supportsFolders;
+  const dragNames = (paths: readonly string[]) => entries.filter((entry) => paths.includes(entry.path)).map((entry) => entry.name).join(', ');
+  const onGroupDragStart = (path: string, event: DragEvent) => {
+    const paths = canDrag ? draggedGroups(selection.selected, path).filter((p) => entries.some((entry) => entry.path === p && entry.revision && !entry.error)) : [];
+    if (!paths.length) { event.preventDefault(); return; }
+    // Dragging a group that is not highlighted highlights it alone.
+    if (!selection.selected.includes(path)) select(path);
+    dragged.current = paths;
+    event.dataTransfer.effectAllowed = 'copyMove';
+    event.dataTransfer.setData('text/plain', dragNames(paths));
+    setError('');
+    setStatus(`Drop ${paths.length === 1 ? dragNames(paths) : plural(paths.length, 'group')} on a folder to copy. Hold Shift to move instead.`);
+  };
+  const onFolderDragOver = (folder: string, event: DragEvent) => {
+    const paths = dragged.current;
+    if (!paths) return;
+    if (dropProblem(paths, folder)) {
+      event.dataTransfer.dropEffect = 'none';
+      setDropTarget(null);
+      return;
+    }
+    event.preventDefault(); // allows the drop here
+    event.dataTransfer.dropEffect = event.shiftKey ? 'move' : 'copy';
+    setDropTarget(folder);
+  };
+  const onFolderDragLeave = (folder: string, event: DragEvent) => {
+    const into = event.relatedTarget;
+    if (into instanceof Node && event.currentTarget.contains(into)) return;
+    setDropTarget((current) => (current === folder ? null : current));
+  };
+  const onFolderDrop = (folder: string, event: DragEvent) => {
+    const paths = dragged.current;
+    dragged.current = null;
+    setDropTarget(null);
+    if (!paths) return;
+    event.preventDefault();
+    const problem = dropProblem(paths, folder);
+    if (problem) { setStatus(''); setError(problem); return; }
+    copyInto(entries.filter((entry) => paths.includes(entry.path)), folder, event.shiftKey);
+  };
+  const onGroupDragEnd = () => {
+    // A drop has already cleared `dragged`; a cancelled drag clears the hint.
+    if (dragged.current) setStatus('');
+    dragged.current = null;
+    setDropTarget(null);
   };
 
   const onTreeKeyDown = (event: KeyboardEvent<HTMLUListElement>) => {
@@ -978,6 +1060,13 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
         onKeyDown={onTreeKeyDown}
         onFocusItem={setFocusId}
         setRef={setRef}
+        canDrag={canDrag}
+        dropTarget={dropTarget}
+        onGroupDragStart={onGroupDragStart}
+        onGroupDragEnd={onGroupDragEnd}
+        onFolderDragOver={onFolderDragOver}
+        onFolderDragLeave={onFolderDragLeave}
+        onFolderDrop={onFolderDrop}
       />
 
       <div className="fm-messages">
@@ -1046,6 +1135,15 @@ export interface GroupFileTreeProps {
   readonly onKeyDown?: (event: KeyboardEvent<HTMLUListElement>) => void;
   readonly onFocusItem?: (id: string) => void;
   readonly setRef?: (id: string) => (element: HTMLLIElement | null) => void;
+  /** Valid group rows can be dragged onto folders. */
+  readonly canDrag?: boolean;
+  /** Folder a drag would drop into (highlighted). */
+  readonly dropTarget?: string | null;
+  readonly onGroupDragStart?: (path: string, event: DragEvent) => void;
+  readonly onGroupDragEnd?: () => void;
+  readonly onFolderDragOver?: (folder: string, event: DragEvent) => void;
+  readonly onFolderDragLeave?: (folder: string, event: DragEvent) => void;
+  readonly onFolderDrop?: (folder: string, event: DragEvent) => void;
 }
 
 /** Presentational tree: one collapsible row per group folder, one row per group file. */
@@ -1071,6 +1169,13 @@ export function GroupFileTree({
   onKeyDown,
   onFocusItem,
   setRef,
+  canDrag = false,
+  dropTarget = null,
+  onGroupDragStart,
+  onGroupDragEnd,
+  onFolderDragOver,
+  onFolderDragLeave,
+  onFolderDrop,
 }: GroupFileTreeProps): ReactElement {
   const folders = givenFolders ?? folderNodes(entries);
   const isOpen = (folder: string) => (closedFolders ? !closedFolders.has(folder) : folderOpen);
@@ -1097,7 +1202,10 @@ export function GroupFileTree({
             tabIndex={rovingFocus === id ? 0 : -1}
             ref={setRef?.(id)}
             onFocus={(event) => { if (event.target === event.currentTarget) onFocusItem?.(id); }}
-            className={`fm-item fm-item-folder${selectedFolder === folder.path ? ' is-selected' : ''}${active && showSwitch ? ' is-active' : ''}${!active && showSwitch ? ' is-inactive' : ''}`}
+            onDragOver={onFolderDragOver && ((event) => onFolderDragOver(folder.path, event))}
+            onDragLeave={onFolderDragLeave && ((event) => onFolderDragLeave(folder.path, event))}
+            onDrop={onFolderDrop && ((event) => onFolderDrop(folder.path, event))}
+            className={`fm-item fm-item-folder${selectedFolder === folder.path ? ' is-selected' : ''}${active && showSwitch ? ' is-active' : ''}${!active && showSwitch ? ' is-inactive' : ''}${dropTarget === folder.path ? ' is-drop-target' : ''}`}
           >
             <div className="fm-row" onClick={() => (onSelectFolder ? onSelectFolder(folder.path) : onToggleFolder?.(folder.path))}>
               <span className="fm-twisty" aria-hidden="true" onClick={(event) => { event.stopPropagation(); onToggleFolder?.(folder.path); }}>{open ? '▾' : '▸'}</span>
@@ -1116,7 +1224,7 @@ export function GroupFileTree({
             </div>
             {open && (
               <ul role="group" className="fm-group">
-                {!folder.entries.length && <li role="none" className="fm-empty">{filtered ? 'No groups match the filter.' : 'Empty folder. Copy groups into it with Copy to….'}</li>}
+                {!folder.entries.length && <li role="none" className="fm-empty">{filtered ? 'No groups match the filter.' : 'Empty folder. Drag groups here, or use Copy to….'}</li>}
                 {folder.entries.map((entry) => {
                   const isSelected = selected.includes(entry.path);
                   const rows = entry.summary?.row_count;
@@ -1138,6 +1246,9 @@ export function GroupFileTree({
                       className={`fm-item fm-item-file${isSelected ? ' is-selected' : ''}${entry.error ? ' is-invalid' : ''}${included && includable && !isIncluded ? ' is-excluded' : ''}`}
                       onFocus={(event) => { if (event.target === event.currentTarget) onFocusItem?.(entry.path); }}
                       data-path={entry.path}
+                      draggable={canDrag && includable && Boolean(entry.revision) && !entry.renaming ? true : undefined}
+                      onDragStart={onGroupDragStart && ((event) => onGroupDragStart(entry.path, event))}
+                      onDragEnd={onGroupDragEnd}
                     >
                       <div className="fm-row" onClick={(event) => onRowClick?.(event, entry.path)}>
                         {included ? (
