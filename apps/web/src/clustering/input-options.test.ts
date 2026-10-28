@@ -10,6 +10,8 @@ test('source requests carry only applicable ordination controls', () => {
   assert.deepEqual(sourceOptions('pca', 3, 'Group', 12), { source: 'pca', pc_count: 3, source_group_column: null, umap_seed: null });
   assert.equal(sourceOptions('lda', 3, 'Group', 12).source_group_column, 'Group');
   assert.equal(sourceOptions('umap', 3, 'Group', 12).umap_seed, 12);
+  assert.equal(sourceOptions('umap', 5, 'Group', 12).pc_count, 5, 'UMAP dimension count');
+  assert.equal(sourceOptions('elements', 5, 'Group', 12).pc_count, null);
 });
 test('projection labels exclude missing groups and deduplicate without exposing identities', () => {
   assert.deepEqual(projectionLabels(data, 'Group'), ['A', 'B']);
@@ -44,7 +46,7 @@ test('group eligibility follows getEligible with blank cells counting as a level
   assert.deepEqual(groupEligibility(rows, 'absent', 2), []);
   assert.equal(sourceFeatureCount('elements', 7, 3, 4), 7);
   assert.equal(sourceFeatureCount('pca', 7, 3, 4), 3);
-  assert.equal(sourceFeatureCount('umap', 7, 3, 4), 2);
+  assert.equal(sourceFeatureCount('umap', 7, 3, 4), 3);
   assert.equal(sourceFeatureCount('lda', 7, 3, 4), 3);
 });
 

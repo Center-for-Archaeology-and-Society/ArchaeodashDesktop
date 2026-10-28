@@ -2521,6 +2521,7 @@ mod tests {
                         transformation: None,
                         seed: None,
                         extra_paths: vec![],
+                        n_components: None,
                     })
                     .unwrap(),
                 ))

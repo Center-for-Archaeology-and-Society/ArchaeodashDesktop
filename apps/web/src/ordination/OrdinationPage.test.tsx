@@ -170,6 +170,14 @@ test('UMAP view surfaces the fixed legacy seed and warnings', () => {
   assert.ok(html.includes('20260914'), 'fixed legacy seed echoed');
   assert.ok(html.includes('n_neighbors') && html.includes('15'));
   assert.ok(html.includes('V1') && html.includes('V2'));
+  assert.ok(!html.includes('X axis'), 'two dimensions need no axis choice');
+});
+
+test('UMAP view offers axis choices past two dimensions', () => {
+  const wide: UmapResponse = { ...umap, score_names: ['V1', 'V2', 'V3'], embedding: umap.embedding.map((r) => [...r, 0.5]) };
+  const html = renderToString(<UmapResult result={wide} />);
+  assert.ok(html.includes('X axis') && html.includes('Y axis'));
+  assert.ok(html.includes('V3'));
 });
 
 test('LDA view shows group levels/priors and gates on missing group column', () => {

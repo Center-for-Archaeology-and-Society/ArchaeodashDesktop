@@ -454,6 +454,8 @@ export interface LdaResponse extends OrdinationResponseBase {
 
 export interface UmapRequest extends OrdinationRequestBase {
   seed?: number | null;
+  /** Embedding dimensions; omitted means 2. At most the column count, capped at 10. */
+  n_components?: number | null;
 }
 
 export interface UmapResponse extends OrdinationResponseBase {

@@ -866,9 +866,13 @@ pub struct UmapRequest {
     /// concatenation. Empty keeps single-file behaviour.
     #[serde(default)]
     pub extra_paths: Vec<String>,
+    /// Embedding dimensions (legacy `n_components`); `None` keeps the
+    /// legacy 2. Must be at most the input column count, capped at 10.
+    #[serde(default)]
+    pub n_components: Option<u32>,
 }
 
-/// UMAP result: seeded, deterministic `V1`/`V2` embedding with the resolved
+/// UMAP result: seeded, deterministic `V1..Vd` embedding with the resolved
 /// legacy configuration echoed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UmapResponse {
@@ -2049,6 +2053,7 @@ mod tests {
             transformation: None,
             seed: None,
             extra_paths: vec![],
+            n_components: Some(5),
         };
         let json = serde_json::to_string(&umap_request).unwrap();
         assert_eq!(
@@ -2064,6 +2069,7 @@ mod tests {
         let request: UmapRequest = serde_json::from_value(omitted).unwrap();
         assert_eq!(request.seed, None);
         assert!(request.extra_paths.is_empty());
+        assert_eq!(request.n_components, None);
         // Multi-file LDA fields default when omitted (legacy wire shape).
         let legacy: LdaRequest = serde_json::from_value(serde_json::json!({
             "path": "groups/Baca.parquet",

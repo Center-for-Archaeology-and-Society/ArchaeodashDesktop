@@ -356,7 +356,8 @@ export const demoFetch: FetchLike = async (url, init) => {
   }
   if (p === '/api/v1/ordination/umap') {
     const rows = combinedRows(body);
-    return json({ path: body.path, revision_id: 'demo-1', score_names: ['V1', 'V2'], embedding: scores(rows, 2, 6), seed: 42, n_neighbors: 15, n_epochs: 200, a: 1.58, b: 0.9, warnings: [] }, 1500);
+    const d = Math.max(2, Number(body.n_components) || 2);
+    return json({ path: body.path, revision_id: 'demo-1', score_names: Array.from({ length: d }, (_, i) => `V${i + 1}`), embedding: scores(rows, d, 6), seed: 42, n_neighbors: 15, n_epochs: 200, a: 1.58, b: 0.9, warnings: [] }, 1500);
   }
   if (p === '/api/v1/ordination/lda') {
     const rows = combinedRows(body);

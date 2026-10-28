@@ -1869,6 +1869,7 @@ mod tests {
                 transformation: None,
                 seed: None,
                 extra_paths: vec![],
+                n_components: None,
             })
             .expect("umap");
         assert_eq!(umap.score_names, vec!["V1", "V2"]);
@@ -1883,6 +1884,7 @@ mod tests {
             transformation: None,
             seed: None,
             extra_paths: vec![],
+            n_components: None,
         };
         ordination.cancel_ordination("umap-1").expect("cancel");
         let err = ordination

@@ -24,7 +24,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 
 use archaeodash_analysis::{
-    lda, pca, umap_cancellable, CancellationToken, ColumnMatrix, DEFAULT_SEED,
+    lda, pca, umap_with_components, CancellationToken, ColumnMatrix, DEFAULT_SEED,
+    UMAP_DEFAULT_COMPONENTS,
 };
 use archaeodash_contracts::{
     LdaRequest, LdaResponse, PcaRequest, PcaResponse, TransformationDefinition, UmapRequest,
@@ -202,6 +203,14 @@ struct UmapKey<'a> {
     columns: &'a [String],
     transformation: Option<&'a TransformationDefinition>,
     seed: u64,
+    /// Left out at the default 2, so layouts cached before dimensions were
+    /// selectable keep their keys.
+    #[serde(skip_serializing_if = "is_default_components")]
+    n_components: usize,
+}
+
+fn is_default_components(n: &usize) -> bool {
+    *n == UMAP_DEFAULT_COMPONENTS
 }
 
 #[derive(Serialize)]
@@ -215,12 +224,14 @@ struct PcaKey<'a> {
 /// computes and stores it on a miss. The response's `path` and
 /// `revision_id` are whatever the computing request had; callers replace
 /// them.
+#[allow(clippy::too_many_arguments)]
 fn umap_canonical(
     root: &Path,
     canonical: &GroupFileData,
     columns: &[String],
     transformation: Option<&TransformationDefinition>,
     seed: u64,
+    n_components: usize,
     context: &str,
     cancel: &CancellationToken,
 ) -> Result<UmapResponse, DomainError> {
@@ -228,11 +239,12 @@ fn umap_canonical(
         columns,
         transformation,
         seed,
+        n_components,
     };
     let file = content_cache_file(root, "umap", &key, canonical);
     cached_or_compute(file.as_deref(), || {
         let matrix = OrdinationService::input_matrix(canonical, columns, transformation, context)?;
-        let result = umap_cancellable(&matrix, seed, cancel)?;
+        let result = umap_with_components(&matrix, seed, n_components, cancel)?;
         let k = result.config.n_components;
         Ok(UmapResponse {
             path: String::new(),
@@ -254,12 +266,14 @@ fn umap_canonical(
 /// ordination cache under `root`, so clustering with a UMAP source reuses a
 /// layout the Visualize or Ordination page (or precompute) already made for
 /// the same rows, and vice versa.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn cached_umap_layout(
     root: &Path,
     data: &GroupFileData,
     columns: &[String],
     transformation: Option<&TransformationDefinition>,
     seed: u64,
+    n_components: usize,
     context: &str,
     cancel: &CancellationToken,
 ) -> Result<Vec<Vec<f64>>, DomainError> {
@@ -271,6 +285,7 @@ pub(crate) fn cached_umap_layout(
         columns,
         transformation,
         seed,
+        n_components,
         context,
         cancel,
     )?;
@@ -528,6 +543,8 @@ impl OrdinationService {
             &req.columns,
             req.transformation.as_ref(),
             req.seed.unwrap_or(DEFAULT_SEED),
+            req.n_components
+                .map_or(UMAP_DEFAULT_COMPONENTS, |n| n as usize),
             &input.context(),
             cancel,
         )?;
@@ -859,6 +876,7 @@ mod tests {
             transformation: None,
             seed: Some(7),
             extra_paths: paths[1..].to_vec(),
+            n_components: None,
         };
         let pca_req = |paths: &[String]| PcaRequest {
             path: paths[0].clone(),
@@ -909,6 +927,7 @@ mod tests {
             &columns,
             None,
             7,
+            UMAP_DEFAULT_COMPONENTS,
             "test",
             &CancellationToken::new(),
         )
@@ -920,6 +939,45 @@ mod tests {
         let fewer = service.umap(&umap_req(&paths[..2])).expect("umap");
         assert_eq!(entries("umap"), 2);
         assert_eq!(fewer.embedding.len(), 20);
+
+        // More dimensions are their own layout and cache entry; clustering
+        // asking for the same count shares it.
+        let wide = service
+            .umap(&UmapRequest {
+                n_components: Some(3),
+                ..umap_req(&paths)
+            })
+            .expect("3-d umap");
+        assert_eq!(wide.score_names, vec!["V1", "V2", "V3"]);
+        assert!(wide.embedding.iter().all(|row| row.len() == 3));
+        assert_eq!(entries("umap"), 3);
+        let layout3 = cached_umap_layout(
+            &dir,
+            &input.data,
+            &columns,
+            None,
+            7,
+            3,
+            "test",
+            &CancellationToken::new(),
+        )
+        .expect("3-d layout");
+        assert_eq!(
+            by_uuid(&dir, &paths, &layout3),
+            by_uuid(&dir, &paths, &wide.embedding)
+        );
+        assert_eq!(entries("umap"), 3);
+        // Three input columns allow at most three dimensions.
+        let err = service
+            .umap(&UmapRequest {
+                n_components: Some(4),
+                ..umap_req(&paths)
+            })
+            .expect_err("too many dimensions");
+        assert!(matches!(
+            err,
+            DomainError::Validation { ref code, .. } if code == "umap_components"
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

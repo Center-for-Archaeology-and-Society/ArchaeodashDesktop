@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use std::path::{Component, Path};
 
 use archaeodash_analysis::{
-    get_eligible, lda, pca, CancellationToken, ColumnMatrix, DistanceMetric, EuclideanMatch,
-    LinkageMethod, MembershipMethod,
+    get_eligible, lda, pca, umap_max_components, CancellationToken, ColumnMatrix, DistanceMetric,
+    EuclideanMatch, LinkageMethod, MembershipMethod, UMAP_DEFAULT_COMPONENTS,
 };
 use archaeodash_contracts::{
     AnalysisSourceDto, ClusterDiagnosticsRequest, ClusterDiagnosticsResponse,
@@ -331,12 +331,6 @@ impl ClusterService {
                     "{context}: PCA component count exceeds the maximum supported input rank {}", data.rows.len().min(estimated_features)
                 )));
             }
-            (AnalysisSourceDto::Umap, Some(count)) if count > 2 => {
-                return Err(validation(
-                    "cluster_pc_count",
-                    format!("{context}: UMAP provides at most 2 dimensions, got {count}"),
-                ));
-            }
             _ => {}
         }
         let base = Self::input_matrix(data, columns, transformation, context)?;
@@ -348,6 +342,22 @@ impl ClusterService {
                 ("PC".to_string(), fitted.scores)
             }
             AnalysisSourceDto::Umap => {
+                // The embedding has exactly the requested dimensions (one
+                // is the first axis of the default 2-d layout): a 5-d UMAP
+                // is a different layout, not 2-d plus three more axes.
+                let n_components = pc_count.map_or(UMAP_DEFAULT_COMPONENTS, |n| {
+                    (n as usize).max(UMAP_DEFAULT_COMPONENTS)
+                });
+                let max_components = umap_max_components(base.cols.len());
+                if n_components > max_components {
+                    return Err(validation(
+                        "cluster_pc_count",
+                        format!(
+                            "{context}: UMAP provides at most {max_components} dimensions for {} input columns, got {n_components}",
+                            base.cols.len()
+                        ),
+                    ));
+                }
                 // Through the ordination cache: the layout depends only on
                 // the rows and settings, so a layout already made by the
                 // Visualize/Ordination pages, precompute, or an earlier
@@ -358,6 +368,7 @@ impl ClusterService {
                     columns,
                     transformation,
                     umap_seed.unwrap_or(20260914),
+                    n_components,
                     context,
                     cancel,
                 )?;
@@ -1736,6 +1747,32 @@ mod tests {
             .expect_err("LDA requires group");
         assert!(
             matches!(err, DomainError::Validation { ref code, .. } if code == "cluster_source_group_required")
+        );
+
+        // Two input columns give at most two UMAP dimensions.
+        let err = service
+            .cluster_fit(&ClusterFitRequest {
+                path: path.clone(),
+                extra_paths: vec![],
+                columns: vec!["as".into(), "fe".into()],
+                transformation: None,
+                source: AnalysisSourceDto::Umap,
+                pc_count: Some(3),
+                source_group_column: None,
+                umap_seed: None,
+                metric: ClusterDistanceMetricDto::Euclidean,
+                minkowski_p: 2.0,
+                linkage: ClusterLinkageDto::WardD2,
+                method: ClusterMethod::Kmeans,
+                k: Some(3),
+                iter_max: 100,
+                nstart: 25,
+                seed: None,
+                plot_group_column: None,
+            })
+            .expect_err("too many UMAP dimensions");
+        assert!(
+            matches!(err, DomainError::Validation { ref code, ref message, .. } if code == "cluster_pc_count" && message.contains("at most 2"))
         );
 
         let response = service

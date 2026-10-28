@@ -78,6 +78,20 @@ export const IMPUTATION_CHOICES: readonly { value: ImputationMethod; label: stri
 /** Seed every page uses for UMAP, so precomputed and on-page results match. */
 export const UMAP_SEED = 20260914;
 
+/** UMAP dimensions plots and precompute use. */
+export const UMAP_DEFAULT_DIMENSIONS = 2;
+
+/** Most UMAP dimensions offered (the backend's `UMAP_MAX_COMPONENTS`). */
+export const UMAP_MAX_DIMENSIONS = 10;
+
+/**
+ * Most UMAP dimensions for `features` input columns, as the backend allows:
+ * no more than the columns (extra axes add nothing), at least 2, at most 10.
+ */
+export function umapMaxDimensions(features: number): number {
+  return Math.min(UMAP_MAX_DIMENSIONS, Math.max(UMAP_DEFAULT_DIMENSIONS, features));
+}
+
 /** Default imputation seed; shown and editable so results can be replayed. */
 export const DEFAULT_IMPUTATION_SEED = 20260914;
 

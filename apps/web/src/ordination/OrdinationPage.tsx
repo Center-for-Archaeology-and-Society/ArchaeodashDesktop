@@ -27,7 +27,7 @@ import { realignRowsByUuid, rowContentKey } from '../datasets/rowKeys.ts';
 import { asRowsResponse, defaultGroupColumn, inputPaths } from '../visualize/combine.ts';
 import { groupColors } from '../visualize/visualize-model.ts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
-import { UMAP_SEED, analysisInput, setupSummary } from '../analysis-setup/setup.ts';
+import { UMAP_DEFAULT_DIMENSIONS, UMAP_SEED, analysisInput, setupSummary, umapMaxDimensions } from '../analysis-setup/setup.ts';
 import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
 import { TableCard, num, type TableSheet } from '../ui/TableExport.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
@@ -541,15 +541,20 @@ function PcaView({ deps, data, extraPaths, groups, rows, columns, transformation
 }
 
 function UmapView({ deps, data, extraPaths, groups, rows, columns, transformation, rowsKey, rowUuids }: { deps: OrdinationDeps } & OrdinationInput & RowIdentity): ReactElement {
+  const [dimensions, setDimensions] = useState(UMAP_DEFAULT_DIMENSIONS);
+  const requestColumns = [...(columns ?? data.elemental_columns)];
+  const maxDimensions = umapMaxDimensions(requestColumns.length);
+  const nComponents = Math.min(dimensions, maxDimensions);
   const request = {
     path: data.path,
     extra_paths: [...extraPaths],
-    columns: [...(columns ?? data.elemental_columns)],
+    columns: requestColumns,
     transformation: transformation ?? null,
     seed: UMAP_SEED,
+    n_components: nComponents,
   };
   const latest = useLatest({ request, rowUuids });
-  const settingsKey = JSON.stringify([request.columns, request.transformation]);
+  const settingsKey = JSON.stringify([request.columns, request.transformation, nComponents]);
   const { state } = useOrdination<ForRows<UmapResponse>>(async (signal) => {
     const { request: current, rowUuids: uuids } = latest.current;
     return { uuids, result: await deps.ordination.umap(current, { signal }) };
@@ -561,14 +566,49 @@ function UmapView({ deps, data, extraPaths, groups, rows, columns, transformatio
       : null),
     [state, rowUuids],
   );
-  if (state.kind === 'loading') return <BusyNote>Computing UMAP…</BusyNote>;
-  if (state.kind === 'error') return <p role="alert">Error: {state.message}</p>;
-  if (!result) return <p>No UMAP yet.</p>;
-  return <UmapResult result={result} groups={groups} rows={rows} />;
+  return (
+    <>
+      <label className="field field-inline">
+        Dimensions
+        <select value={nComponents} onChange={(e) => setDimensions(Number(e.target.value))}>
+          {Array.from({ length: maxDimensions - 1 }, (_, i) => i + UMAP_DEFAULT_DIMENSIONS).map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+        <span className="field-hint">
+          Up to {maxDimensions} for {requestColumns.length} {requestColumns.length === 1 ? 'column' : 'columns'}. Each count is its own embedding; Clustering uses the same one at the same count.
+        </span>
+      </label>
+      {state.kind === 'loading' && <BusyNote>Computing UMAP…</BusyNote>}
+      {state.kind === 'error' && <p role="alert">Error: {state.message}</p>}
+      {state.kind !== 'loading' && state.kind !== 'error' && !result && <p>No UMAP yet.</p>}
+      {state.kind === 'loaded' && result && <UmapResult result={result} groups={groups} rows={rows} />}
+    </>
+  );
 }
 
-/** Pure UMAP result presentation (seed echo, embedding scatter, score table). */
+/** Pure UMAP result presentation (seed echo, embedding scatter with axis
+ *  choice past two dimensions, score table). */
 export function UmapResult({ result, groups, rows }: { result: UmapResponse; groups?: readonly string[]; rows?: RowLabels }): ReactElement {
+  const names = result.score_names;
+  const [axes, setAxes] = useState<[number, number]>([0, 1]);
+  // A smaller embedding than before keeps the axes in range.
+  const xAxis = axes[0] < names.length ? axes[0] : 0;
+  const yAxis = axes[1] < names.length ? axes[1] : Math.min(1, names.length - 1);
+  const axisSelect = (label: string, value: number, set: (v: number) => void) => (
+    <label className="field field-inline">
+      {label}
+      <select value={value} onChange={(e) => set(Number(e.target.value))}>
+        {names.map((n, i) => (
+          <option key={n} value={i}>
+            {n}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
   return (
     <div className="results">
       <section className="card">
@@ -579,11 +619,17 @@ export function UmapResult({ result, groups, rows }: { result: UmapResponse; gro
           seed {result.seed}, n_neighbors {result.n_neighbors}, n_epochs {result.n_epochs}
           {result.warnings.length > 0 && ` — warnings: ${result.warnings.join('; ')}`}. Re-running with the same seed gives the same embedding.
         </p>
+        {names.length > 2 && (
+          <div className="card-actions">
+            {axisSelect('X axis', xAxis, (v) => setAxes([v, yAxis]))}
+            {axisSelect('Y axis', yAxis, (v) => setAxes([xAxis, v]))}
+          </div>
+        )}
         <ScatterPlot
-          x={result.embedding.map((r) => r[0] ?? 0)}
-          y={result.embedding.map((r) => r[1] ?? 0)}
-          xLabel="V1"
-          yLabel="V2"
+          x={result.embedding.map((r) => r[xAxis] ?? 0)}
+          y={result.embedding.map((r) => r[yAxis] ?? 0)}
+          xLabel={names[xAxis] ?? 'V1'}
+          yLabel={names[yAxis] ?? 'V2'}
           groups={groups}
           ids={rows?.ids}
           title="UMAP embedding"

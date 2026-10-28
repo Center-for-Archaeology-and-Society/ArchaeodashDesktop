@@ -13,10 +13,11 @@ export function projectionLabels(data: GroupRowsResponse, column: string): strin
   return index < 0 ? [] : [...new Set(data.rows.map(row => row.descriptive[index]).filter((v): v is string => !!v))].sort();
 }
 
+/** `count` is the PCA component count or the UMAP dimension count. */
 export function sourceOptions(source: NonNullable<AnalysisInputOptions['source']>, count: number, group: string, seed: number): AnalysisInputOptions {
   return {
     source,
-    pc_count: source === 'pca' ? count : null,
+    pc_count: source === 'pca' || source === 'umap' ? count : null,
     source_group_column: source === 'lda' ? group : null,
     umap_seed: source === 'umap' ? seed : null,
   };
@@ -73,11 +74,14 @@ export function groupEligibility(data: GroupRowsResponse, column: string, featur
     .map(([group, count]) => ({ group, count, eligible: count > threshold }));
 }
 
-/** Number of analysis features a source produces (the `n_features` in eligibility). */
-export function sourceFeatureCount(source: NonNullable<AnalysisInputOptions['source']>, columns: number, pcCount: number, ldaLevels: number): number {
+/**
+ * Number of analysis features a source produces (the `n_features` in
+ * eligibility). `count` is the PCA component or UMAP dimension count.
+ */
+export function sourceFeatureCount(source: NonNullable<AnalysisInputOptions['source']>, columns: number, count: number, ldaLevels: number): number {
   switch (source) {
-    case 'pca': return pcCount;
-    case 'umap': return 2;
+    case 'pca':
+    case 'umap': return count;
     case 'lda': return Math.max(1, Math.min(columns, ldaLevels - 1));
     default: return columns;
   }

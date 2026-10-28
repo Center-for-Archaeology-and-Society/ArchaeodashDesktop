@@ -12,7 +12,7 @@ import type { ClusterGroupSources } from './ClusterGroups.tsx';
 import { asRowsResponse, defaultGroupColumn, inputPaths } from '../visualize/combine.ts';
 import { notifyGroupsChanged } from '../data-manager/events.ts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
-import { ANALYSIS_SETUP_NAME, UMAP_SEED, analysisInput, setupSummary } from '../analysis-setup/setup.ts';
+import { ANALYSIS_SETUP_NAME, UMAP_DEFAULT_DIMENSIONS, UMAP_SEED, analysisInput, setupSummary, umapMaxDimensions } from '../analysis-setup/setup.ts';
 import { ResultAssignment } from './ResultAssignment.tsx';
 import { AnalysisPlots } from './AnalysisPlots.tsx';
 import { layoutDendrogram } from './dendrogram-model.ts';
@@ -237,6 +237,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   const [id, setId] = useState('');
   const [source, setSource] = useState<AnalysisSource>('elements');
   const [pcCount, setPcCount] = useState(2);
+  const [umapDimensions, setUmapDimensions] = useState(UMAP_DEFAULT_DIMENSIONS);
   const [pcaVariance, setPcaVariance] = useState<{ explained: number[]; cumulative: number[] } | null>(null);
   const [plotGroup, setPlotGroup] = useState('');
   const [sourceGroup, setSourceGroup] = useState('');
@@ -335,7 +336,10 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   // Default to every component (GroupMembership.R / EuclideanDistance.R).
   useEffect(() => { if (pcMax) setPcCount(pcMax); }, [pcMax]);
   const idChoices = useMemo(() => (data ? uniqueIdColumns(data) : []), [data]);
-  const featureCount = sourceFeatureCount(source, columns.length, pcCount, data ? projectionLabels(data, sourceGroup).length : 0);
+  const umapMax = umapMaxDimensions(columns.length);
+  const umapCount = Math.min(umapDimensions, umapMax);
+  const sourceCount = source === 'umap' ? umapCount : pcCount;
+  const featureCount = sourceFeatureCount(source, columns.length, sourceCount, data ? projectionLabels(data, sourceGroup).length : 0);
   const eligibility = useMemo(() => (data && kind === 'membership' ? groupEligibility(data, group, featureCount) : []), [data, kind, group, featureCount]);
 
   // ANID and group of each loaded row, by hidden identity.
@@ -361,7 +365,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     setBusy(true); setError(''); setNotice(''); setReviewing(false); setCutK(2); setResult(null);
     try {
       // UMAP always uses the Ordination embedding's seed; the clustering seed is separate.
-      const input = { ...inputPaths(files), columns, transformation: definition, ...sourceOptions(source, pcCount, sourceGroup, UMAP_SEED) };
+      const input = { ...inputPaths(files), columns, transformation: definition, ...sourceOptions(source, sourceCount, sourceGroup, UMAP_SEED) };
       let analysis: AnalysisJobRequest;
       if (kind === 'cluster') {
         analysis = diagnostics
@@ -489,7 +493,9 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
           {pcCountOptions(pcMax, pcaVariance?.explained, pcaVariance?.cumulative).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select><span className="field-hint">Shown as (PC variance / cumulative variance).</span></label>}
         {source === 'lda' && <label className="field">LDA grouping column <select value={sourceGroup} onChange={e => setSourceGroup(e.target.value)}>{data.descriptive_columns.map(c => <option key={c}>{c}</option>)}</select></label>}
-        {source === 'umap' && <p className="field-hint">UMAP uses the same embedding as the Ordination page (seed {UMAP_SEED}).</p>}
+        {source === 'umap' && <label className="field">UMAP dimensions <select value={umapCount} onChange={e => setUmapDimensions(Number(e.target.value))}>
+          {Array.from({ length: umapMax - 1 }, (_, i) => i + UMAP_DEFAULT_DIMENSIONS).map(n => <option key={n} value={n}>{n}</option>)}
+        </select><span className="field-hint">Up to {umapMax} for {columns.length} {columns.length === 1 ? 'column' : 'columns'}. Each count is its own embedding (seed {UMAP_SEED}), shared with the Ordination page at the same count; 5–10 often separates clusters better than 2.</span></label>}
         {kind === 'cluster' ? <>
           <label className="field">Method <select value={method} onChange={e => { setMethod(e.target.value as ClusterMethod); setMetric('euclidean'); }}>
             <option value="kmeans">k-means</option><option value="pam">k-medoids (PAM)</option>

@@ -549,6 +549,9 @@ fn one_embedding(
     } else {
         sparse_smallest_eigenvectors(edges, v, d + 1, cancel)?
     };
+    // Fewer than d + 1 eigenvectors (a component no bigger than d) cannot
+    // give d axes; take the fallback instead.
+    let spectral = spectral.filter(|vectors| vectors.first().is_some_and(|row| row.len() > d));
     let mut embedding = match spectral {
         Some(vectors) => {
             // R keeps `[, seq_len(d)]` of RSpectra `eigs(k = d + 1, which =
@@ -607,6 +610,23 @@ pub const SPARSE_SPECTRAL_ROWS: usize = 2048;
 
 /// Largest supported UMAP input.
 pub const UMAP_MAX_ROWS: usize = 100_000;
+
+/// Default UMAP embedding dimension (the legacy `n_components`, for plots).
+pub const UMAP_DEFAULT_COMPONENTS: usize = 2;
+
+/// Hard cap on UMAP embedding dimensions. Around 10 is the usual ceiling
+/// when UMAP feeds clustering: more axes cost SGD time linearly, and
+/// distances in the embedding stop adding structure.
+pub const UMAP_MAX_COMPONENTS: usize = 10;
+
+/// Most embedding dimensions worth asking for with `features` input columns:
+/// no more axes than the data has (extra axes add nothing), at least the
+/// plotting default of 2, and at most [`UMAP_MAX_COMPONENTS`]. Every input
+/// has more rows than `n_neighbors` (15), so the spectral init's `d + 1`
+/// eigenvectors always fit.
+pub fn umap_max_components(features: usize) -> usize {
+    features.clamp(UMAP_DEFAULT_COMPONENTS, UMAP_MAX_COMPONENTS)
+}
 
 /// First `d` PCA scores (unscaled `prcomp`), zero-padded when the data has
 /// fewer than `d` components; `None` when PCA fails.
@@ -797,26 +817,7 @@ fn initial_embedding(
             counts[c].1 += 1;
         }
         counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        let m = (n_components as f64).sqrt().ceil() as usize;
-        let seq: Vec<usize> = (0..=m).collect();
-        // expand.grid varies the first dimension fastest.
-        let mut grid: Vec<Vec<usize>> = vec![vec![0usize; d]];
-        for dim in 0..d {
-            let mut next = Vec::with_capacity(grid.len() * seq.len());
-            for &offset in &seq {
-                for row in &grid {
-                    let mut row = row.clone();
-                    row[dim] = offset;
-                    next.push(row);
-                }
-            }
-            grid = next;
-        }
-        grid.sort_by(|a, b| {
-            let sa: usize = a.iter().sum();
-            let sb: usize = b.iter().sum();
-            sa.cmp(&sb).then(a.iter().max().cmp(&b.iter().max()))
-        });
+        let grid = component_offsets(n_components, d);
         if grid.len() < n_components {
             return Ok((random_embedding(d, v, rng), warnings));
         }
@@ -881,7 +882,50 @@ fn initial_embedding(
     Ok((layout, warnings))
 }
 
-/// Legacy `make.epochs.per.sample`: `epochs / (epochs * w / max(w))` for
+/// The first `count` rows of R's component offset grid: `expand.grid` of
+/// `0..=m` over `d` dimensions (`m = ceil(sqrt(count))`, first dimension
+/// varying fastest), stably ordered by row sum then row max. Built one sum
+/// level at a time, so it never materializes all `(m + 1)^d` rows, which
+/// is unworkable past two dimensions.
+fn component_offsets(count: usize, d: usize) -> Vec<Vec<usize>> {
+    fn fill(dim: usize, left: usize, m: usize, row: &mut [usize], level: &mut Vec<Vec<usize>>) {
+        if dim + 1 == row.len() {
+            if left <= m {
+                row[dim] = left;
+                level.push(row.to_vec());
+            }
+            return;
+        }
+        for value in 0..=left.min(m) {
+            row[dim] = value;
+            fill(dim + 1, left - value, m, row, level);
+        }
+    }
+    let mut out = Vec::with_capacity(count);
+    if d == 0 {
+        return out;
+    }
+    let m = (count as f64).sqrt().ceil() as usize;
+    let mut row = vec![0usize; d];
+    for sum in 0..=m * d {
+        if out.len() >= count {
+            break;
+        }
+        let mut level = Vec::new();
+        fill(0, sum, m, &mut row, &mut level);
+        // Ties keep expand.grid order: the last dimension is most significant.
+        level.sort_by(|a, b| {
+            a.iter()
+                .max()
+                .cmp(&b.iter().max())
+                .then_with(|| a.iter().rev().cmp(b.iter().rev()))
+        });
+        out.extend(level.into_iter().take(count - out.len()));
+    }
+    out
+}
+
+/// Legacy `make.epochs.per.sample`:`epochs / (epochs * w / max(w))` for
 /// positive samples, `-1` otherwise.
 pub fn epochs_per_sample(weights: &[f64], n_epochs: usize) -> Vec<f64> {
     let max_w = weights.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
@@ -1080,14 +1124,37 @@ pub fn umap_cancellable(
     seed: u64,
     cancel: &CancellationToken,
 ) -> Result<Umap, DomainError> {
+    umap_with_components(m, seed, UMAP_DEFAULT_COMPONENTS, cancel)
+}
+
+/// [`umap_cancellable`] into `n_components` dimensions, which must be in
+/// `2..=`[`umap_max_components`] of the input's column count.
+pub fn umap_with_components(
+    m: &ColumnMatrix,
+    seed: u64,
+    n_components: usize,
+    cancel: &CancellationToken,
+) -> Result<Umap, DomainError> {
     cancel.check()?;
-    let config = UmapConfig::default();
+    let config = UmapConfig {
+        n_components,
+        ..UmapConfig::default()
+    };
     let v = m.cols.first().map_or(0, |col| col.len());
     let p = m.cols.len();
     if v == 0 || p == 0 {
         return Err(validation(
             "ordination_empty",
             "UMAP requires at least one row and one column",
+        ));
+    }
+    let max_components = umap_max_components(p);
+    if !(UMAP_DEFAULT_COMPONENTS..=max_components).contains(&n_components) {
+        return Err(validation(
+            "umap_components",
+            format!(
+                "UMAP dimensions must be between {UMAP_DEFAULT_COMPONENTS} and {max_components} for {p} input columns, got {n_components}"
+            ),
         ));
     }
     for (j, name) in m.names.iter().enumerate() {
@@ -1425,5 +1492,81 @@ mod tests {
             err,
             DomainError::Validation { ref code, .. } if code == "umap_input_too_large"
         ));
+    }
+
+    /// The original full `expand.grid` + stable sort, for comparison.
+    fn brute_force_offsets(count: usize, d: usize) -> Vec<Vec<usize>> {
+        let m = (count as f64).sqrt().ceil() as usize;
+        let mut grid: Vec<Vec<usize>> = vec![vec![0usize; d]];
+        for dim in 0..d {
+            let mut next = Vec::new();
+            for offset in 0..=m {
+                for row in &grid {
+                    let mut row = row.clone();
+                    row[dim] = offset;
+                    next.push(row);
+                }
+            }
+            grid = next;
+        }
+        grid.sort_by(|a, b| {
+            let sa: usize = a.iter().sum();
+            let sb: usize = b.iter().sum();
+            sa.cmp(&sb).then(a.iter().max().cmp(&b.iter().max()))
+        });
+        grid.truncate(count);
+        grid
+    }
+
+    #[test]
+    fn component_offsets_match_full_grid_order() {
+        for d in 2..=4 {
+            for count in 2..=30 {
+                assert_eq!(
+                    component_offsets(count, d),
+                    brute_force_offsets(count, d),
+                    "d = {d}, count = {count}"
+                );
+            }
+        }
+        // Ten dimensions with many components stays cheap.
+        assert_eq!(component_offsets(5000, 10).len(), 5000);
+    }
+
+    #[test]
+    fn max_components_follow_input_width() {
+        assert_eq!(umap_max_components(1), 2);
+        assert_eq!(umap_max_components(2), 2);
+        assert_eq!(umap_max_components(6), 6);
+        assert_eq!(umap_max_components(33), UMAP_MAX_COMPONENTS);
+    }
+
+    #[test]
+    fn embeds_into_more_dimensions() {
+        // Separate blobs give a disconnected graph, so this also covers the
+        // per-component offset grid in five dimensions.
+        let matrix = blobs(120, 8, 4);
+        let fit =
+            umap_with_components(&matrix, 3, 5, &CancellationToken::default()).expect("5-d umap");
+        assert_eq!(fit.config.n_components, 5);
+        assert_eq!(fit.layout.len(), 120);
+        assert!(fit.layout.iter().all(|row| row.len() == 5));
+        assert!(fit.layout.iter().flatten().all(|x| x.is_finite()));
+        let again =
+            umap_with_components(&matrix, 3, 5, &CancellationToken::default()).expect("repeat");
+        assert_eq!(again.layout, fit.layout, "same seed, same layout");
+    }
+
+    #[test]
+    fn rejects_dimensions_outside_the_range() {
+        let matrix = blobs(40, 3, 2);
+        for d in [0, 1, 4] {
+            let err = umap_with_components(&matrix, 1, d, &CancellationToken::default())
+                .expect_err("out of range");
+            assert!(matches!(
+                err,
+                DomainError::Validation { ref code, .. } if code == "umap_components"
+            ));
+        }
     }
 }

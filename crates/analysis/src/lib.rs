@@ -42,7 +42,8 @@ pub use membership::{
 pub use pca::{apply_sign_flips, component_sign_flips, pca, Pca};
 pub use umap::{
     find_ab_params, fuzzy_simplicial_set, knn_brute_force, laplacian_smallest_eigenvalues,
-    smooth_knn_dist, umap, umap_cancellable, Umap, UmapConfig, DEFAULT_SEED, SPARSE_SPECTRAL_ROWS,
+    smooth_knn_dist, umap, umap_cancellable, umap_max_components, umap_with_components, Umap,
+    UmapConfig, DEFAULT_SEED, SPARSE_SPECTRAL_ROWS, UMAP_DEFAULT_COMPONENTS, UMAP_MAX_COMPONENTS,
     UMAP_MAX_ROWS,
 };
 

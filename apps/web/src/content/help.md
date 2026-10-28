@@ -120,7 +120,7 @@ Explained variance (scree plot and table), the individuals plot colored by group
 
 ### UMAP
 
-A two-dimensional UMAP embedding with a fixed seed, so the same data give the same picture here and on other pages.
+A UMAP embedding with a fixed seed, so the same data give the same picture here and on other pages. It has two dimensions by default; choose up to 10 (never more than the number of analysis columns) and pick which two to plot. Each dimension count is a separate embedding, not extra axes on the 2-D one. Visualize and precompute use two dimensions; Clustering's **UMAP dimensions** setting shares the embedding with this page at the same count. Five to ten dimensions often keep cluster structure that two flatten.
 
 ### LDA
 
