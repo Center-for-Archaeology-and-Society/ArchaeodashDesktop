@@ -332,6 +332,12 @@ export interface TransactionResponse {
 
 export type TransformMethod = 'none' | 'log' | 'log10' | 'zScore';
 export type ImputationMethod = 'none' | 'pmm' | 'midastouch' | 'rf';
+/**
+ * Rows imputation draws on: every group in the analyzed folder (default; the
+ * imputed values then don't change when groups are included or left out), or
+ * only the groups being analyzed.
+ */
+export type ImputationScope = 'all_groups' | 'included_groups';
 export type RatioMode = 'append' | 'only';
 export type BatchRatioMode = 'one_to_one' | 'cartesian';
 
@@ -346,6 +352,8 @@ export interface TransformationDefinition {
   transform_method: TransformMethod;
   imputation_method: ImputationMethod;
   imputation_seed?: number | null;
+  /** Omitted means 'all_groups'. */
+  imputation_scope?: ImputationScope;
   elemental_columns: string[];
   descriptive_columns: string[];
   group_column?: string | null;
@@ -397,6 +405,8 @@ export interface AppliedTransformation {
   columns: string[];
   rows: (number | null)[][];
   non_finite_to_zero: number;
+  /** Sample identity of each row (hidden; for matching rows only). */
+  analytical_uuids?: string[];
 }
 
 // --- Ordination (Sections 8.5-8.7) ---

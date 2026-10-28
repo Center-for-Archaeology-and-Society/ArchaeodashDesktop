@@ -25,6 +25,7 @@ use archaeodash_domain::DomainError;
 
 use super::combined::CombinedInput;
 use super::transforms::TransformService;
+use crate::prepared::PoolScope;
 
 /// Legacy `set.seed(seed + k)` base seed of the diagnostic series (golden
 /// capture procedure 9).
@@ -251,11 +252,13 @@ impl ClusterService {
         columns: &[String],
         transformation: Option<&TransformationDefinition>,
         context: &str,
+        pool: Option<&PoolScope>,
     ) -> Result<archaeodash_analysis::ColumnMatrix, DomainError> {
         match transformation {
             None => TransformService::matrix_from_group(data, columns, context),
             Some(definition) => {
-                let (full, _) = TransformService::apply_definition(data, definition, context)?;
+                let (full, _) =
+                    TransformService::apply_definition_in(data, definition, context, pool)?;
                 let mut names = Vec::with_capacity(columns.len());
                 let mut cols = Vec::with_capacity(columns.len());
                 for name in columns {
@@ -284,6 +287,7 @@ impl ClusterService {
         source_group_column: Option<&str>,
         umap_seed: Option<u64>,
         context: &str,
+        pool: Option<&PoolScope>,
         cancel: &CancellationToken,
     ) -> Result<ColumnMatrix, DomainError> {
         cancel.check()?;
@@ -333,7 +337,7 @@ impl ClusterService {
             }
             _ => {}
         }
-        let base = Self::input_matrix(data, columns, transformation, context)?;
+        let base = Self::input_matrix(data, columns, transformation, context, pool)?;
         let (names, values) = match source {
             AnalysisSourceDto::Elements => return Ok(base),
             AnalysisSourceDto::Pca => {
@@ -370,6 +374,7 @@ impl ClusterService {
                     umap_seed.unwrap_or(20260914),
                     n_components,
                     context,
+                    pool,
                     cancel,
                 )?;
                 ("V".to_string(), layout)
@@ -653,6 +658,11 @@ impl ClusterService {
             req.source_group_column.as_deref(),
             req.umap_seed,
             &req.path,
+            Some(&PoolScope::for_request(
+                &self.root,
+                &req.path,
+                &req.extra_paths,
+            )),
             cancel,
         )?;
         Self::require_complete(&matrix, &req.path)?;
@@ -811,6 +821,11 @@ impl ClusterService {
             req.source_group_column.as_deref(),
             req.umap_seed,
             &req.path,
+            Some(&PoolScope::for_request(
+                &self.root,
+                &req.path,
+                &req.extra_paths,
+            )),
             cancel,
         )?;
         Self::require_complete(&matrix, &req.path)?;
@@ -1070,6 +1085,11 @@ impl ClusterService {
             req.source_group_column.as_deref(),
             req.umap_seed,
             &req.path,
+            Some(&PoolScope::for_request(
+                &self.root,
+                &req.path,
+                &req.extra_paths,
+            )),
             cancel,
         )?;
         if matrix.cols.len() > MAX_ORDINATION_FEATURES {
@@ -1197,6 +1217,11 @@ impl ClusterService {
             req.source_group_column.as_deref(),
             req.umap_seed,
             &req.path,
+            Some(&PoolScope::for_request(
+                &self.root,
+                &req.path,
+                &req.extra_paths,
+            )),
             cancel,
         )?;
         // Hidden analytical UUIDs uniquely identify observations even when

@@ -37,6 +37,7 @@ use rust_xlsxwriter::{Format, Workbook, Worksheet, XlsxError};
 use super::combined::CombinedInput;
 use super::ordination::OrdinationService;
 use super::transforms::TransformService;
+use crate::prepared::PoolScope;
 
 fn validation(code: &str, message: impl Into<String>) -> DomainError {
     DomainError::validation(code, message)
@@ -363,8 +364,13 @@ impl ExportService {
         let (input, n_desc) = self.read_input(&req.path, &req.extra_paths)?;
         input.require_inputs(&[], Some(&req.definition))?;
         let data = &input.data;
-        let (matrix, _) =
-            TransformService::apply_definition(data, &req.definition, &input.context())?;
+        let pool = PoolScope::for_request(&self.root, &req.path, &req.extra_paths);
+        let (matrix, _) = TransformService::apply_definition_in(
+            data,
+            &req.definition,
+            &input.context(),
+            Some(&pool),
+        )?;
         let roles = &data.profile.roles;
         let mut columns = Vec::with_capacity(2 + n_desc + matrix.names.len());
         columns.push(roles.visible_id.clone());
@@ -981,6 +987,7 @@ mod tests {
                     transform_method: TransformMethod::None,
                     imputation_method: ImputationMethod::None,
                     imputation_seed: None,
+                    imputation_scope: archaeodash_contracts::ImputationScope::AllGroups,
                     elemental_columns: vec!["as".into(), "fe".into()],
                     descriptive_columns: vec![],
                     group_column: None,
@@ -1018,6 +1025,7 @@ mod tests {
                     transform_method: TransformMethod::None,
                     imputation_method: ImputationMethod::None,
                     imputation_seed: None,
+                    imputation_scope: archaeodash_contracts::ImputationScope::AllGroups,
                     elemental_columns: vec!["Site".into()],
                     descriptive_columns: vec![],
                     group_column: None,
@@ -1064,6 +1072,7 @@ mod tests {
                     transform_method: TransformMethod::Log10,
                     imputation_method: ImputationMethod::None,
                     imputation_seed: None,
+                    imputation_scope: archaeodash_contracts::ImputationScope::AllGroups,
                     elemental_columns: vec!["as".into(), "fe".into()],
                     descriptive_columns: vec![],
                     group_column: None,
@@ -1194,6 +1203,7 @@ mod tests {
                     transform_method: TransformMethod::None,
                     imputation_method: ImputationMethod::None,
                     imputation_seed: None,
+                    imputation_scope: archaeodash_contracts::ImputationScope::AllGroups,
                     elemental_columns: vec!["as".into()],
                     descriptive_columns: vec![],
                     group_column: None,
@@ -1223,6 +1233,7 @@ mod tests {
                     transform_method: TransformMethod::None,
                     imputation_method: ImputationMethod::None,
                     imputation_seed: None,
+                    imputation_scope: archaeodash_contracts::ImputationScope::AllGroups,
                     elemental_columns: vec!["zn".into()],
                     descriptive_columns: vec![],
                     group_column: None,

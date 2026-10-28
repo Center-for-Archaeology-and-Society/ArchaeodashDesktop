@@ -15,6 +15,7 @@ pub mod groups;
 pub mod import;
 pub mod ordination;
 pub mod preferences;
+pub mod prepared;
 pub mod transforms;
 
 pub use analysis_jobs::{AnalysisJobRegistry, AnalysisJobs, JobContext};

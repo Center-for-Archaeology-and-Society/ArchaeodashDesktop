@@ -192,6 +192,9 @@ export function AnalysisSetupForm({ elements, setup, onSave, onReset, onCancel, 
   const [method, setMethod] = useState<TransformMethod>(setup?.transform_method ?? 'none');
   const [imputation, setImputation] = useState<ImputationMethod>(setup?.imputation_method ?? 'none');
   const [seed, setSeed] = useState(String(setup?.imputation_seed ?? DEFAULT_IMPUTATION_SEED));
+  // Imputing from every group in the folder is the default (also for setups
+  // saved before the option existed).
+  const [allGroups, setAllGroups] = useState((setup?.imputation_scope ?? 'all_groups') === 'all_groups');
   const [precompute, setPrecompute] = useState<OrdinationKind[]>(setup?.precompute ?? []);
   const [ratios, setRatios] = useState<RatioSpecDto[]>(setup?.ratios ?? []);
   const [ratioMode, setRatioMode] = useState<RatioMode>(setup?.ratio_mode ?? 'append');
@@ -223,6 +226,7 @@ export function AnalysisSetupForm({ elements, setup, onSave, onReset, onCancel, 
       transform_method: method,
       imputation_method: imputation,
       imputation_seed: imputation === 'none' ? null : seedValue,
+      imputation_scope: allGroups ? 'all_groups' : 'included_groups',
       ratios,
       ratio_mode: ratioMode,
       precompute,
@@ -259,6 +263,19 @@ export function AnalysisSetupForm({ elements, setup, onSave, onReset, onCancel, 
             Seed
             <input type="number" min={0} step={1} value={seed} disabled={busy} onChange={(event) => setSeed(event.target.value)} aria-describedby="setup-seed-note" />
           </label>
+        )}
+        {imputation !== 'none' && (
+          <label className="setup-check">
+            <input type="checkbox" checked={allGroups} disabled={busy} onChange={(event) => setAllGroups(event.target.checked)} aria-describedby="setup-scope-note" />
+            <span><strong>Impute from all groups</strong></span>
+          </label>
+        )}
+        {imputation !== 'none' && (
+          <p className="setup-note" id="setup-scope-note">
+            {allGroups
+              ? 'Uses every group in the folder, so including or leaving out groups doesn’t change the imputed values, and they are computed once and reused.'
+              : 'Uses only the groups included in each analysis, so the imputed values change when groups are included or left out.'}
+          </p>
         )}
         {imputation !== 'none' && (
           <p className="setup-note" id="setup-seed-note">

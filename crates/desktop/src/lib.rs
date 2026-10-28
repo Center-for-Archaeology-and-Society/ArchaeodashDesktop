@@ -1637,6 +1637,7 @@ mod tests {
             transform_method: TransformMethod::Log10,
             imputation_method: ImputationMethod::None,
             imputation_seed: None,
+            imputation_scope: archaeodash_contracts::ImputationScope::AllGroups,
             elemental_columns: vec!["as".into(), "fe".into()],
             descriptive_columns: vec![],
             group_column: None,

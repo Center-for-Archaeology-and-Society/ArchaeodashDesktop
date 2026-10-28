@@ -17,7 +17,7 @@ import type {
   TransformationsService,
 } from '@archaeodash/client';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
-import { UMAP_SEED, analysisInput, setupSummary } from '../analysis-setup/setup.ts';
+import { UMAP_SEED, analysisInput, selectionIndependent, setupSummary } from '../analysis-setup/setup.ts';
 import { holdGroupUpdates, notifyGroupsChanged } from '../data-manager/events.ts';
 import { useGroupUpdatesHeld, useHeldValue } from '../datasets/groupUpdates.ts';
 import { portableGroupNameProblem } from '../datasets/groupNames.ts';
@@ -269,11 +269,20 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
     };
   }, [setupInput.elements, combined]);
   const [transformed, setTransformed] = useState<AsyncState<TransformedRows>>({ kind: 'idle' });
+  // Values that don't depend on which groups are analyzed (per-sample
+  // transform; no imputation, or imputation from all groups) are fetched
+  // once for every group in the folder and picked by sample, so including
+  // or leaving out groups needs no request. Otherwise they follow the rows.
+  const folderWide = selectionIndependent(setupInput.transformation);
+  const readyRef = useRef(ready);
+  readyRef.current = ready;
+  const folderKey = ready.map((c) => `${c.path}\u0001${c.group?.revision_id ?? ''}`).join('\u0000');
   useEffect(() => {
     const definition = setupInput.transformation;
     const apply = deps.transformations?.apply;
     const { files: current, rowUuids: uuids } = loadedRef.current;
-    const [first, ...rest] = current.map((f) => f.path);
+    const paths = folderWide ? readyRef.current.map((c) => c.path) : current.map((f) => f.path);
+    const [first, ...rest] = paths;
     if (!definition || !apply || !first || setupInput.columns.length === 0) {
       setTransformed({ kind: 'idle' });
       return;
@@ -282,7 +291,13 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
     setTransformed({ kind: 'loading' });
     apply({ path: first, extra_paths: rest, definition })
       .then((r) => {
-        if (!cancelled) setTransformed({ kind: 'loaded', data: { uuids, columns: r.columns, rows: r.rows } });
+        if (cancelled) return;
+        const rowsOf = r.analytical_uuids?.length === r.rows.length ? r.analytical_uuids : folderWide ? null : uuids;
+        if (!rowsOf) {
+          setTransformed({ kind: 'error', message: 'The transformed values came back without sample identities.' });
+          return;
+        }
+        setTransformed({ kind: 'loaded', data: { uuids: rowsOf, columns: r.columns, rows: r.rows } });
       })
       .catch((err: unknown) => {
         if (!cancelled) setTransformed({ kind: 'error', message: errorText(err) });
@@ -290,7 +305,8 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [deps, contentKey, setupInput]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the key stands for the rows read
+  }, [deps, folderWide ? folderKey : contentKey, setupInput]);
   const transformedView = useMemo((): AsyncState<ElementView> => {
     if (transformed.kind !== 'loaded') return transformed;
     const { uuids, columns, rows } = transformed.data;

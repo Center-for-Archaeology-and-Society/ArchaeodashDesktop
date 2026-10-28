@@ -20,6 +20,7 @@ use archaeodash_domain::DomainError;
 
 use super::combined::CombinedInput;
 use super::transforms::TransformService;
+use crate::prepared::PoolScope;
 
 fn validation(code: &str, message: impl Into<String>) -> DomainError {
     DomainError::validation(code, message)
@@ -51,11 +52,13 @@ impl ExploreService {
         columns: &[String],
         transformation: Option<&TransformationDefinition>,
         context: &str,
+        pool: Option<&PoolScope>,
     ) -> Result<ColumnMatrix, DomainError> {
         match transformation {
             None => TransformService::matrix_from_group(data, columns, context),
             Some(definition) => {
-                let (full, _) = TransformService::apply_definition(data, definition, context)?;
+                let (full, _) =
+                    TransformService::apply_definition_in(data, definition, context, pool)?;
                 let mut names = Vec::with_capacity(columns.len());
                 let mut cols = Vec::with_capacity(columns.len());
                 for name in columns {
@@ -194,8 +197,17 @@ impl ExploreService {
         let input = CombinedInput::read_local(&self.root, &req.path, &req.extra_paths)?;
         input.require_inputs(&req.columns, req.transformation.as_ref())?;
         let data = input.data;
-        let matrix =
-            Self::input_matrix(&data, &req.columns, req.transformation.as_ref(), &req.path)?;
+        let matrix = Self::input_matrix(
+            &data,
+            &req.columns,
+            req.transformation.as_ref(),
+            &req.path,
+            Some(&PoolScope::for_request(
+                &self.root,
+                &req.path,
+                &req.extra_paths,
+            )),
+        )?;
         let rows = archaeodash_analysis::missing_profile(&matrix)
             .into_iter()
             .map(|r| MissingProfileRow {
@@ -228,6 +240,11 @@ impl ExploreService {
             std::slice::from_ref(&req.column),
             req.transformation.as_ref(),
             &req.path,
+            Some(&PoolScope::for_request(
+                &self.root,
+                &req.path,
+                &req.extra_paths,
+            )),
         )?;
         let (breaks, counts) = match req.binning {
             HistogramBinning::Pretty => {
@@ -339,8 +356,17 @@ impl ExploreService {
         input.require_inputs(&req.columns, req.transformation.as_ref())?;
         input.require_columns(req.group_column.as_deref())?;
         let data = input.data;
-        let matrix =
-            Self::input_matrix(&data, &req.columns, req.transformation.as_ref(), &req.path)?;
+        let matrix = Self::input_matrix(
+            &data,
+            &req.columns,
+            req.transformation.as_ref(),
+            &req.path,
+            Some(&PoolScope::for_request(
+                &self.root,
+                &req.path,
+                &req.extra_paths,
+            )),
+        )?;
         let labels = match &req.group_column {
             Some(name) => Some(Self::descriptive_column(&data, name, &req.path)?),
             None => None,

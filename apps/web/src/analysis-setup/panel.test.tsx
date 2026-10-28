@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { TransformationSummary } from '@archaeodash/contracts';
+import type { TransformationDefinition, TransformationSummary } from '@archaeodash/contracts';
 import { AnalysisSetupForm, RatioPreviewTable, SavedSetups, ratioPreviewDefinition, savedSummary } from '../data-manager/AnalysisSetupPanel.tsx';
 import { namedSetups } from './AnalysisSetupContext.tsx';
 import { ANALYSIS_SETUP_NAME, newSetup } from './setup.ts';
@@ -28,6 +28,24 @@ test('setup form lists ratio variables with the mode and a preview when availabl
   assert.match(html, /Preview values/);
   assert.match(html, /Numerator\(s\)/);
   assert.match(html, /<select[^>]*multiple=""/);
+});
+
+test('imputing from all groups is on by default, also for setups saved without the option', () => {
+  const imputing: TransformationDefinition = { ...newSetup(['na', 'fe']), imputation_method: 'pmm', imputation_seed: 7 };
+  const form = (setup: TransformationDefinition) => renderToStaticMarkup(<AnalysisSetupForm elements={['na', 'fe']} setup={setup} onSave={async () => {}} onCancel={() => {}} />);
+  const older: TransformationDefinition = { ...imputing };
+  delete older.imputation_scope;
+  for (const setup of [imputing, older]) {
+    const html = form(setup);
+    assert.match(html, /<label class="setup-check"><input type="checkbox"[^>]*checked=""/);
+    assert.match(html, /Impute from all groups/);
+    assert.match(html, /doesn’t change the imputed values/);
+  }
+  const included = form({ ...imputing, imputation_scope: 'included_groups' });
+  assert.doesNotMatch(included, /<label class="setup-check"><input type="checkbox"[^>]*checked=""/);
+  assert.match(included, /only the groups included in each analysis/);
+  // No imputation, no scope choice.
+  assert.doesNotMatch(form({ ...imputing, imputation_method: 'none' }), /Impute from all groups/);
 });
 
 test('setup form without ratios or a preview service shows only the builder', () => {

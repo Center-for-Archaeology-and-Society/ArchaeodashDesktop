@@ -8,6 +8,7 @@ import {
   ratioCombinations,
   ratioOutputName,
   sanitizeName,
+  selectionIndependent,
   setupNameProblem,
   setupStorageKey,
   setupSummary,
@@ -54,7 +55,11 @@ test('summary and element union read naturally', () => {
   assert.equal(setupSummary({ ...newSetup(['na', 'fe']), transform_method: 'log10' }, all), '2 of 3 elements · Log10');
   assert.equal(
     setupSummary({ ...newSetup(['na']), imputation_method: 'pmm', imputation_seed: 1, transform_method: 'log10' }, all),
-    '1 of 3 elements · PMM imputation · Log10',
+    '1 of 3 elements · PMM imputation (all groups) · Log10',
+  );
+  assert.equal(
+    setupSummary({ ...newSetup(['na']), imputation_method: 'pmm', imputation_seed: 1, imputation_scope: 'included_groups' }, all),
+    '1 of 3 elements · PMM imputation (included groups) · no transform',
   );
   assert.deepEqual(unionElements([['na', 'fe'], ['fe', 'k'], []]), ['na', 'fe', 'k']);
 });
@@ -108,4 +113,16 @@ test('saved setup names are checked as they are saved (trimmed)', () => {
   assert.match(setupNameProblem(' analysis_setup'), /reserved/);
   // A padded copy of an existing name must collide, so Replace is asked first.
   assert.equal(setupStorageKey('Log set '), setupStorageKey('Log set'));
+});
+
+test('values are selection-independent for per-sample transforms with no or all-groups imputation', () => {
+  const base = newSetup(['na']);
+  assert.equal(selectionIndependent(null), false);
+  assert.equal(selectionIndependent({ ...base, transform_method: 'log10' }), true);
+  assert.equal(selectionIndependent({ ...base, imputation_method: 'pmm', imputation_seed: 1 }), true);
+  const older = { ...base, imputation_method: 'pmm' as const, imputation_seed: 1 };
+  delete (older as { imputation_scope?: unknown }).imputation_scope;
+  assert.equal(selectionIndependent(older), true, 'saved before the option: all groups');
+  assert.equal(selectionIndependent({ ...base, imputation_method: 'pmm', imputation_seed: 1, imputation_scope: 'included_groups' }), false);
+  assert.equal(selectionIndependent({ ...base, transform_method: 'zScore' }), false, 'z-score standardizes over the analyzed rows');
 });

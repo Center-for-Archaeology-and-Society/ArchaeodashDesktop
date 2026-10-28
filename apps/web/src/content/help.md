@@ -64,7 +64,7 @@ If groups from the same source (or with the same names) already exist, the wizar
 **Analysis setup → Configure…** decides what every analysis and plot uses. It is saved in the project and applied each time an analysis runs; group files keep their measured values.
 
 - **Elements** — which measured columns analyses and plots use (*Select all* / *Clear*).
-- **Fill missing values (imputation)** — none, random forest, predictive mean matching, or weighted predictive mean matching (see *Methods*). The seed makes the imputed values reproducible.
+- **Fill missing values (imputation)** — none, random forest, predictive mean matching, or weighted predictive mean matching (see *Methods*). The seed makes the imputed values reproducible. **Impute from all groups** (on by default) imputes once from every group in the folder, so including or leaving out groups doesn't change the imputed values, and they are computed once and reused. Turn it off to impute from only the groups included in each analysis.
 - **Ratio variables** — choose numerators and denominators; every numerator is paired with every denominator (name a single pair if you like). A preview shows the first rows of the raw ratios. **Append** adds the ratios to the selected elements; **Only** analyzes just the ratios.
 - **Transform** — none, log10, natural log, or z-score.
 - **Precompute** — PCA, UMAP, and LDA can be computed in the background after you save and whenever group files change, so Ordination and Visualize open quickly.
@@ -156,7 +156,7 @@ For each sample, the nearest samples in the reference groups by Euclidean distan
 - **Log10 / natural log** — logarithm of each value, rounded to three decimals. Zeros, negative, and missing values have no logarithm and become 0, as in the original ArchaeoDash, so impute first when values are missing.
 - **Z-score** — each value as a percent of its row total, then standardized per element (mean 0, standard deviation 1).
 - **Ratios** — computed from the imputed measured values, before the transform; a zero or missing denominator gives a missing ratio.
-- **Imputation** — uses the `mice` methods of the original app: *random forest* (10 trees), *predictive mean matching* (5 donors), and *weighted predictive mean matching* (midastouch). Imputation runs on the selected elements only. The same seed gives the same imputed values.
+- **Imputation** — uses the `mice` methods of the original app: *random forest* (10 trees), *predictive mean matching* (5 donors), and *weighted predictive mean matching* (midastouch). Imputation runs on the selected elements only, over every group in the folder (or only the included groups when *Impute from all groups* is off). The same seed gives the same imputed values.
 - **PCA** — computed on the analysis columns without rescaling (like R's `prcomp` defaults).
 - **UMAP** — a port of R `umap`'s naive method with a fixed seed. Results are reproducible but not identical to an R run.
 - **LDA** — like R `MASS::lda`; needs at least three groups.

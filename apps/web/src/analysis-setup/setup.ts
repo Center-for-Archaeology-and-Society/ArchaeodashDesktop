@@ -99,6 +99,12 @@ export function imputationLabel(method: ImputationMethod): string {
   return IMPUTATION_CHOICES.find((c) => c.value === method)?.short ?? method;
 }
 
+/** "PMM imputation (all groups)" / "PMM imputation (included groups)". */
+export function imputationSummary(setup: Pick<TransformationDefinition, 'imputation_method' | 'imputation_scope'>): string {
+  const scope = (setup.imputation_scope ?? 'all_groups') === 'all_groups' ? 'all groups' : 'included groups';
+  return `${imputationLabel(setup.imputation_method)} (${scope})`;
+}
+
 export function transformLabel(method: TransformMethod): string {
   return TRANSFORM_CHOICES.find((c) => c.value === method)?.label ?? method;
 }
@@ -110,6 +116,7 @@ export function newSetup(elements: readonly string[]): TransformationDefinition 
     transform_method: 'none',
     imputation_method: 'none',
     imputation_seed: null,
+    imputation_scope: 'all_groups',
     elemental_columns: [...elements],
     descriptive_columns: [],
     group_column: null,
@@ -117,6 +124,17 @@ export function newSetup(elements: readonly string[]): TransformationDefinition 
     ratio_mode: 'append',
     precompute: [],
   };
+}
+
+/**
+ * Whether a sample's prepared values are the same whichever groups are
+ * analyzed: a per-sample transform (not z-score, which standardizes over
+ * the analyzed rows) and no imputation, or imputation from all groups. Such
+ * values can be fetched once for the whole folder and reused.
+ */
+export function selectionIndependent(setup: TransformationDefinition | null | undefined): boolean {
+  if (!setup || setup.transform_method === 'zScore') return false;
+  return setup.imputation_method === 'none' || (setup.imputation_scope ?? 'all_groups') === 'all_groups';
 }
 
 /** Whether the setup changes values (rather than only choosing columns). */
@@ -166,7 +184,7 @@ export function setupSummary(setup: TransformationDefinition | null, allElements
   if (!setup) return `All ${allElements.length} elements · no transform`;
   const used = setup.elemental_columns.filter((c) => allElements.includes(c)).length;
   const parts = [`${used} of ${allElements.length} elements`];
-  if (setup.imputation_method !== 'none') parts.push(imputationLabel(setup.imputation_method));
+  if (setup.imputation_method !== 'none') parts.push(imputationSummary(setup));
   if (setup.ratios.length) parts.push(ratioSummary(setup.ratios.length, setup.ratio_mode));
   parts.push(setup.transform_method === 'none' ? 'no transform' : transformLabel(setup.transform_method));
   return parts.join(' · ');

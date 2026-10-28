@@ -20,6 +20,8 @@ use archaeodash_contracts::{
 use archaeodash_data_io::{sanitize_group_name, GroupFileData};
 use archaeodash_domain::DomainError;
 
+use crate::prepared::{imputes_from_pool, pooled_imputation, PoolScope};
+
 /// Legacy `transform_table_name_max_len`: saved names sanitize to at most
 /// 32 characters.
 const MAX_NAME_LEN: usize = 32;
@@ -361,10 +363,26 @@ impl TransformService {
     /// (`append`) or just the ratio outputs (`only`). Shared by `apply` and
     /// the ordination service; calculated values stay ephemeral (Section 5).
     /// Returns the matrix and the non-finite-to-zero warning count.
+    #[cfg(test)]
     pub(crate) fn apply_definition(
         data: &GroupFileData,
         definition: &TransformationDefinition,
         context: &str,
+    ) -> Result<(ColumnMatrix, u64), DomainError> {
+        Self::apply_definition_in(data, definition, context, None)
+    }
+
+    /// [`Self::apply_definition`] for rows from the groups in `pool`'s
+    /// folders: when the definition imputes from all groups
+    /// (`ImputationScope::AllGroups`), each row's imputed values come from
+    /// the pool's cached table (see `prepared`), so they do not depend on
+    /// which groups are analyzed. Without a pool, imputation runs over the
+    /// rows given.
+    pub(crate) fn apply_definition_in(
+        data: &GroupFileData,
+        definition: &TransformationDefinition,
+        context: &str,
+        pool: Option<&PoolScope>,
     ) -> Result<(ColumnMatrix, u64), DomainError> {
         Self::validate(definition)?;
         let mut required = definition.elemental_columns.clone();
@@ -384,6 +402,32 @@ impl TransformService {
         match (definition.imputation_method, definition.imputation_seed) {
             (ImputationMethod::None, _) => {}
             (_, _) if definition.elemental_columns.is_empty() => {}
+            (_, _) if pool.is_some() && imputes_from_pool(definition) => {
+                let Some(pool) = pool else {
+                    unreachable!("checked above")
+                };
+                let table = pooled_imputation(pool, definition, context)?;
+                let targets: Vec<Option<usize>> = table
+                    .columns
+                    .iter()
+                    .map(|name| matrix.names.iter().position(|n| n == name))
+                    .collect();
+                for (i, row) in data.rows.iter().enumerate() {
+                    let imputed = table.row(&row.uuid.to_string()).ok_or_else(|| {
+                        validation(
+                            "imputation_pool_missing_row",
+                            format!(
+                                "{context}: a sample is not in the folder's groups used for imputation; reopen the dataset"
+                            ),
+                        )
+                    })?;
+                    for (j, target) in targets.iter().enumerate() {
+                        if let (Some(t), Some(v)) = (target, imputed.get(j)) {
+                            matrix.cols[*t][i] = *v;
+                        }
+                    }
+                }
+            }
             (method, Some(seed)) => {
                 let method = match method {
                     ImputationMethod::Pmm => ImputeMethod::Pmm,
@@ -477,8 +521,9 @@ impl TransformService {
             crate::combined::CombinedInput::read_local(&self.root, &req.path, &req.extra_paths)?;
         input.require_inputs(&[], Some(&req.definition))?;
         let data = input.data;
+        let pool = PoolScope::for_request(&self.root, &req.path, &req.extra_paths);
         let (matrix, non_finite_to_zero) =
-            Self::apply_definition(&data, &req.definition, &req.path)?;
+            Self::apply_definition_in(&data, &req.definition, &req.path, Some(&pool))?;
         let n_rows = matrix.n_rows();
         Ok(AppliedTransformation {
             path: req.path.clone(),
@@ -502,6 +547,7 @@ impl TransformService {
                 })
                 .collect(),
             non_finite_to_zero,
+            analytical_uuids: data.rows.iter().map(|r| r.uuid.to_string()).collect(),
         })
     }
 }
@@ -562,6 +608,7 @@ mod tests {
             transform_method: method,
             imputation_method: ImputationMethod::None,
             imputation_seed: None,
+            imputation_scope: archaeodash_contracts::ImputationScope::AllGroups,
             elemental_columns: vec!["as".into(), "fe".into()],
             descriptive_columns: vec![],
             group_column: None,
@@ -780,6 +827,103 @@ mod tests {
         assert_eq!(ratioed.rows[1][2], Some(2.0 / fe));
     }
 
+    /// Two groups with holes in both: imputing from all groups gives a
+    /// sample the same values whichever groups are analyzed, and stores one
+    /// pool table; imputing from the included groups uses only those rows.
+    #[test]
+    fn imputation_from_all_groups_ignores_the_selection() {
+        let dir = temp_root();
+        let mut csv = String::from("anid,Site,as,fe\n");
+        for i in 0..12 {
+            let site = if i % 2 == 0 { "Baca" } else { "Hooper" };
+            let fe = if i % 4 == 1 || i == 2 {
+                String::new()
+            } else {
+                format!("{}", 3.0 + f64::from(i) * 0.37)
+            };
+            csv.push_str(&format!("A{i},{site},{},{fe}\n", 1.0 + f64::from(i) * 0.5));
+        }
+        std::fs::write(dir.join("holes.csv"), csv).expect("write source");
+        let import = crate::import::ImportService::new(&dir).expect("import service");
+        let commit = import
+            .commit(&archaeodash_contracts::ImportCommitRequest {
+                sheet: None,
+                source: "holes.csv".into(),
+                group_column: "Site".into(),
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+                group_name: None,
+            })
+            .expect("commit");
+        let paths: Vec<String> = commit.groups.iter().map(|g| g.path.clone()).collect();
+        let baca = paths
+            .iter()
+            .find(|p| p.contains("Baca"))
+            .expect("Baca")
+            .clone();
+        let hooper = paths
+            .iter()
+            .find(|p| p.contains("Hooper"))
+            .expect("Hooper")
+            .clone();
+        let service = TransformService::new(&dir).expect("transform service");
+        let mut def = definition("imp", TransformMethod::Log10);
+        def.imputation_method = ImputationMethod::Pmm;
+        def.imputation_seed = Some(20260914);
+        let apply = |paths: (&str, &[String]), def: &TransformationDefinition| {
+            service
+                .apply(&ApplyTransformationRequest {
+                    path: paths.0.to_string(),
+                    extra_paths: paths.1.to_vec(),
+                    definition: def.clone(),
+                })
+                .expect("apply")
+        };
+        let alone = apply((&baca, &[]), &def);
+        let together = apply((&baca, std::slice::from_ref(&hooper)), &def);
+        // Baca's rows come first in the combined input.
+        assert_eq!(alone.rows, together.rows[..alone.rows.len()].to_vec());
+        assert!(
+            alone.rows.iter().flatten().all(Option::is_some),
+            "holes filled"
+        );
+        let tables = || {
+            std::fs::read_dir(dir.join(".archaeodash/cache/prepared"))
+                .map(|d| d.count())
+                .unwrap_or(0)
+        };
+        assert_eq!(tables(), 1, "one pool table for both selections");
+
+        // Included groups only: Baca alone is imputed from its own rows.
+        let mut included = def.clone();
+        included.imputation_scope = archaeodash_contracts::ImputationScope::IncludedGroups;
+        let own = apply((&baca, &[]), &included);
+        let input = crate::combined::CombinedInput::read_local(&dir, &baca, &[]).expect("read");
+        let (expected, _) =
+            TransformService::apply_definition(&input.data, &included, "test").expect("direct");
+        let expected_rows: Vec<Vec<Option<f64>>> = (0..expected.n_rows())
+            .map(|i| expected.cols.iter().map(|c| Some(c[i])).collect())
+            .collect();
+        assert_eq!(own.rows, expected_rows);
+        assert_eq!(tables(), 1, "included-groups imputation is not stored");
+
+        // A change elsewhere in the folder changes the pool key that
+        // ordination caches include, so their results are recomputed.
+        let pool = crate::prepared::PoolScope::for_request(&dir, &baca, &[]);
+        let key = || {
+            crate::prepared::pool_key(Some(&pool), Some(&def), "test")
+                .expect("pool key")
+                .expect("imputes from the pool")
+        };
+        let before = key();
+        assert_eq!(key(), before, "unchanged pool, same key");
+        std::fs::remove_file(dir.join(&hooper)).expect("remove Hooper");
+        assert_ne!(key(), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn ratios_use_raw_values_and_are_transformed_with_the_elements() {
         let (service, _dir, path) = service_with_group();
@@ -933,6 +1077,7 @@ mod tests {
             transform_method: TransformMethod::None,
             imputation_method: ImputationMethod::None,
             imputation_seed: None,
+            imputation_scope: archaeodash_contracts::ImputationScope::AllGroups,
             elemental_columns: vec!["as".into(), "fe".into()],
             descriptive_columns: vec![],
             group_column: None,

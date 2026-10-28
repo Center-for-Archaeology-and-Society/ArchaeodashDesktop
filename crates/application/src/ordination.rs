@@ -38,6 +38,7 @@ use sha2::{Digest, Sha256};
 
 use super::combined::CombinedInput;
 use super::transforms::TransformService;
+use crate::prepared::{pool_key, PoolScope};
 
 fn validation(code: &str, message: impl Into<String>) -> DomainError {
     DomainError::validation(code, message)
@@ -207,6 +208,10 @@ struct UmapKey<'a> {
     /// selectable keep their keys.
     #[serde(skip_serializing_if = "is_default_components")]
     n_components: usize,
+    /// Content key of the folder-wide imputation the input uses (see
+    /// `prepared`); absent otherwise, so other keys are unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pool: Option<String>,
 }
 
 fn is_default_components(n: &usize) -> bool {
@@ -218,6 +223,9 @@ struct PcaKey<'a> {
     columns: &'a [String],
     scale: bool,
     transformation: Option<&'a TransformationDefinition>,
+    /// See [`UmapKey::pool`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pool: Option<String>,
 }
 
 /// Cached UMAP over `canonical` rows (already in [`canonical_order`]);
@@ -233,6 +241,7 @@ fn umap_canonical(
     seed: u64,
     n_components: usize,
     context: &str,
+    pool: Option<&PoolScope>,
     cancel: &CancellationToken,
 ) -> Result<UmapResponse, DomainError> {
     let key = UmapKey {
@@ -240,10 +249,12 @@ fn umap_canonical(
         transformation,
         seed,
         n_components,
+        pool: pool_key(pool, transformation, context)?,
     };
     let file = content_cache_file(root, "umap", &key, canonical);
     cached_or_compute(file.as_deref(), || {
-        let matrix = OrdinationService::input_matrix(canonical, columns, transformation, context)?;
+        let matrix =
+            OrdinationService::input_matrix(canonical, columns, transformation, context, pool)?;
         let result = umap_with_components(&matrix, seed, n_components, cancel)?;
         let k = result.config.n_components;
         Ok(UmapResponse {
@@ -275,6 +286,7 @@ pub(crate) fn cached_umap_layout(
     seed: u64,
     n_components: usize,
     context: &str,
+    pool: Option<&PoolScope>,
     cancel: &CancellationToken,
 ) -> Result<Vec<Vec<f64>>, DomainError> {
     let order = canonical_order(data);
@@ -287,6 +299,7 @@ pub(crate) fn cached_umap_layout(
         seed,
         n_components,
         context,
+        pool,
         cancel,
     )?;
     Ok(to_input_order(response.embedding, &order))
@@ -314,11 +327,13 @@ impl OrdinationService {
         columns: &[String],
         transformation: Option<&TransformationDefinition>,
         context: &str,
+        pool: Option<&PoolScope>,
     ) -> Result<ColumnMatrix, DomainError> {
         match transformation {
             None => TransformService::matrix_from_group(data, columns, context),
             Some(definition) => {
-                let (full, _) = TransformService::apply_definition(data, definition, context)?;
+                let (full, _) =
+                    TransformService::apply_definition_in(data, definition, context, pool)?;
                 let mut names = Vec::with_capacity(columns.len());
                 let mut cols = Vec::with_capacity(columns.len());
                 for name in columns {
@@ -387,7 +402,14 @@ impl OrdinationService {
     ) -> Result<(CombinedInput, ColumnMatrix), DomainError> {
         let input = CombinedInput::read_local(&self.root, path, extra_paths)?;
         input.require_inputs(columns, transformation)?;
-        let matrix = Self::input_matrix(&input.data, columns, transformation, &input.context())?;
+        let pool = PoolScope::for_request(&self.root, path, extra_paths);
+        let matrix = Self::input_matrix(
+            &input.data,
+            columns,
+            transformation,
+            &input.context(),
+            Some(&pool),
+        )?;
         Ok((input, matrix))
     }
 
@@ -472,15 +494,17 @@ impl OrdinationService {
             &req.columns,
             req.transformation.as_ref(),
         )?;
+        let pool = PoolScope::for_request(&self.root, &req.path, &req.extra_paths);
         let key = PcaKey {
             columns: &req.columns,
             scale: req.scale,
             transformation: req.transformation.as_ref(),
+            pool: pool_key(Some(&pool), req.transformation.as_ref(), &input.context())?,
         };
         let file = content_cache_file(&self.root, "pca", &key, &canonical);
         let mut result: PcaResponse = cached_or_compute(file.as_deref(), || {
             cancel.check()?;
-            Self::compute_pca(req, &canonical, &input.context())
+            Self::compute_pca(req, &canonical, &input.context(), Some(&pool))
         })?;
         result.scores = to_input_order(result.scores, &order);
         result.path = req.path.clone();
@@ -502,7 +526,14 @@ impl OrdinationService {
         cancel: &CancellationToken,
     ) -> Result<LdaResponse, DomainError> {
         cancel.check()?;
-        let file = self.cache_file("lda", req, &req.path, &req.extra_paths);
+        // With imputation from all groups, the input also depends on the
+        // other groups in the folder: their content key joins the request.
+        let pool = PoolScope::for_request(&self.root, &req.path, &req.extra_paths);
+        let pool = pool_key(Some(&pool), req.transformation.as_ref(), &req.path)?;
+        let file = match &pool {
+            Some(pool) => self.cache_file("lda", &(req, pool), &req.path, &req.extra_paths),
+            None => self.cache_file("lda", req, &req.path, &req.extra_paths),
+        };
         cached_or_compute(file.as_deref(), || self.compute_lda(req, cancel))
     }
 
@@ -546,6 +577,11 @@ impl OrdinationService {
             req.n_components
                 .map_or(UMAP_DEFAULT_COMPONENTS, |n| n as usize),
             &input.context(),
+            Some(&PoolScope::for_request(
+                &self.root,
+                &req.path,
+                &req.extra_paths,
+            )),
             cancel,
         )?;
         result.embedding = to_input_order(result.embedding, &order);
@@ -559,12 +595,14 @@ impl OrdinationService {
         req: &PcaRequest,
         canonical: &GroupFileData,
         context: &str,
+        pool: Option<&PoolScope>,
     ) -> Result<PcaResponse, DomainError> {
         let matrix = Self::input_matrix(
             canonical,
             &req.columns,
             req.transformation.as_ref(),
             context,
+            pool,
         )?;
         let result = pca(&matrix, req.scale)?;
 
@@ -929,6 +967,7 @@ mod tests {
             7,
             UMAP_DEFAULT_COMPONENTS,
             "test",
+            None,
             &CancellationToken::new(),
         )
         .expect("layout");
@@ -959,6 +998,7 @@ mod tests {
             7,
             3,
             "test",
+            None,
             &CancellationToken::new(),
         )
         .expect("3-d layout");
@@ -1129,6 +1169,7 @@ mod tests {
                     transform_method: TransformMethod::ZScore,
                     imputation_method: ImputationMethod::None,
                     imputation_seed: None,
+                    imputation_scope: archaeodash_contracts::ImputationScope::AllGroups,
                     elemental_columns: vec!["as".into(), "fe".into()],
                     descriptive_columns: vec![],
                     group_column: None,

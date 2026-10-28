@@ -598,6 +598,19 @@ pub enum ImputationMethod {
     Rf,
 }
 
+/// Which rows imputation draws on. `AllGroups` (the default, also for
+/// definitions saved before this setting existed) imputes once over every
+/// group in the analyzed folder, so including or leaving out groups does
+/// not change the imputed values; `IncludedGroups` imputes over the rows
+/// being analyzed, as before.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImputationScope {
+    #[default]
+    AllGroups,
+    IncludedGroups,
+}
+
 /// One ratio definition (Section 8.2). `output_name` defaults to the
 /// deterministic `numerator_denominator` form when omitted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -627,6 +640,9 @@ pub struct TransformationDefinition {
     /// Requires a visible/replayable seed when not `none` (Section 8.3).
     pub imputation_method: ImputationMethod,
     pub imputation_seed: Option<u64>,
+    /// Rows imputation draws on (default: every group in the folder).
+    #[serde(default)]
+    pub imputation_scope: ImputationScope,
     /// Measured elemental columns the transform reads.
     pub elemental_columns: Vec<String>,
     /// Descriptive columns carried through as metadata.
@@ -717,6 +733,11 @@ pub struct AppliedTransformation {
     /// Cells made non-finite by a log transform, then zeroed (Section 8.4
     /// warning count); always 0 for `none`/`zScore`.
     pub non_finite_to_zero: u64,
+    /// Analytical UUID of each row (same order as `rows`), so a client can
+    /// match values to samples, e.g. reuse folder-wide values for any
+    /// selection. Hidden identities: never shown to the user.
+    #[serde(default)]
+    pub analytical_uuids: Vec<String>,
 }
 
 /// `POST /transformations/apply` request: run one definition (inline or
@@ -1903,6 +1924,7 @@ mod tests {
             transform_method: TransformMethod::Log10,
             imputation_method: ImputationMethod::None,
             imputation_seed: None,
+            imputation_scope: ImputationScope::AllGroups,
             elemental_columns: vec!["as".into(), "fe".into()],
             descriptive_columns: vec!["Site".into()],
             group_column: Some("Site".into()),
@@ -1951,6 +1973,7 @@ mod tests {
             columns: vec!["as".into(), "as_fe".into()],
             rows: vec![vec![Some(1.5), Some(0.75)], vec![None, None]],
             non_finite_to_zero: 0,
+            analytical_uuids: vec!["u1".into(), "u2".into()],
         };
         let json = serde_json::to_string(&applied).unwrap();
         assert_eq!(
@@ -2426,6 +2449,7 @@ mod export_dto_tests {
             transform_method: TransformMethod::Log10,
             imputation_method: ImputationMethod::None,
             imputation_seed: None,
+            imputation_scope: ImputationScope::AllGroups,
             elemental_columns: vec!["as".into(), "fe".into()],
             descriptive_columns: vec![],
             group_column: None,
