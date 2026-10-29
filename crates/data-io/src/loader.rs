@@ -108,7 +108,12 @@ fn read_delimited_table(path: &Path, delimiter: u8) -> Result<TextFrame, ImportE
         .flexible(true)
         .delimiter(delimiter)
         .from_path(path)
-        .map_err(|e| ImportError::Parse(format!("cannot read {}: {e}", path.display())))?;
+        .map_err(|e| {
+            let name = path
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            ImportError::Parse(format!("cannot read {name}: {e}"))
+        })?;
     let columns: Vec<String> = reader
         .headers()
         .map_err(|e| ImportError::Parse(format!("cannot read header: {e}")))?

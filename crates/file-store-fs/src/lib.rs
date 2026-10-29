@@ -49,6 +49,83 @@ fn io_err(e: std::io::Error) -> StoreError {
     StoreError::Io(e.to_string())
 }
 
+/// Resolves a project-relative path under `root` without ever leaving it.
+/// Refuses absolute paths, drive prefixes and `..` before touching the
+/// filesystem, then checks each existing component: a symbolic link (or a
+/// Windows junction) is allowed only when it resolves to somewhere inside
+/// the project, so neither a read nor a write can follow a link out of it
+/// (on the hosted server, into another user's files). Components that do
+/// not exist yet are plain names and are returned as given.
+pub fn resolve_in_project(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let escape = |why: &str| format!("path {rel:?} escapes the project boundary: {why}");
+    let mut parts = Vec::new();
+    for component in Path::new(rel).components() {
+        match component {
+            Component::Normal(part) => parts.push(part),
+            Component::CurDir => {}
+            other => return Err(escape(&format!("{other:?}"))),
+        }
+    }
+    let mut out = root.to_path_buf();
+    let mut canonical_root: Option<PathBuf> = None;
+    let mut exists = true;
+    for part in parts {
+        out.push(part);
+        if !exists {
+            continue;
+        }
+        match fs::symlink_metadata(&out) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                if canonical_root.is_none() {
+                    canonical_root = Some(fs::canonicalize(root).map_err(|e| e.to_string())?);
+                }
+                let inside = match (fs::canonicalize(&out), &canonical_root) {
+                    (Ok(target), Some(project)) => target.starts_with(project),
+                    // A dangling link: writing through it would create its
+                    // target wherever it points.
+                    _ => false,
+                };
+                if !inside {
+                    return Err(escape("a link leads outside the project"));
+                }
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => exists = false,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(out)
+}
+
+/// Whether any component of a project-relative path is hidden (starts with
+/// a dot), like the reserved `.archaeodash` area. Requests never write
+/// there: group outputs and uploads go to visible folders only.
+pub fn has_hidden_component(rel: &str) -> bool {
+    Path::new(rel)
+        .components()
+        .any(|component| match component {
+            Component::Normal(part) => part.to_string_lossy().starts_with('.'),
+            _ => false,
+        })
+}
+
+/// Checks a path a transaction writes or deletes: a visible project path
+/// ending in `.parquet`, so no request can replace project metadata or
+/// leave a group file the scan would never list.
+fn check_group_output_path(rel: &str) -> Result<(), StoreError> {
+    if has_hidden_component(rel) {
+        return Err(StoreError::Validation(format!(
+            "group path {rel:?} cannot be in a hidden folder or start with a dot"
+        )));
+    }
+    if !rel.ends_with(".parquet") {
+        return Err(StoreError::Validation(format!(
+            "group path {rel:?} must end in .parquet"
+        )));
+    }
+    Ok(())
+}
+
 /// Local filesystem implementation of the group-file store.
 pub struct FsGroupFileStore {
     root: PathBuf,
@@ -113,23 +190,10 @@ impl FsGroupFileStore {
         Ok(Self { root })
     }
 
-    /// Lexically contains the project root: rejects absolute paths, `..`,
-    /// and root/prefix components (Section 6.3 path-containment rule).
+    /// Contains the project root (Section 6.3 path-containment rule): see
+    /// [`resolve_in_project`].
     pub fn resolve(&self, rel: &str) -> Result<PathBuf, StoreError> {
-        let rel_path = Path::new(rel);
-        let mut out = self.root.clone();
-        for component in rel_path.components() {
-            match component {
-                Component::Normal(part) => out.push(part),
-                Component::CurDir => {}
-                other => {
-                    return Err(StoreError::Io(format!(
-                        "path {rel:?} escapes the project boundary: {other:?}"
-                    )))
-                }
-            }
-        }
-        Ok(out)
+        resolve_in_project(&self.root, rel).map_err(StoreError::Io)
     }
 
     fn transactions_root(&self) -> PathBuf {
@@ -380,6 +444,14 @@ impl GroupFileStore for FsGroupFileStore {
             tx.action,
             archaeodash_storage::TransactionAction::PatchDescriptive
         );
+        for path in tx
+            .outputs
+            .iter()
+            .map(|o| o.path.as_str())
+            .chain(tx.delete_paths.iter().map(String::as_str))
+        {
+            check_group_output_path(path)?;
+        }
         let input_paths: std::collections::HashSet<&str> =
             tx.inputs.iter().map(|i| i.path.as_str()).collect();
         let create_only: std::collections::HashSet<&str> = tx
@@ -772,6 +844,57 @@ mod tests {
         assert!(store.resolve("../outside.parquet").is_err());
         assert!(store.resolve("/etc/passwd").is_err());
         assert!(store.resolve("groups/../../escape.parquet").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_refuses_links_out_of_the_project_but_allows_links_inside() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside");
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(root.join("groups")).expect("groups");
+        std::os::unix::fs::symlink(outside.path(), root.join("out")).expect("link out");
+        std::os::unix::fs::symlink(root.join("groups"), root.join("alias")).expect("link in");
+        std::os::unix::fs::symlink(outside.path().join("gone"), root.join("dangling"))
+            .expect("dangling link");
+        let store = FsGroupFileStore::new(&root).expect("store");
+
+        for rel in ["out", "out/g.parquet", "out/new/g.parquet", "dangling"] {
+            let err = store.resolve(rel).expect_err(rel);
+            assert!(matches!(err, StoreError::Io(m) if m.contains("outside the project")));
+        }
+        assert!(store.resolve("alias/g.parquet").is_ok());
+        assert!(store.resolve("groups/new/g.parquet").is_ok());
+    }
+
+    #[test]
+    fn transactions_refuse_hidden_and_non_parquet_outputs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = FsGroupFileStore::new(dir.path()).expect("store");
+        let roles = profile("g").roles;
+        for path in [
+            ".archaeodash/history/g.parquet",
+            "groups/.hidden/g.parquet",
+            "groups/.g.parquet",
+            "groups/g.csv",
+        ] {
+            let tx = Transaction {
+                action: archaeodash_storage::TransactionAction::DuplicateGroup,
+                inputs: vec![],
+                outputs: vec![planned(
+                    path,
+                    "g",
+                    "rev-1",
+                    vec![row(Uuid::now_v7(), 1.0, None)],
+                    &roles,
+                )],
+                delete_paths: vec![],
+                selected_uuids: vec![],
+            };
+            let err = store.execute(&tx).expect_err(path);
+            assert!(matches!(err, StoreError::Validation(_)), "{path}: {err:?}");
+        }
+        assert!(!dir.path().join("groups").exists());
     }
 
     #[test]

@@ -74,22 +74,10 @@ impl From<&QuarantineRecord> for StagedFile {
     }
 }
 
-/// Lexically contains `rel` under `root`: rejects absolute paths, `..`, and
-/// root/prefix components (Section 6.3 path-containment rule).
+/// Contains `rel` under `root` (Section 6.3 path-containment rule): see
+/// [`archaeodash_file_store_fs::resolve_in_project`].
 fn resolve_contained(root: &std::path::Path, rel: &str) -> Result<PathBuf, ImportError> {
-    let mut out = root.to_path_buf();
-    for component in std::path::Path::new(rel).components() {
-        match component {
-            std::path::Component::Normal(part) => out.push(part),
-            std::path::Component::CurDir => {}
-            other => {
-                return Err(ImportError::Parse(format!(
-                    "path {rel:?} escapes the project boundary: {other:?}"
-                )))
-            }
-        }
-    }
-    Ok(out)
+    archaeodash_file_store_fs::resolve_in_project(root, rel).map_err(ImportError::Parse)
 }
 
 /// Source-file upload/catalog use cases rooted at one local project
@@ -170,6 +158,11 @@ impl SourceFileService {
                 self.max_upload_bytes
             )));
         }
+        if archaeodash_file_store_fs::has_hidden_component(path) {
+            return Err(ImportError::Parse(format!(
+                "path {path:?} cannot be in a hidden folder or start with a dot"
+            )));
+        }
         let target = resolve_contained(&self.root, path)?;
         if target.exists() {
             return Err(ImportError::Parse(format!(
@@ -221,11 +214,25 @@ impl SourceFileService {
         };
         self.write_record(&record)?;
 
-        // Promote: atomic rename from quarantine onto the logical path.
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(io_err)?;
+        // Promote without replacing anything: a hard link fails if a file
+        // appeared at the target since the check above, where a rename would
+        // silently replace it. The quarantine copy is then dropped.
+        let promoted = target
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::hard_link(&staged, &target));
+        let _ = std::fs::remove_file(&staged);
+        if let Err(e) = promoted {
+            let _ = std::fs::remove_file(self.record_path(&file_id)?);
+            return Err(if e.kind() == std::io::ErrorKind::AlreadyExists {
+                ImportError::Parse(format!(
+                    "target {path:?} already exists; delete it first to replace"
+                ))
+            } else {
+                io_err(e)
+            });
         }
-        std::fs::rename(&staged, &target).map_err(io_err)?;
+        sync_dir(&self.quarantine_dir());
         sync_dir(&self.root);
         Ok(StagedFile::from(&record))
     }
@@ -384,6 +391,55 @@ mod tests {
         assert!(!dir.path().join("sources/thing.parquet").exists());
         // Nothing rejected reached the filesystem except the first upload.
         assert!(dir.path().join("sources/mini.csv").exists());
+
+        for hidden in [".archaeodash/x.csv", "sources/.hidden/x.csv", ".x.csv"] {
+            let err = service.upload(hidden, MINI_CSV).expect_err(hidden);
+            assert!(matches!(err, ImportError::Parse(m) if m.contains("hidden")));
+        }
+        assert!(!dir.path().join(".archaeodash/x.csv").exists());
+    }
+
+    #[test]
+    fn promote_never_replaces_a_file_that_appeared_meanwhile() {
+        let (service, dir) = service();
+        // Simulate a file created between the exists check and the promote
+        // by promoting onto an existing target directly.
+        std::fs::create_dir_all(dir.path().join("sources")).expect("dir");
+        std::fs::write(dir.path().join("sources/race.csv"), b"theirs").expect("theirs");
+        let staged = dir.path().join("staged.bin");
+        std::fs::write(&staged, MINI_CSV).expect("staged");
+        let err = std::fs::hard_link(&staged, dir.path().join("sources/race.csv"))
+            .expect_err("no clobber");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read(dir.path().join("sources/race.csv")).expect("bytes"),
+            b"theirs"
+        );
+        // A normal upload leaves nothing behind in quarantine but the record.
+        let uploaded = service.upload("sources/ok.csv", MINI_CSV).expect("upload");
+        let names: Vec<String> = std::fs::read_dir(dir.path().join(".archaeodash/quarantine"))
+            .expect("quarantine")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        let record = service.record_path(&uploaded.file_id).expect("record path");
+        let record_name = record
+            .file_name()
+            .expect("name")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(names, vec![record_name]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upload_refuses_links_out_of_the_project() {
+        let (service, dir) = service();
+        let outside = tempdir::tempdir().expect("outside");
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("out")).expect("link");
+        let err = service.upload("out/x.csv", MINI_CSV).expect_err("link out");
+        assert!(matches!(err, ImportError::Parse(m) if m.contains("outside the project")));
+        assert!(!outside.path().join("x.csv").exists());
     }
 
     #[test]

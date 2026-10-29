@@ -48,13 +48,13 @@ A can later move to B behind the same HTTP surface.
 
    A path prefix, rather than a header, keeps SSE job events working, because `EventSource` cannot send headers.
 3. **One server binary** (done 2026-10-28, see [[Hosted_Single_Image_2026-10-28]]). `hosted` serves auth, projects, the scoped analysis routes, health checks, and the static `dist/` (with an `index.html` fallback for `/account`, `/projects` and the other routes). Apply the existing security headers and correlation IDs to all of it.
-4. **Quota and limits:**
+4. **Quota and limits** (done 2026-10-28, see [[Hosted_Multi_User_Hardening_2026-10-28]]):
    - check workspace size against `AUTH_QUOTA_BYTES` before upload or import commit;
    - set a request body limit;
    - limit concurrent analysis jobs per user and overall, since UMAP and clustering are CPU-heavy;
    - keep the existing 100k-row limits.
-5. **Desktop-only routes.** Audit every `root_router` route for paths and features that only make sense on the desktop (absolute paths, log folders, reveal-in-folder). Reject them in hosted mode. Confirm that every path argument goes through the project boundary check, including `groups/{*path}` delete, rename, folders, exports and `source_path`.
-6. **Account deletion and retention.** Deleting an account or project also deletes its workspace folders, and the retention sweep covers them.
+5. **Desktop-only routes** (audited 2026-10-28; P1 to P3 fixed then, P4 to P6 fixed 2026-10-29). Audit every `root_router` route for paths and features that only make sense on the desktop (absolute paths, log folders, reveal-in-folder). Reject them in hosted mode. Confirm that every path argument goes through the project boundary check, including `groups/{*path}` delete, rename, folders, exports and `source_path`.
+6. **Account deletion and retention** (project delete removes the workspace, 2026-10-28; account deletion still open). Deleting an account or project also deletes its workspace folders, and the retention sweep covers them.
 
 ### Web UI (`apps/web`)
 1. **Hosted startup flow** (done 2026-10-28, see [[Hosted_Web_Login_Flow_2026-10-28]]): no session → Account (login or register); after login → Projects. Choosing a project creates `HttpTransport` with base URL `/w/<project-id>` and opens the Data Manager.

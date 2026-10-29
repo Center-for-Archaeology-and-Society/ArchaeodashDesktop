@@ -429,7 +429,8 @@ impl OrdinationService {
         hasher.update(kind);
         hasher.update(serde_json::to_vec(request).ok()?);
         for rel in std::iter::once(path).chain(extra_paths.iter().map(String::as_str)) {
-            let meta = std::fs::metadata(self.root.join(rel)).ok()?;
+            let file = crate::combined::contained_path(&self.root, rel).ok()?;
+            let meta = std::fs::metadata(file).ok()?;
             let modified = meta
                 .modified()
                 .ok()?

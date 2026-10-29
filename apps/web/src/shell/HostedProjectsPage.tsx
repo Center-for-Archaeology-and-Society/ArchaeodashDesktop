@@ -7,11 +7,28 @@
  * are opened directories instead.
  */
 import { useCallback, useContext, useEffect, useState, type FormEvent, type ReactElement } from 'react';
-import type { HostedProjectsService } from '@archaeodash/client';
+import type { HostedProjectsService, QuotaUsage } from '@archaeodash/client';
 import { HostedWorkspaceContext } from './hosted.tsx';
 
 export interface HostedProjectsPageProps {
   readonly projects?: HostedProjectsService;
+}
+
+/** Storage used, e.g. "12.5 MB of 1.0 GB used", or null when unknown. */
+export function usageText(quota: QuotaUsage | null): string | null {
+  if (!quota) return null;
+  const used = quota.logical_bytes + quota.reserved_bytes + (quota.workspace_bytes ?? 0);
+  const size = (bytes: number) => {
+    const units = ['bytes', 'KB', 'MB', 'GB', 'TB'];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1000 && unit < units.length - 1) {
+      value /= 1000;
+      unit += 1;
+    }
+    return unit === 0 ? `${value} ${units[0]}` : `${value.toFixed(1)} ${units[unit]}`;
+  };
+  return `${size(used)} of ${size(quota.limit_bytes)} used`;
 }
 
 function errorText(error: unknown): string {
@@ -24,6 +41,8 @@ function errorText(error: unknown): string {
       ? String(envelope.code)
       : '';
   switch (code) {
+    case 'quota_exceeded':
+      return 'Your storage is full. Delete groups or projects to make room.';
     case 'invalid_project_name':
       return 'Project names are 1–200 characters.';
     case 'unauthorized':
@@ -40,6 +59,7 @@ export function HostedProjectsPage({ projects }: HostedProjectsPageProps): React
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [quota, setQuota] = useState<QuotaUsage | null>(null);
   // Hosted server, signed in: opening a project scopes the analysis pages to it.
   const workspace = useContext(HostedWorkspaceContext);
 
@@ -58,7 +78,8 @@ export function HostedProjectsPage({ projects }: HostedProjectsPageProps): React
 
   useEffect(() => {
     refreshProjects();
-  }, [refreshProjects]);
+    projects?.quota().then(setQuota, () => setQuota(null));
+  }, [projects, refreshProjects]);
 
   if (!projects) {
     return (
@@ -94,6 +115,7 @@ export function HostedProjectsPage({ projects }: HostedProjectsPageProps): React
     <section aria-labelledby="projects-heading">
       <h1 id="projects-heading">Projects</h1>
       <p>Open a project to work with it. Import source files from the Data Manager once the project is open.</p>
+      {usageText(quota) && <p aria-label="Storage used">{usageText(quota)}</p>}
       {error && (
         <p role="alert" className="form-error">
           {error}

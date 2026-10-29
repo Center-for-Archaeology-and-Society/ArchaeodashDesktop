@@ -74,6 +74,12 @@ pub struct AppState {
 impl AppState {
     /// Opens every service over one existing project directory.
     pub fn open(root: &std::path::Path) -> Result<Self, String> {
+        Self::open_with_jobs(root, AnalysisJobs::new(root))
+    }
+
+    /// Like [`AppState::open`], with a caller-built job runner (e.g. a
+    /// smaller worker pool per hosted project).
+    pub fn open_with_jobs(root: &std::path::Path, jobs: AnalysisJobs) -> Result<Self, String> {
         let text = |e: &dyn std::fmt::Display| e.to_string();
         Ok(Self {
             import: Arc::new(ImportService::new(root).map_err(|e| text(&e))?),
@@ -82,7 +88,7 @@ impl AppState {
             transforms: Arc::new(TransformService::new(root).map_err(|e| text(&e))?),
             ordination: Arc::new(OrdinationService::new(root).map_err(|e| text(&e))?),
             clustering: Arc::new(ClusterService::new(root).map_err(|e| text(&e))?),
-            jobs: Arc::new(AnalysisJobs::new(root)),
+            jobs: Arc::new(jobs),
             explore: Arc::new(ExploreService::new(root).map_err(|e| text(&e))?),
             exports: Arc::new(ExportService::new(root).map_err(|e| text(&e))?),
             preferences: Arc::new(PreferenceService::new(root).map_err(|e| text(&e))?),

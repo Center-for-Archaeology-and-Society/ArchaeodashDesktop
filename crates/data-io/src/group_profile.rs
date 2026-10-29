@@ -693,12 +693,29 @@ pub fn scan_folder(dir: &Path) -> Result<Vec<ScanCandidate>, ImportError> {
 fn scan_dirs(root: &Path, recursive: bool) -> Result<Vec<ScanCandidate>, ImportError> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
+    let mut canonical_root: Option<PathBuf> = None;
     while let Some(dir) = stack.pop() {
         let entries = std::fs::read_dir(&dir).map_err(|e| ImportError::Io(e.to_string()))?;
         for entry in entries {
             let entry = entry.map_err(|e| ImportError::Io(e.to_string()))?;
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
+            // Skip links that lead outside the scanned folder (or nowhere),
+            // so a listing never shows files from elsewhere on the machine.
+            if entry.file_type().is_ok_and(|t| t.is_symlink()) {
+                if canonical_root.is_none() {
+                    canonical_root = Some(
+                        std::fs::canonicalize(root).map_err(|e| ImportError::Io(e.to_string()))?,
+                    );
+                }
+                let inside = match (std::fs::canonicalize(&path), &canonical_root) {
+                    (Ok(target), Some(scanned)) => target.starts_with(scanned),
+                    _ => false,
+                };
+                if !inside {
+                    continue;
+                }
+            }
             if path.is_dir() {
                 if recursive && !name.starts_with('.') {
                     stack.push(path);

@@ -3,7 +3,7 @@
 //! group Parquet file per group value, all paths contained in the project.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use archaeodash_contracts::{
     CommittedGroup, ExistingImportGroup, ImportCommitOptions, ImportCommitRequest,
@@ -433,22 +433,10 @@ impl ImportService {
         Ok(Self { root, store })
     }
 
-    /// Lexically contains the project root: rejects absolute paths, `..`,
-    /// and root/prefix components (Section 6.3 path-containment rule).
+    /// Contains the project root (Section 6.3 path-containment rule): see
+    /// [`archaeodash_file_store_fs::resolve_in_project`].
     fn resolve(&self, rel: &str) -> Result<PathBuf, ImportError> {
-        let mut out = self.root.clone();
-        for component in Path::new(rel).components() {
-            match component {
-                Component::Normal(part) => out.push(part),
-                Component::CurDir => {}
-                other => {
-                    return Err(ImportError::Parse(format!(
-                        "path {rel:?} escapes the project boundary: {other:?}"
-                    )))
-                }
-            }
-        }
-        Ok(out)
+        archaeodash_file_store_fs::resolve_in_project(&self.root, rel).map_err(ImportError::Parse)
     }
 
     /// Parses the source with the `dataLoader` semantics and returns the

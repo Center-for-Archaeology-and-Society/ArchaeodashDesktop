@@ -63,6 +63,20 @@ impl AnalysisJobs {
         }
     }
 
+    /// A job runner with an explicit pool: `workers` threads and
+    /// `queue_capacity` queued jobs (both > 0). The hosted server gives each
+    /// project a small pool, since many projects can be open at once.
+    pub fn with_limits(
+        root: impl Into<std::path::PathBuf>,
+        workers: usize,
+        queue_capacity: usize,
+    ) -> Self {
+        Self {
+            root: root.into(),
+            registry: AnalysisJobRegistry::with_limits(workers.max(1), queue_capacity.max(1)),
+        }
+    }
+
     pub fn submit(
         &self,
         request: SubmitAnalysisJobRequest,

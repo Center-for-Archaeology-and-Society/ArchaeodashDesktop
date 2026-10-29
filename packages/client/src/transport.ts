@@ -246,6 +246,8 @@ export interface QuotaUsage {
   logical_bytes: number;
   reserved_bytes: number;
   file_count: number;
+  /** Bytes in the user's project workspaces (hosted server); counts against the same limit. */
+  workspace_bytes?: number;
   limit_bytes: number;
 }
 

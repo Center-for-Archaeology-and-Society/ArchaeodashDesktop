@@ -112,6 +112,9 @@ pub fn hosted_router(state: HostedState) -> Router {
             any(crate::workspaces::workspace_dispatch),
         )
         .with_state(state.clone());
+    // Removes a project's workspace after the catalog route deletes it.
+    let after_delete =
+        middleware::from_fn_with_state(state.clone(), crate::workspaces::remove_deleted_workspace);
     let health = Router::new()
         // App name and version for the web client's footer (same as the
         // local API's `/healthz`); readiness stays on /api/v1/health/ready.
@@ -125,6 +128,7 @@ pub fn hosted_router(state: HostedState) -> Router {
         .merge(files)
         .merge(transformations)
         .merge(workspaces)
+        .layer(after_delete)
         .layer(middleware::from_fn(assign_request_id));
     apply_security_headers(app)
 }
@@ -146,10 +150,14 @@ async fn quota_get(
         .await
         .map_err(crate::auth::db_error)?
         .unwrap_or((0, 0, 0));
+    // Project workspaces (group files, sources, caches) count against the
+    // same limit as catalog files.
+    let workspace_bytes = state.workspaces.usage_bytes(principal.user.id).await;
     Ok(Json(serde_json::json!({
         "logical_bytes": usage.0,
         "reserved_bytes": usage.1,
         "file_count": usage.2,
+        "workspace_bytes": workspace_bytes,
         "limit_bytes": state.quota_bytes,
     })))
 }
@@ -436,7 +444,7 @@ struct UploadFileQuery {
 const MAX_TRANSFORMATION_BYTES: usize = 256 * 1024;
 
 /// The uniform 413 for a reservation that would exceed the owner's quota.
-fn quota_exceeded() -> (StatusCode, Json<ErrorEnvelope>) {
+pub(crate) fn quota_exceeded() -> (StatusCode, Json<ErrorEnvelope>) {
     (
         StatusCode::PAYLOAD_TOO_LARGE,
         Json(ErrorEnvelope {

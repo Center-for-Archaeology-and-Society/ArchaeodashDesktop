@@ -13,18 +13,29 @@
 //! the route is no existence oracle across accounts. The project ID is a
 //! path prefix rather than a header because `EventSource` (job progress)
 //! cannot send headers.
+//!
+//! Multi-user limits ([`WorkspaceLimits`]): a request body cap, a shared
+//! (and per-user) cap on concurrent analysis requests, a small background
+//! job pool per project, and a per-user storage quota checked before
+//! requests that add data.
 
 use crate::auth::{db_error, require_session};
-use crate::hosted::{internal_error, json_error_envelope, unauthorized, HostedState};
+use crate::hosted::{
+    internal_error, json_error_envelope, quota_exceeded, unauthorized, HostedState,
+};
 use crate::{root_router, AppState};
+use archaeodash_application::AnalysisJobs;
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{Method, Request, StatusCode, Uri};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::Router;
+use axum::{Json, Router};
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -34,7 +45,77 @@ pub const WORKSPACE_ROUTE: &str = "/w/{project_id}/{*rest}";
 /// Default number of project routers kept open at once.
 pub const DEFAULT_OPEN_WORKSPACES: usize = 64;
 
-/// Opens and caches one analysis router per hosted project.
+/// Inner routes that run an analysis in the request (CPU-heavy). They share
+/// the analysis slots; cheap reads (group scan, rows, validate) do not.
+const ANALYSIS_ROUTES: &[&str] = &[
+    "/api/v1/ordination/",
+    "/api/v1/cluster/",
+    "/api/v1/euclidean/",
+    "/api/v1/explore/",
+    "/api/v1/exports/",
+    "/api/v1/imports/",
+    "/api/v1/transformations/apply",
+    "/api/v1/transformations/ratios/",
+];
+
+/// Inner `POST` routes that add data to a workspace. They are refused once
+/// the user's storage reaches the quota; everything else (reads, analyses,
+/// moves, deletes) keeps working so a user can always clean up.
+const GROWING_ROUTES: &[&str] = &[
+    "/api/v1/files",
+    "/api/v1/imports/commit",
+    "/api/v1/groups/duplicate",
+    "/api/v1/groups/copy",
+    "/api/v1/groups/apply-clusters",
+    "/api/v1/groups/columns",
+    "/api/v1/transformations",
+];
+
+fn is_analysis(path: &str) -> bool {
+    ANALYSIS_ROUTES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+}
+
+fn grows(method: &Method, path: &str) -> bool {
+    method == Method::POST && GROWING_ROUTES.contains(&path)
+}
+
+/// Multi-user limits for hosted workspaces (set from env in the binary).
+#[derive(Clone, Debug)]
+pub struct WorkspaceLimits {
+    /// Largest request body a workspace route accepts, uploads included.
+    pub max_request_bytes: usize,
+    /// Analysis requests running at once across all users.
+    pub analysis_slots: usize,
+    /// Analysis requests running at once for one user.
+    pub analysis_slots_per_user: usize,
+    /// How long an analysis request waits for a slot before a 503.
+    pub analysis_wait: Duration,
+    /// Background job threads per open project.
+    pub job_workers: usize,
+    /// Queued background jobs per open project.
+    pub job_queue: usize,
+}
+
+impl Default for WorkspaceLimits {
+    fn default() -> Self {
+        let cores = std::thread::available_parallelism().map_or(2, usize::from);
+        Self {
+            max_request_bytes: 64 * 1024 * 1024,
+            // Analyses run on the async runtime's threads; leave half free
+            // for everything else.
+            analysis_slots: (cores / 2).max(1),
+            analysis_slots_per_user: 2,
+            analysis_wait: Duration::from_secs(60),
+            job_workers: 1,
+            job_queue: 4,
+        }
+    }
+}
+
+/// Opens and caches one analysis router per hosted project, and holds the
+/// shared limits.
 ///
 /// Routers are closed least-recently-used first once more than `capacity`
 /// are open. Closing drops that project's in-memory job list, so the
@@ -43,7 +124,10 @@ pub const DEFAULT_OPEN_WORKSPACES: usize = 64;
 pub struct WorkspaceRegistry {
     base: PathBuf,
     capacity: usize,
+    limits: WorkspaceLimits,
     open: Mutex<OpenWorkspaces>,
+    analysis: Arc<Semaphore>,
+    analysis_per_user: Mutex<HashMap<Uuid, Arc<Semaphore>>>,
 }
 
 #[derive(Default)]
@@ -52,21 +136,40 @@ struct OpenWorkspaces {
     clock: u64,
 }
 
+/// Both slots one analysis request holds while it runs.
+pub struct AnalysisPermit {
+    _user: OwnedSemaphorePermit,
+    _global: OwnedSemaphorePermit,
+}
+
 impl WorkspaceRegistry {
     /// `base` is the user file store root (`AUTH_FILE_STORE_DIR`).
     pub fn new(base: impl Into<PathBuf>, capacity: usize) -> Self {
+        Self::with_limits(base, capacity, WorkspaceLimits::default())
+    }
+
+    pub fn with_limits(base: impl Into<PathBuf>, capacity: usize, limits: WorkspaceLimits) -> Self {
         Self {
             base: base.into(),
             capacity: capacity.max(1),
+            analysis: Arc::new(Semaphore::new(limits.analysis_slots.max(1))),
+            limits,
             open: Mutex::new(OpenWorkspaces::default()),
+            analysis_per_user: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn limits(&self) -> &WorkspaceLimits {
+        &self.limits
+    }
+
+    fn user_dir(&self, user_id: Uuid) -> PathBuf {
+        self.base.join("users").join(user_id.to_string())
     }
 
     /// The project directory of one hosted project.
     pub fn workspace_dir(&self, user_id: Uuid, project_id: Uuid) -> PathBuf {
-        self.base
-            .join("users")
-            .join(user_id.to_string())
+        self.user_dir(user_id)
             .join("projects")
             .join(project_id.to_string())
             .join("workspace")
@@ -90,7 +193,10 @@ impl WorkspaceRegistry {
         // service sets (two job lists) from concurrent first requests.
         let dir = self.workspace_dir(user_id, project_id);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let router = root_router(AppState::open(&dir)?);
+        let dir = std::fs::canonicalize(&dir).map_err(|e| e.to_string())?;
+        let jobs = AnalysisJobs::with_limits(&dir, self.limits.job_workers, self.limits.job_queue);
+        let router = root_router(AppState::open_with_jobs(&dir, jobs)?)
+            .layer(DefaultBodyLimit::max(self.limits.max_request_bytes));
         if open.routers.len() >= self.capacity {
             let oldest = open
                 .routers
@@ -116,6 +222,87 @@ impl WorkspaceRegistry {
     pub fn open_count(&self) -> usize {
         self.open.lock().map(|open| open.routers.len()).unwrap_or(0)
     }
+
+    /// Waits (up to `analysis_wait`) for one of the user's analysis slots
+    /// and one shared slot; `None` when the server stays busy.
+    pub async fn analysis_permit(&self, user_id: Uuid) -> Option<AnalysisPermit> {
+        let user_slots = {
+            let mut per_user = self.analysis_per_user.lock().ok()?;
+            per_user
+                .entry(user_id)
+                .or_insert_with(|| {
+                    Arc::new(Semaphore::new(self.limits.analysis_slots_per_user.max(1)))
+                })
+                .clone()
+        };
+        let wait = self.limits.analysis_wait;
+        let user = tokio::time::timeout(wait, user_slots.acquire_owned())
+            .await
+            .ok()?
+            .ok()?;
+        let global = tokio::time::timeout(wait, self.analysis.clone().acquire_owned())
+            .await
+            .ok()?
+            .ok()?;
+        Some(AnalysisPermit {
+            _user: user,
+            _global: global,
+        })
+    }
+
+    /// Bytes stored in all of a user's project workspaces.
+    pub async fn usage_bytes(&self, user_id: Uuid) -> u64 {
+        let projects = self.user_dir(user_id).join("projects");
+        tokio::task::spawn_blocking(move || {
+            let Ok(entries) = std::fs::read_dir(&projects) else {
+                return 0;
+            };
+            entries
+                .flatten()
+                .map(|project| tree_bytes(&project.path().join("workspace")))
+                .sum()
+        })
+        .await
+        .unwrap_or(0)
+    }
+
+    /// Closes a deleted project's router and removes its workspace folder.
+    pub async fn remove(&self, user_id: Uuid, project_id: Uuid) {
+        self.close(user_id, project_id);
+        let dir = self.workspace_dir(user_id, project_id);
+        let removed = tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(&dir) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        })
+        .await;
+        match removed {
+            Ok(Ok(())) => {
+                tracing::info!(project_id = %project_id, "removed deleted project's workspace")
+            }
+            Ok(Err(e)) => {
+                tracing::error!(project_id = %project_id, error = %e, "workspace removal failed")
+            }
+            Err(e) => {
+                tracing::error!(project_id = %project_id, error = %e, "workspace removal task failed")
+            }
+        }
+    }
+}
+
+/// Total size of the regular files under `dir` (symlinks are not followed).
+fn tree_bytes(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => tree_bytes(&entry.path()),
+            Ok(kind) if kind.is_file() => entry.metadata().map_or(0, |m| m.len()),
+            _ => 0,
+        })
+        .sum()
 }
 
 /// Splits `/w/{project_id}/api/v1/...?query` into the project ID and the
@@ -141,9 +328,36 @@ fn not_found() -> Response {
     (StatusCode::NOT_FOUND, json_error_envelope("not_found")).into_response()
 }
 
-/// Handler for [`WORKSPACE_ROUTE`]: session, CSRF and ownership checks,
-/// then the request goes to the project's analysis router unchanged except
-/// for its path.
+fn server_busy() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(archaeodash_contracts::ErrorEnvelope {
+            code: "server_busy".into(),
+            message: "The server is busy with other analyses. Try again in a moment.".into(),
+        }),
+    )
+        .into_response()
+}
+
+/// Whether the user's stored bytes (workspaces plus catalog files) have
+/// reached the quota.
+async fn over_quota(
+    state: &HostedState,
+    user_id: Uuid,
+) -> Result<bool, (StatusCode, Json<archaeodash_contracts::ErrorEnvelope>)> {
+    let catalog = state
+        .store
+        .get_quota(user_id)
+        .await
+        .map_err(db_error)?
+        .map_or(0, |(logical, reserved, _)| logical.saturating_add(reserved));
+    let workspaces = i64::try_from(state.workspaces.usage_bytes(user_id).await).unwrap_or(i64::MAX);
+    Ok(catalog.saturating_add(workspaces) >= state.quota_bytes)
+}
+
+/// Handler for [`WORKSPACE_ROUTE`]: session, CSRF and ownership checks, the
+/// quota and analysis limits, then the request goes to the project's
+/// analysis router unchanged except for its path.
 pub(crate) async fn workspace_dispatch(
     State(state): State<HostedState>,
     request: Request<Body>,
@@ -166,12 +380,28 @@ pub(crate) async fn workspace_dispatch(
         Ok(None) => return not_found(),
         Err(e) => return db_error(e).into_response(),
     }
+    if grows(request.method(), inner_uri.path()) {
+        match over_quota(&state, user_id).await {
+            Ok(false) => {}
+            Ok(true) => return quota_exceeded().into_response(),
+            Err(rejection) => return rejection.into_response(),
+        }
+    }
     let router = match state.workspaces.router(user_id, project_id) {
         Ok(router) => router,
         Err(e) => {
             tracing::error!(error = %e, "workspace open failed");
             return internal_error("The project could not be opened.").into_response();
         }
+    };
+    // Held until the analysis response is ready.
+    let _permit = if is_analysis(inner_uri.path()) {
+        match state.workspaces.analysis_permit(user_id).await {
+            Some(permit) => Some(permit),
+            None => return server_busy(),
+        }
+    } else {
+        None
     };
     let (mut parts, body) = request.into_parts();
     parts.uri = inner_uri;
@@ -182,6 +412,39 @@ pub(crate) async fn workspace_dispatch(
         Ok(response) => response,
         Err(never) => match never {},
     }
+}
+
+/// The project ID of `DELETE /api/v1/projects/{id}`, if that is the request.
+fn deleted_project(method: &Method, path: &str) -> Option<Uuid> {
+    if method != Method::DELETE {
+        return None;
+    }
+    let id = path.strip_prefix("/api/v1/projects/")?;
+    Uuid::try_parse(id).ok()
+}
+
+/// Middleware: after a successful project delete (204), close the project's
+/// router and remove its workspace folder. The delete itself (ownership,
+/// CSRF, tombstone) stays with the catalog route.
+pub(crate) async fn remove_deleted_workspace(
+    State(state): State<HostedState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let Some(project_id) = deleted_project(request.method(), request.uri().path()) else {
+        return next.run(request).await;
+    };
+    let user = match require_session(&state.auth, request.headers(), true).await {
+        Ok(Some(principal)) => Some(principal.user.id),
+        _ => None,
+    };
+    let response = next.run(request).await;
+    if response.status() == StatusCode::NO_CONTENT {
+        if let Some(user_id) = user {
+            state.workspaces.remove(user_id, project_id).await;
+        }
+    }
+    response
 }
 
 #[cfg(test)]
@@ -446,5 +709,276 @@ mod tests {
         assert!(workspaces
             .iter()
             .any(|dir| dir.ends_with(format!("{p2}/workspace"))));
+    }
+
+    #[test]
+    fn analysis_and_growing_routes_are_classified() {
+        for path in [
+            "/api/v1/ordination/pca",
+            "/api/v1/cluster/fit",
+            "/api/v1/euclidean/matches",
+            "/api/v1/explore/histogram",
+            "/api/v1/exports/table",
+            "/api/v1/imports/commit",
+            "/api/v1/transformations/apply",
+        ] {
+            assert!(is_analysis(path), "{path}");
+        }
+        for path in [
+            "/api/v1/groups",
+            "/api/v1/groups/rows",
+            "/api/v1/groups/validate",
+            "/api/v1/jobs",
+        ] {
+            assert!(!is_analysis(path), "{path}");
+        }
+        assert!(grows(&Method::POST, "/api/v1/files"));
+        assert!(grows(&Method::POST, "/api/v1/imports/commit"));
+        assert!(grows(&Method::POST, "/api/v1/groups/duplicate"));
+        assert!(!grows(&Method::DELETE, "/api/v1/files/x"));
+        assert!(!grows(&Method::POST, "/api/v1/groups/merge"));
+        assert!(!grows(&Method::POST, "/api/v1/ordination/pca"));
+    }
+
+    #[tokio::test]
+    async fn analysis_slots_cap_each_user_and_the_server() {
+        let base = tempfile::tempdir().expect("base");
+        let limits = WorkspaceLimits {
+            analysis_slots: 2,
+            analysis_slots_per_user: 1,
+            analysis_wait: Duration::from_millis(50),
+            ..WorkspaceLimits::default()
+        };
+        let registry = WorkspaceRegistry::with_limits(base.path(), 4, limits);
+        let (a, b, c) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let a1 = registry.analysis_permit(a).await.expect("a first");
+        assert!(registry.analysis_permit(a).await.is_none(), "per-user cap");
+        let b1 = registry.analysis_permit(b).await.expect("b first");
+        assert!(registry.analysis_permit(c).await.is_none(), "server cap");
+        drop(a1);
+        let c1 = registry.analysis_permit(c).await.expect("slot freed");
+        drop((b1, c1));
+    }
+
+    #[tokio::test]
+    async fn usage_counts_only_that_users_workspaces() {
+        let base = tempfile::tempdir().expect("base");
+        let registry = WorkspaceRegistry::new(base.path(), 4);
+        let (user, other) = (Uuid::now_v7(), Uuid::now_v7());
+        let (p1, p2, p3) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let write = |owner: Uuid, project: Uuid, rel: &str, bytes: usize| {
+            let path = registry.workspace_dir(owner, project).join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, vec![b'x'; bytes]).unwrap();
+        };
+        write(user, p1, "groups/a.parquet", 100);
+        write(user, p1, ".archaeodash/cache/c.bin", 20);
+        write(user, p2, "sources/s.csv", 5);
+        write(other, p3, "groups/b.parquet", 1000);
+        assert_eq!(registry.usage_bytes(user).await, 125);
+        assert_eq!(registry.usage_bytes(other).await, 1000);
+        assert_eq!(registry.usage_bytes(Uuid::now_v7()).await, 0);
+        registry.remove(user, p1).await;
+        assert!(!registry.workspace_dir(user, p1).exists());
+        assert_eq!(registry.usage_bytes(user).await, 5);
+    }
+
+    #[tokio::test]
+    async fn workspace_requests_are_held_to_the_body_limit() {
+        let base = tempfile::tempdir().expect("base");
+        let limits = WorkspaceLimits {
+            max_request_bytes: 16,
+            ..WorkspaceLimits::default()
+        };
+        let registry = WorkspaceRegistry::with_limits(base.path(), 4, limits);
+        let router = registry
+            .router(Uuid::now_v7(), Uuid::now_v7())
+            .expect("router");
+        let send = |body: &'static str| {
+            router.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/files?path=sources/a.csv")
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+        };
+        let response = send("a,b\n1,2\n3,4\n5,6\n7,8\n9,0\n")
+            .await
+            .expect("infallible");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let response = send("a,b\n1,2\n").await.expect("infallible");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// DB-backed (skips without `DATABASE_URL`): once a user's storage
+    /// reaches the quota, uploads are refused while reads keep working; the
+    /// quota route reports workspace bytes; deleting the project removes its
+    /// workspace.
+    #[tokio::test]
+    async fn quota_refuses_new_data_and_project_delete_removes_the_workspace() {
+        let Some((state, sink)) = auth_state().await else {
+            return;
+        };
+        let (cookie, csrf) = login_session(state.clone(), sink).await;
+        let (mut hosted, base) = hosted_test_state(state);
+        hosted.quota_bytes = 1;
+        let app = hosted_router(hosted);
+        let response = call(
+            &app,
+            "POST",
+            "/api/v1/projects",
+            Some(&cookie),
+            Some(&csrf),
+            serde_json::json!({ "name": "quota" }).to_string(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let project = json(response).await["project_id"]
+            .as_str()
+            .expect("id")
+            .to_string();
+        let upload = |path: &str| format!("/w/{project}/api/v1/files?path={path}");
+        // Empty workspace: under quota, so the first upload goes through.
+        let response = call(
+            &app,
+            "POST",
+            &upload("sources/a.csv"),
+            Some(&cookie),
+            Some(&csrf),
+            "a,b\n1,2\n",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = call(
+            &app,
+            "POST",
+            &upload("sources/b.csv"),
+            Some(&cookie),
+            Some(&csrf),
+            "a,b\n1,2\n",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(json(response).await["code"], "quota_exceeded");
+        let groups = format!("/w/{project}/api/v1/groups");
+        let response = call(&app, "GET", &groups, Some(&cookie), None, Body::empty()).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "reads keep working over quota"
+        );
+        let response = call(
+            &app,
+            "GET",
+            "/api/v1/quota",
+            Some(&cookie),
+            None,
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            json(response).await["workspace_bytes"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0
+        );
+
+        let workspace: Vec<PathBuf> = std::fs::read_dir(base.join("users"))
+            .expect("users")
+            .flatten()
+            .map(|user| {
+                user.path()
+                    .join("projects")
+                    .join(&project)
+                    .join("workspace")
+            })
+            .filter(|dir| dir.is_dir())
+            .collect();
+        assert_eq!(workspace.len(), 1);
+        let response = call(
+            &app,
+            "DELETE",
+            &format!("/api/v1/projects/{project}"),
+            Some(&cookie),
+            Some(&csrf),
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(!workspace[0].exists(), "workspace removed with the project");
+        let response = call(&app, "GET", &groups, Some(&cookie), None, Body::empty()).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn analysis_requests_cannot_reach_another_workspace() {
+        let base = tempfile::tempdir().expect("base");
+        let registry = WorkspaceRegistry::new(base.path(), 4);
+        let (user, other) = (Uuid::now_v7(), Uuid::now_v7());
+        let (mine, theirs) = (Uuid::now_v7(), Uuid::now_v7());
+        // The other user's group file exists, so only the path check stops it.
+        let target = registry
+            .workspace_dir(other, theirs)
+            .join("groups/secret.parquet");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"PAR1").unwrap();
+        let router = registry.router(user, mine).expect("router");
+        let traversal =
+            format!("../../../../{other}/projects/{theirs}/workspace/groups/secret.parquet");
+        let absolute = target.to_str().expect("utf8").to_string();
+        for (route, path) in [
+            ("/api/v1/ordination/pca", &traversal),
+            ("/api/v1/ordination/pca", &absolute),
+            ("/api/v1/exports/measured-data", &traversal),
+        ] {
+            let body = if route.starts_with("/api/v1/exports/") {
+                serde_json::json!({ "path": path, "extra_paths": [], "raw_text": false })
+            } else {
+                serde_json::json!({
+                    "path": path,
+                    "extra_paths": [],
+                    "columns": ["Ti", "Sr"],
+                    "transformation": null,
+                })
+            };
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(route)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .expect("request"),
+                )
+                .await
+                .expect("infallible");
+            let status = response.status();
+            let text = String::from_utf8_lossy(
+                &axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("body"),
+            )
+            .to_string();
+            assert_eq!(
+                status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{route} {path}: {text}"
+            );
+            assert!(
+                text.contains("path_outside_project"),
+                "{route} {path}: {text}"
+            );
+            // The refusal may repeat what the client sent, but never adds a
+            // server path the client did not already supply.
+            if *path != absolute {
+                assert!(
+                    !text.contains(base.path().to_str().unwrap()),
+                    "no server paths: {text}"
+                );
+            }
+        }
     }
 }

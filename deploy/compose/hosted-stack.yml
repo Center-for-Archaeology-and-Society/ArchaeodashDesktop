@@ -59,6 +59,15 @@ services:
       # Hosted projects' analysis workspaces live in the same tree; this caps
       # how many project routers stay open at once (default 64).
       AUTH_OPEN_WORKSPACES: ${AUTH_OPEN_WORKSPACES:-64}
+      # Multi-user limits (optional; defaults in WorkspaceLimits): largest
+      # request body incl. uploads (64 MiB), analyses at once for the server
+      # (half the CPUs) and per user (2), seconds an analysis waits for a
+      # slot before a 503 (60), and background job threads per project (1).
+      AUTH_MAX_REQUEST_BYTES: ${AUTH_MAX_REQUEST_BYTES:-67108864}
+      AUTH_ANALYSIS_SLOTS: ${AUTH_ANALYSIS_SLOTS:-}
+      AUTH_ANALYSIS_SLOTS_PER_USER: ${AUTH_ANALYSIS_SLOTS_PER_USER:-2}
+      AUTH_ANALYSIS_WAIT_SECS: ${AUTH_ANALYSIS_WAIT_SECS:-60}
+      AUTH_JOB_WORKERS: ${AUTH_JOB_WORKERS:-1}
       # Section 6.9: per-user logical byte quota (reserve before upload,
       # reconcile after). Default 1 GiB when unset.
       AUTH_QUOTA_BYTES: ${AUTH_QUOTA_BYTES:-1073741824}

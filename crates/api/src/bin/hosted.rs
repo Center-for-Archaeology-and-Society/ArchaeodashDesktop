@@ -14,7 +14,7 @@
 use archaeodash_api::auth::AuthState;
 use archaeodash_api::hosted::serve_web_ui;
 use archaeodash_api::hosted_files::HostedFileStore;
-use archaeodash_api::workspaces::{WorkspaceRegistry, DEFAULT_OPEN_WORKSPACES};
+use archaeodash_api::workspaces::{WorkspaceLimits, WorkspaceRegistry, DEFAULT_OPEN_WORKSPACES};
 use archaeodash_api::{finalize_hosted_router, hosted_router, HostedState};
 use archaeodash_auth::email::{
     DevSinkEmailSender, EmailSender, SendmailEmailSender, SmtpEmailSender,
@@ -105,7 +105,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_OPEN_WORKSPACES);
-    let workspaces = Arc::new(WorkspaceRegistry::new(&file_root, open_workspaces));
+    // Multi-user limits; each env var is optional (defaults in WorkspaceLimits).
+    let mut limits = WorkspaceLimits::default();
+    let env_usize = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+    };
+    if let Some(v) = env_usize("AUTH_MAX_REQUEST_BYTES") {
+        limits.max_request_bytes = v;
+    }
+    if let Some(v) = env_usize("AUTH_ANALYSIS_SLOTS") {
+        limits.analysis_slots = v.max(1);
+    }
+    if let Some(v) = env_usize("AUTH_ANALYSIS_SLOTS_PER_USER") {
+        limits.analysis_slots_per_user = v.max(1);
+    }
+    if let Some(v) = env_usize("AUTH_ANALYSIS_WAIT_SECS") {
+        limits.analysis_wait = std::time::Duration::from_secs(v as u64);
+    }
+    if let Some(v) = env_usize("AUTH_JOB_WORKERS") {
+        limits.job_workers = v.max(1);
+    }
+    tracing::info!(?limits, "workspace limits");
+    let workspaces = Arc::new(WorkspaceRegistry::with_limits(
+        &file_root,
+        open_workspaces,
+        limits,
+    ));
     // Section 6.9: per-user logical byte quota for upload reservations.
     // Default 1 GiB — generous for INAA-scale spreadsheets, not unbounded.
     let quota_bytes: i64 = std::env::var("AUTH_QUOTA_BYTES")

@@ -19,7 +19,7 @@
 //! file's profile with the combined roles and row count; it is read-only.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use archaeodash_contracts::TransformationDefinition;
 use archaeodash_data_io::{read_group_file, GroupFileData, GroupRow};
@@ -50,6 +50,48 @@ fn validation(code: &str, message: impl Into<String>) -> DomainError {
 
 fn import_err(e: archaeodash_data_io::ImportError) -> DomainError {
     DomainError::Internal(Box::new(e))
+}
+
+/// Whether `rel` is a plain project-relative path: only normal components
+/// (no root, drive prefix or `..`), and not empty.
+pub(crate) fn is_plain_relative(rel: &str) -> bool {
+    let mut parts = 0;
+    for component in Path::new(rel).components() {
+        match component {
+            std::path::Component::Normal(_) => parts += 1,
+            std::path::Component::CurDir => {}
+            _ => return false,
+        }
+    }
+    parts > 0
+}
+
+/// Resolves a request path to an existing file inside `root`. Refuses
+/// absolute paths and `..` before touching the filesystem, then resolves
+/// symlinks and requires the result to stay inside the canonical root, so
+/// a request can never read outside its project (on the hosted server,
+/// another user's files).
+pub(crate) fn contained_path(root: &Path, rel: &str) -> Result<PathBuf, DomainError> {
+    let outside = || {
+        validation(
+            "path_outside_project",
+            format!("{rel:?} is not a file in this project"),
+        )
+    };
+    if !is_plain_relative(rel) {
+        return Err(outside());
+    }
+    let canonical_root =
+        std::fs::canonicalize(root).map_err(|e| DomainError::Internal(Box::new(e)))?;
+    // A missing file stays the same internal read error it was before
+    // this check existed; only leaving the project is a new refusal.
+    let resolved = std::fs::canonicalize(canonical_root.join(rel))
+        .map_err(|e| DomainError::Internal(Box::new(e)))?;
+    if resolved.starts_with(&canonical_root) {
+        Ok(resolved)
+    } else {
+        Err(outside())
+    }
 }
 
 /// Runs `read` while holding the project's shared lock. Group changes
@@ -99,7 +141,7 @@ impl CombinedInput {
     ) -> Result<Self, DomainError> {
         read_locked(root, || {
             Self::read_with(path, extra_paths, |rel| {
-                read_group_file(&root.join(rel)).map_err(import_err)
+                read_group_file(&contained_path(root, rel)?).map_err(import_err)
             })
         })
     }
@@ -342,6 +384,65 @@ mod tests {
     use uuid::Uuid;
 
     type TestRow<'a> = (&'a str, Vec<Option<&'a str>>, Vec<Option<f64>>);
+
+    #[test]
+    fn plain_relative_paths_only() {
+        for ok in [
+            "groups/a.parquet",
+            "a.parquet",
+            "./groups/a.parquet",
+            "f/g/h.parquet",
+        ] {
+            assert!(is_plain_relative(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            ".",
+            "../a.parquet",
+            "groups/../../a.parquet",
+            "/etc/passwd",
+            "/tmp/x.parquet",
+        ] {
+            assert!(!is_plain_relative(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn request_paths_stay_inside_the_project() {
+        let base = tempfile::tempdir().expect("base");
+        let root = base.path().join("project");
+        std::fs::create_dir_all(root.join("groups")).expect("groups");
+        std::fs::write(root.join("groups/a.parquet"), b"x").expect("inside");
+        std::fs::write(base.path().join("other.parquet"), b"x").expect("outside");
+        let inside = contained_path(&root, "groups/a.parquet").expect("inside resolves");
+        assert!(inside.ends_with("groups/a.parquet"));
+        let outside = base.path().join("other.parquet");
+        for rel in [
+            "../other.parquet",
+            "groups/../../other.parquet",
+            outside.to_str().expect("utf8"),
+        ] {
+            let err = contained_path(&root, rel).expect_err(rel);
+            assert!(
+                err.to_string().contains("path_outside_project"),
+                "{rel}: {err}"
+            );
+        }
+        assert!(matches!(
+            contained_path(&root, "groups/missing.parquet"),
+            Err(DomainError::Internal(_))
+        ));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, root.join("groups/link.parquet"))
+                .expect("symlink");
+            let err = contained_path(&root, "groups/link.parquet").expect_err("symlink out");
+            assert!(err.to_string().contains("path_outside_project"), "{err}");
+        }
+        // Reads through the same check: nothing outside is opened.
+        let err = CombinedInput::read_local(&root, "../other.parquet", &[]).expect_err("refused");
+        assert!(err.to_string().contains("path_outside_project"), "{err}");
+    }
 
     fn file(
         group: &str,

@@ -56,6 +56,11 @@ impl PoolScope {
     pub fn new<'a>(root: &Path, paths: impl IntoIterator<Item = &'a str>) -> Self {
         let mut folders: Vec<String> = Vec::new();
         for path in paths {
+            // Unsafe paths (absolute, `..`) are refused when the inputs are
+            // read; never let them pick a folder to scan for the pool.
+            if !crate::combined::is_plain_relative(path) {
+                continue;
+            }
             let normalized = path.replace('\\', "/");
             let folder = normalized
                 .rsplit_once('/')

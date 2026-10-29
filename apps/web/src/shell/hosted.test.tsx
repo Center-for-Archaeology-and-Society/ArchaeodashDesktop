@@ -122,3 +122,13 @@ test('the projects page lists, creates and opens projects; importing is left to 
   assert.ok(!hosted.includes('Upload'));
   assert.ok(!hosted.includes('bytes used'));
 });
+
+test('storage usage counts catalog and workspace bytes', async () => {
+  const { usageText } = await import('./HostedProjectsPage.tsx');
+  assert.equal(usageText(null), null);
+  assert.equal(
+    usageText({ logical_bytes: 500, reserved_bytes: 0, file_count: 1, workspace_bytes: 12_000_000, limit_bytes: 1_073_741_824 }),
+    '12.0 MB of 1.1 GB used',
+  );
+  assert.equal(usageText({ logical_bytes: 0, reserved_bytes: 0, file_count: 0, limit_bytes: 1000 }), '0 bytes of 1.0 KB used');
+});
