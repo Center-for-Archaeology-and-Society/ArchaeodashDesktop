@@ -15,7 +15,7 @@ use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Request, StatusCode
 use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
 use axum::response::Response;
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::Json;
 use axum::Router;
 use std::sync::Arc;
@@ -33,6 +33,9 @@ pub struct HostedState {
     pub files: Arc<crate::hosted_files::HostedFileStore>,
     /// Per-user logical byte quota (Section 6.9); uploads reserve against it.
     pub quota_bytes: i64,
+    /// One project directory and analysis router per hosted project, served
+    /// at `/w/{project_id}/api/v1/...` (see [`crate::workspaces`]).
+    pub workspaces: Arc<crate::workspaces::WorkspaceRegistry>,
 }
 
 /// Assigns a request/correlation ID to every response (Section 10): reuse a
@@ -103,6 +106,12 @@ pub fn hosted_router(state: HostedState) -> Router {
             get(transformations_get).delete(transformations_delete),
         )
         .with_state(state.clone());
+    let workspaces = Router::new()
+        .route(
+            crate::workspaces::WORKSPACE_ROUTE,
+            any(crate::workspaces::workspace_dispatch),
+        )
+        .with_state(state.clone());
     let health = Router::new()
         .route("/api/v1/health/live", get(health_live))
         .route("/api/v1/health/ready", get(health_ready))
@@ -112,6 +121,7 @@ pub fn hosted_router(state: HostedState) -> Router {
         .merge(auth)
         .merge(files)
         .merge(transformations)
+        .merge(workspaces)
         .layer(middleware::from_fn(assign_request_id));
     apply_security_headers(app)
 }
@@ -769,7 +779,7 @@ async fn transformations_delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn internal_error(message: &'static str) -> (StatusCode, Json<ErrorEnvelope>) {
+pub(crate) fn internal_error(message: &'static str) -> (StatusCode, Json<ErrorEnvelope>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ErrorEnvelope {
@@ -813,7 +823,7 @@ impl FileMetaResponse {
     }
 }
 
-fn unauthorized() -> (StatusCode, Json<ErrorEnvelope>) {
+pub(crate) fn unauthorized() -> (StatusCode, Json<ErrorEnvelope>) {
     (
         StatusCode::UNAUTHORIZED,
         Json(ErrorEnvelope {
@@ -833,7 +843,7 @@ fn bad_request(code: &'static str) -> (StatusCode, Json<ErrorEnvelope>) {
     )
 }
 
-fn json_error_envelope(code: &'static str) -> Json<ErrorEnvelope> {
+pub(crate) fn json_error_envelope(code: &'static str) -> Json<ErrorEnvelope> {
     Json(ErrorEnvelope {
         code: code.into(),
         message: "The referenced resource does not exist.".into(),
@@ -908,6 +918,7 @@ mod tests {
         let pool = sqlx::PgPool::connect_lazy(&url).expect("lazy pool builds");
         let store = Arc::new(ControlStore::new(pool));
         let sink = Arc::new(archaeodash_auth::email::DevSinkEmailSender::new());
+        let base = tempfile::tempdir().expect("temp file store").keep();
         let state = HostedState {
             auth: AuthState {
                 store: store.clone(),
@@ -916,13 +927,12 @@ mod tests {
                 base_url: "https://archaeodash.example".to_string(),
             },
             store,
-            files: Arc::new(
-                crate::hosted_files::HostedFileStore::new(
-                    tempfile::tempdir().expect("temp file store").keep(),
-                )
-                .expect("file store"),
-            ),
+            files: Arc::new(crate::hosted_files::HostedFileStore::new(&base).expect("file store")),
             quota_bytes: 1_073_741_824,
+            workspaces: Arc::new(crate::workspaces::WorkspaceRegistry::new(
+                &base,
+                crate::workspaces::DEFAULT_OPEN_WORKSPACES,
+            )),
         };
         (state, sink)
     }
@@ -1246,6 +1256,10 @@ pub(crate) fn hosted_test_state(
             store: state.store.clone(),
             files,
             quota_bytes: 1_073_741_824,
+            workspaces: std::sync::Arc::new(crate::workspaces::WorkspaceRegistry::new(
+                &base,
+                crate::workspaces::DEFAULT_OPEN_WORKSPACES,
+            )),
         },
         base,
     )

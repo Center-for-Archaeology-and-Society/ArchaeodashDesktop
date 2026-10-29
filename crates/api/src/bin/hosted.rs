@@ -13,6 +13,7 @@
 
 use archaeodash_api::auth::AuthState;
 use archaeodash_api::hosted_files::HostedFileStore;
+use archaeodash_api::workspaces::{WorkspaceRegistry, DEFAULT_OPEN_WORKSPACES};
 use archaeodash_api::{finalize_hosted_router, hosted_router, HostedState};
 use archaeodash_auth::email::{
     DevSinkEmailSender, EmailSender, SendmailEmailSender, SmtpEmailSender,
@@ -95,8 +96,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file_root =
         std::env::var("AUTH_FILE_STORE_DIR").unwrap_or_else(|_| "./data/user-files".into());
     let files = Arc::new(
-        HostedFileStore::new(file_root).map_err(|e| format!("file store init failed: {e}"))?,
+        HostedFileStore::new(&file_root).map_err(|e| format!("file store init failed: {e}"))?,
     );
+    // Hosted projects' analysis workspaces live in the same per-user tree;
+    // AUTH_OPEN_WORKSPACES caps how many project routers stay open.
+    let open_workspaces: usize = std::env::var("AUTH_OPEN_WORKSPACES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_OPEN_WORKSPACES);
+    let workspaces = Arc::new(WorkspaceRegistry::new(&file_root, open_workspaces));
     // Section 6.9: per-user logical byte quota for upload reservations.
     // Default 1 GiB — generous for INAA-scale spreadsheets, not unbounded.
     let quota_bytes: i64 = std::env::var("AUTH_QUOTA_BYTES")
@@ -113,6 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         store: store.clone(),
         files: files.clone(),
         quota_bytes,
+        workspaces,
     };
 
     let app = finalize_hosted_router(hosted_router(state));

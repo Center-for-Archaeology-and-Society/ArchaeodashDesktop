@@ -53,6 +53,7 @@ pub mod hosted_files;
 pub use hosted::{finalize_hosted_router, hosted_router, HostedState};
 pub mod job_events;
 pub mod security_headers;
+pub mod workspaces;
 
 /// Shared adapter state: one project-scoped import, group, source-file,
 /// transformation, ordination, cluster, and export service.
@@ -68,6 +69,25 @@ pub struct AppState {
     pub explore: Arc<ExploreService>,
     pub exports: Arc<ExportService>,
     pub preferences: Arc<PreferenceService>,
+}
+
+impl AppState {
+    /// Opens every service over one existing project directory.
+    pub fn open(root: &std::path::Path) -> Result<Self, String> {
+        let text = |e: &dyn std::fmt::Display| e.to_string();
+        Ok(Self {
+            import: Arc::new(ImportService::new(root).map_err(|e| text(&e))?),
+            groups: Arc::new(GroupService::new(root).map_err(|e| text(&e))?),
+            files: Arc::new(SourceFileService::new(root).map_err(|e| text(&e))?),
+            transforms: Arc::new(TransformService::new(root).map_err(|e| text(&e))?),
+            ordination: Arc::new(OrdinationService::new(root).map_err(|e| text(&e))?),
+            clustering: Arc::new(ClusterService::new(root).map_err(|e| text(&e))?),
+            jobs: Arc::new(AnalysisJobs::new(root)),
+            explore: Arc::new(ExploreService::new(root).map_err(|e| text(&e))?),
+            exports: Arc::new(ExportService::new(root).map_err(|e| text(&e))?),
+            preferences: Arc::new(PreferenceService::new(root).map_err(|e| text(&e))?),
+        })
+    }
 }
 
 fn missing_job() -> (StatusCode, Json<ErrorEnvelope>) {
