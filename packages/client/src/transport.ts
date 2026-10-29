@@ -369,6 +369,27 @@ export interface Transport {
   readonly hostedFiles?: HostedFilesService;
   /** Hosted transformation definitions; absent in desktop (Tauri) mode. */
   readonly hostedTransformations?: HostedTransformationsService;
+  /** Hosted project scoping of the analysis services; absent in desktop (Tauri) mode. */
+  readonly hostedWorkspace?: HostedWorkspaceService;
+}
+
+/**
+ * Points the analysis services (imports, files, groups, transformations,
+ * ordination, clustering, jobs, explore, exports) at one hosted project:
+ * their requests go to `/w/<project-id>/api/v1/...`. Account, project
+ * catalog, catalog files, preferences and app info stay unscoped.
+ */
+export interface HostedWorkspaceService {
+  /** Scopes analysis requests to a project; null removes the scope. */
+  set(projectId: string | null): void;
+  /** The scoped project ID, or null. */
+  current(): string | null;
+  /**
+   * Called when a scoped request is refused with 401 (the session ended);
+   * null removes the handler. Unscoped 401s (e.g. a signed-out session
+   * check) do not call it.
+   */
+  onUnauthorized(handler: (() => void) | null): void;
 }
 
 /** The rejection of a call whose `CallOptions.signal` was aborted. */

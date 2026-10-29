@@ -4,7 +4,7 @@
  * screens, and the theme selector. Semantic nav with accessible names.
  */
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactElement } from 'react';
-import { NavLink } from 'react-router';
+import { NavLink, useLocation } from 'react-router';
 import { KeepAliveOutlet } from './KeepAliveOutlet.tsx';
 import { navRoutes, type NavRoute } from './nav.ts';
 import { DataManager, type DataManagerTransport } from '../data-manager/DataManager.tsx';
@@ -14,6 +14,7 @@ import { ProjectMenu, RecentProjectList, revealLabel, useRecentProjects } from '
 import { ActivityIndicator } from './ActivityIndicator.tsx';
 import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
 import { Toasts } from '../ui/Toasts.tsx';
+import { isAnalysisPath } from './hosted.tsx';
 
 export interface AppShellProps {
   readonly theme: string;
@@ -31,6 +32,15 @@ export interface AppShellProps {
   readonly dataManager?: DataManagerTransport;
   /** Desktop: opens the app's log folder (an Info menu item). */
   readonly onShowLogFolder?: () => void;
+  /** Hosted server only: the signed-in user and the open hosted project. */
+  readonly hosted?: HostedShell;
+}
+
+export interface HostedShell {
+  /** Signed-in username; null while signed out or still checking. */
+  readonly username: string | null;
+  /** Shown instead of the analysis pages until signed in with a project open. */
+  readonly gate?: ReactElement;
 }
 
 /**
@@ -124,7 +134,9 @@ export function AppShell({
   projectStatus = '',
   dataManager,
   onShowLogFolder,
+  hosted,
 }: AppShellProps): ReactElement {
+  const { pathname } = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [projectError, setProjectError] = useState('');
   const [openingProject, setOpeningProject] = useState(false);
@@ -134,7 +146,10 @@ export function AppShell({
   // sidebar tree (the page that fired it already has fresh data).
   const [dataVersion, setDataVersion] = useState(0);
   const bumpDataVersion = useCallback(() => setDataVersion((version) => version + 1), []);
-  const projectOpen = !projects || Boolean(projectPath);
+  // Desktop: a folder must be open. Hosted: a hosted project must be open.
+  // Plain HTTP (local API, demo): the server's single project is always open.
+  const projectOpen = hosted ? Boolean(projectPath) : !projects || Boolean(projectPath);
+  const gate = hosted?.gate && isAnalysisPath(pathname) ? hosted.gate : null;
   const { recent, refresh: refreshRecent, setRecent } = useRecentProjects(projects);
   const hasRecent = Boolean(projects?.recent && projects.openRecent);
   // The desktop app has no hosted accounts or hosted projects.
@@ -197,6 +212,19 @@ export function AppShell({
           />
           ArchaeoDash
         </span>
+        {hosted && (
+          <span className="hosted-controls">
+            {projectName && <span className="project-name" aria-label="Current project">{projectName}</span>}
+            {hosted.username && (
+              <NavLink to="/projects" className="project-open">
+                {projectPath ? 'Switch Project' : 'Open Project'}
+              </NavLink>
+            )}
+            <NavLink to="/account" className="hosted-user">
+              {hosted.username ?? 'Sign in'}
+            </NavLink>
+          </span>
+        )}
         {projects && (
           <span className="project-controls">
             <button type="button" className="project-open" onClick={() => void openProject()} disabled={openingProject}>
@@ -263,7 +291,9 @@ export function AppShell({
             <>
               {projectName && <p aria-label="Current project">Project: {projectName}</p>}
               <p className="sidebar-note">
-                {projects && !projectPath
+                {hosted && !projectPath
+                  ? 'Sign in and open a project to see its group files here.'
+                  : projects && !projectPath
                   ? 'Open a project folder to see its group files here.'
                   : 'Import source files, inspect project groups, then choose a group in an analysis view.'}
               </p>
@@ -296,7 +326,7 @@ export function AppShell({
                 </>
               )}
             </section>
-          ) : (
+          ) : gate ?? (
             <div key={`${projectGeneration}:${projectPath}:${dataVersion}`}>
               <KeepAliveOutlet />
             </div>

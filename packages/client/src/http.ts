@@ -89,6 +89,7 @@ import {
   type HostedFileMeta,
   type HostedProjectsService,
   type HostedProjectSummary,
+  type HostedWorkspaceService,
   type QuotaUsage,
 } from './transport.ts';
 
@@ -109,6 +110,9 @@ export class HttpTransport implements Transport {
   private readonly baseUrl: string;
   private readonly fetchImpl: FetchLike;
   private readonly eventSourceFactory?: EventSourceFactory;
+  /** `/w/<project-id>` while a hosted project is open, else empty. */
+  private workspacePrefix = '';
+  private unauthorizedHandler: (() => void) | null = null;
 
   readonly imports: ImportsService;
   readonly files: FilesService;
@@ -124,6 +128,7 @@ export class HttpTransport implements Transport {
   readonly hostedProjects: HostedProjectsService;
   readonly hostedFiles: HostedFilesService;
   readonly hostedTransformations: HostedTransformationsService;
+  readonly hostedWorkspace: HostedWorkspaceService;
 
   constructor(
     baseUrl: string = '',
@@ -149,10 +154,15 @@ export class HttpTransport implements Transport {
     this.hostedProjects = this.makeHostedProjects();
     this.hostedFiles = this.makeHostedFiles();
     this.hostedTransformations = this.makeHostedTransformations();
+    this.hostedWorkspace = this.makeHostedWorkspace();
   }
 
-  private url(path: string, query?: Record<string, string>): string {
-    const base = `${this.baseUrl}${path}`;
+  /**
+   * Request URL. Analysis routes get the hosted project prefix when one is
+   * set; `root` routes (account, catalog, preferences, app info) never do.
+   */
+  private url(path: string, query?: Record<string, string>, root = false): string {
+    const base = `${this.baseUrl}${root ? '' : this.workspacePrefix}${path}`;
     if (!query) return base;
     const params = new URLSearchParams(query);
     const qs = params.toString();
@@ -167,7 +177,7 @@ export class HttpTransport implements Transport {
   private async request<T>(
     method: string,
     path: string,
-    options?: { query?: Record<string, string>; body?: unknown; raw?: Uint8Array; signal?: AbortSignal },
+    options?: { query?: Record<string, string>; body?: unknown; raw?: Uint8Array; signal?: AbortSignal; root?: boolean },
   ): Promise<T> {
     const init: RequestInit = { method };
     if (options?.signal) init.signal = options.signal;
@@ -193,8 +203,20 @@ export class HttpTransport implements Transport {
         init.headers = { ...init.headers, 'x-csrf-token': csrf };
       }
     }
-    const res = await this.fetchImpl(this.url(path, options?.query), init);
+    const root = options?.root ?? false;
+    const scoped = !root && this.workspacePrefix !== '';
+    const res = await this.fetchImpl(this.url(path, options?.query, root), init);
+    if (scoped && res.status === 401) this.unauthorizedHandler?.();
     return this.unwrap<T>(res);
+  }
+
+  /** A request that is never scoped to the hosted project. */
+  private rootRequest<T>(
+    method: string,
+    path: string,
+    options?: { query?: Record<string, string>; body?: unknown; raw?: Uint8Array },
+  ): Promise<T> {
+    return this.request<T>(method, path, { ...options, root: true });
   }
 
   /** Normalizes a failed Response into a TransportError. */
@@ -226,7 +248,7 @@ export class HttpTransport implements Transport {
   }
 
   appInfo(): Promise<AppInfo> {
-    return this.request<AppInfo>('GET', '/healthz');
+    return this.rootRequest<AppInfo>('GET', '/healthz');
   }
   private makeImports(): ImportsService {
     return {
@@ -326,7 +348,7 @@ export class HttpTransport implements Transport {
         if (!this.eventSourceFactory) return () => {};
         let source: EventSourceLike;
         try {
-          source = this.eventSourceFactory(`${this.baseUrl}/api/v1/jobs/${encodeURIComponent(id)}/events`);
+          source = this.eventSourceFactory(this.url(`/api/v1/jobs/${encodeURIComponent(id)}/events`));
         } catch {
           return () => {};
         }
@@ -395,37 +417,37 @@ export class HttpTransport implements Transport {
 
   private makePreferences(): PreferencesService {
     return {
-      get: () => this.request<GetPreferencesResponse>('GET', '/api/v1/preferences'),
+      get: () => this.rootRequest<GetPreferencesResponse>('GET', '/api/v1/preferences'),
       put: async (key: PreferenceKey, value: unknown) => {
-        await this.request('PUT', '/api/v1/preferences', { body: { key, value } });
+        await this.rootRequest('PUT', '/api/v1/preferences', { body: { key, value } });
       },
     };
   }
 
   private makeHostedProjects(): HostedProjectsService {
     return {
-      list: () => this.request<{ projects: HostedProjectSummary[] }>('GET', '/api/v1/projects'),
+      list: () => this.rootRequest<{ projects: HostedProjectSummary[] }>('GET', '/api/v1/projects'),
       create: async (name) =>
-        this.request<HostedProjectSummary>('POST', '/api/v1/projects', {
+        this.rootRequest<HostedProjectSummary>('POST', '/api/v1/projects', {
           body: { name },
         }),
       get: (projectId) =>
-        this.request<HostedProjectSummary>(
+        this.rootRequest<HostedProjectSummary>(
           'GET',
           `/api/v1/projects/${encodeURIComponent(projectId)}`,
         ),
       delete: async (projectId) => {
-        await this.request('DELETE', `/api/v1/projects/${encodeURIComponent(projectId)}`);
+        await this.rootRequest('DELETE', `/api/v1/projects/${encodeURIComponent(projectId)}`);
       },
       quota: () =>
-        this.request<QuotaUsage>('GET', '/api/v1/quota'),
+        this.rootRequest<QuotaUsage>('GET', '/api/v1/quota'),
     };
   }
 
   private makeHostedFiles(): HostedFilesService {
     return {
       list: (projectId) =>
-        this.request<{ files: HostedFileMeta[] }>('GET', '/api/v1/files', {
+        this.rootRequest<{ files: HostedFileMeta[] }>('GET', '/api/v1/files', {
           query: { project_id: projectId },
         }),
       upload: async (request) => {
@@ -434,29 +456,29 @@ export class HttpTransport implements Transport {
           path: request.path,
         };
         if (request.filename !== undefined) query.filename = request.filename;
-        return this.request<HostedFileMeta>('POST', '/api/v1/files', {
+        return this.rootRequest<HostedFileMeta>('POST', '/api/v1/files', {
           query,
           raw: request.content,
         });
       },
       metadata: (fileId) =>
-        this.request<HostedFileMeta>('GET', `/api/v1/files/${encodeURIComponent(fileId)}`),
+        this.rootRequest<HostedFileMeta>('GET', `/api/v1/files/${encodeURIComponent(fileId)}`),
       download: async (fileId) => {
         // Metadata and bytes come from the two authorized endpoints; the
         // bytes response carries no JSON envelope so this bypasses unwrap.
-        const meta = await this.request<HostedFileMeta>(
+        const meta = await this.rootRequest<HostedFileMeta>(
           'GET',
           `/api/v1/files/${encodeURIComponent(fileId)}`,
         );
         const res = await this.fetchImpl(
-          this.url(`/api/v1/files/${encodeURIComponent(fileId)}/download`),
+          this.url(`/api/v1/files/${encodeURIComponent(fileId)}/download`, undefined, true),
           { method: 'GET' },
         );
         if (!res.ok) throw await this.toError(res);
         return { meta, content: new Uint8Array(await res.arrayBuffer()) };
       },
       delete: async (fileId) => {
-        await this.request('DELETE', `/api/v1/files/${encodeURIComponent(fileId)}`);
+        await this.rootRequest('DELETE', `/api/v1/files/${encodeURIComponent(fileId)}`);
       },
     };
   }
@@ -466,23 +488,37 @@ export class HttpTransport implements Transport {
       `/api/v1/projects/${encodeURIComponent(projectId)}/transformations`;
     return {
       save: (request) =>
-        this.request('POST', base(request.projectId), {
+        this.rootRequest('POST', base(request.projectId), {
           body: { definition: request.definition },
         }),
-      list: (projectId) => this.request('GET', base(projectId)),
+      list: (projectId) => this.rootRequest('GET', base(projectId)),
       get: (projectId, transformationId) =>
-        this.request('GET', `${base(projectId)}/${encodeURIComponent(transformationId)}`),
+        this.rootRequest('GET', `${base(projectId)}/${encodeURIComponent(transformationId)}`),
       delete: async (projectId, transformationId) => {
-        await this.request('DELETE', `${base(projectId)}/${encodeURIComponent(transformationId)}`);
+        await this.rootRequest('DELETE', `${base(projectId)}/${encodeURIComponent(transformationId)}`);
+      },
+    };
+  }
+
+  private makeHostedWorkspace(): HostedWorkspaceService {
+    let current: string | null = null;
+    return {
+      set: (projectId) => {
+        current = projectId;
+        this.workspacePrefix = projectId ? `/w/${encodeURIComponent(projectId)}` : '';
+      },
+      current: () => current,
+      onUnauthorized: (handler) => {
+        this.unauthorizedHandler = handler;
       },
     };
   }
 
   private makeAuth(): AuthService {
     return {
-      consent: () => this.request<ConsentInfo>('GET', '/api/v1/auth/consent'),
+      consent: () => this.rootRequest<ConsentInfo>('GET', '/api/v1/auth/consent'),
       register: async (request) => {
-        await this.request('POST', '/api/v1/auth/register', {
+        await this.rootRequest('POST', '/api/v1/auth/register', {
           body: {
             username: request.username,
             email: request.email,
@@ -492,10 +528,10 @@ export class HttpTransport implements Transport {
         });
       },
       verify: async (token: string) => {
-        await this.request('POST', '/api/v1/auth/verify', { body: { token } });
+        await this.rootRequest('POST', '/api/v1/auth/verify', { body: { token } });
       },
       login: async (request) => {
-        const session = await this.request<SessionInfo>('POST', '/api/v1/auth/login', {
+        const session = await this.rootRequest<SessionInfo>('POST', '/api/v1/auth/login', {
           body: {
             identifier: request.identifier,
             password: request.password,
@@ -506,20 +542,20 @@ export class HttpTransport implements Transport {
         });
         return session;
       },
-      session: () => this.request<SessionInfo>('GET', '/api/v1/auth/session'),
+      session: () => this.rootRequest<SessionInfo>('GET', '/api/v1/auth/session'),
       logout: async () => {
-        await this.request('POST', '/api/v1/auth/logout');
+        await this.rootRequest('POST', '/api/v1/auth/logout');
       },
       logoutAll: async () => {
-        await this.request('POST', '/api/v1/auth/logout-all');
+        await this.rootRequest('POST', '/api/v1/auth/logout-all');
       },
       requestPasswordReset: async (email: string) => {
-        await this.request('POST', '/api/v1/auth/password-reset/request', {
+        await this.rootRequest('POST', '/api/v1/auth/password-reset/request', {
           body: { email },
         });
       },
       confirmPasswordReset: async (request) => {
-        await this.request('POST', '/api/v1/auth/password-reset/confirm', {
+        await this.rootRequest('POST', '/api/v1/auth/password-reset/confirm', {
           body: { token: request.token, new_password: request.newPassword },
         });
       },

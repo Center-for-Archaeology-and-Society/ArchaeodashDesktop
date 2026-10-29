@@ -10,9 +10,11 @@ export default defineConfig({
   build: { outDir: 'dist', sourcemap: true },
   server: {
     proxy: {
-      // Axum serves /healthz at the root and the API under /api/v1.
+      // Axum serves /healthz at the root and the API under /api/v1; the
+      // hosted server serves each project's analysis API under /w/<id>/.
       '/api': { target: apiTarget, changeOrigin: true },
       '/healthz': { target: apiTarget, changeOrigin: true },
+      '/w/': { target: apiTarget, changeOrigin: true },
     },
   },
 });

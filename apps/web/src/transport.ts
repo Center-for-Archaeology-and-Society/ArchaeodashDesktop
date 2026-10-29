@@ -20,6 +20,11 @@ export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
+/** `?demo`: the synthetic in-memory project (never hosted accounts). */
+export function isDemoMode(): boolean {
+  return typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('demo');
+}
+
 /** `METHOD /path` of a fetch call, for activity labels. */
 export function requestKey(url: string, init?: RequestInit): string {
   const method = (init?.method ?? 'GET').toUpperCase();
@@ -70,7 +75,7 @@ export async function createTransport(): Promise<Transport> {
     return observeJobResponse(key, activity.track(activityLabel(key), send(input, init)));
   };
   // `?demo`: synthetic in-memory project for UI review in a plain browser.
-  if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('demo')) {
+  if (isDemoMode()) {
     const { demoFetch, demoEventSource } = await import('./demo/demo-fetch.ts');
     return new HttpTransport(undefined, trackedFetch(demoFetch), demoEventSource);
   }

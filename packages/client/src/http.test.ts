@@ -499,3 +499,75 @@ test('http: ordination calls pass the abort signal to fetch', async () => {
   assert.equal(seen[0], controller.signal);
   assert.equal(seen[1], undefined);
 });
+
+test('http: an open hosted project scopes analysis routes; account, catalog and preferences stay at the root', async () => {
+  const urls: string[] = [];
+  const sources: string[] = [];
+  const transport = new HttpTransport(
+    '',
+    async (input) => {
+      urls.push(String(input));
+      return new Response(JSON.stringify({ groups: [], projects: [], files: [], preferences: [], authenticated: false }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+    (url) => {
+      sources.push(url);
+      return { addEventListener() {}, close() {}, onerror: null } as never;
+    },
+  );
+  const id = '0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa';
+  await transport.groups.scan();
+  transport.hostedWorkspace.set(id);
+  assert.equal(transport.hostedWorkspace.current(), id);
+  await transport.groups.scan();
+  await transport.files.metadata('f1');
+  await transport.jobs.get('j1');
+  transport.jobs.subscribe?.('j1', () => {});
+  await transport.auth.session();
+  await transport.hostedProjects.list();
+  await transport.hostedFiles.list(id);
+  await transport.preferences.get();
+  await transport.appInfo();
+  transport.hostedWorkspace.set(null);
+  await transport.groups.scan();
+  assert.deepEqual(urls, [
+    '/api/v1/groups',
+    `/w/${id}/api/v1/groups`,
+    `/w/${id}/api/v1/files/f1`,
+    `/w/${id}/api/v1/jobs/j1`,
+    '/api/v1/auth/session',
+    '/api/v1/projects',
+    `/api/v1/files?project_id=${id}`,
+    '/api/v1/preferences',
+    '/healthz',
+    '/api/v1/groups',
+  ]);
+  assert.deepEqual(sources, [`/w/${id}/api/v1/jobs/j1/events`]);
+});
+
+test('http: a 401 on a scoped request calls the session-ended handler; root 401s do not', async () => {
+  const transport = new HttpTransport('', async () =>
+    new Response(JSON.stringify({ code: 'unauthorized', message: 'Sign in to continue.' }), {
+      status: 401,
+      headers: { 'content-type': 'application/json' },
+    }),
+  );
+  let ended = 0;
+  transport.hostedWorkspace.onUnauthorized(() => {
+    ended += 1;
+  });
+  // No project open: nothing is scoped, so nothing is a session end.
+  await assert.rejects(transport.groups.scan());
+  assert.equal(ended, 0);
+  transport.hostedWorkspace.set('0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa');
+  await assert.rejects(transport.auth.session());
+  await assert.rejects(transport.hostedProjects.list());
+  assert.equal(ended, 0, 'root routes are expected to 401 while signed out');
+  await assert.rejects(transport.groups.scan(), (err: unknown) => err instanceof TransportError && err.envelope.code === 'unauthorized');
+  assert.equal(ended, 1);
+  transport.hostedWorkspace.onUnauthorized(null);
+  await assert.rejects(transport.groups.scan());
+  assert.equal(ended, 1, 'removed handler is not called');
+});

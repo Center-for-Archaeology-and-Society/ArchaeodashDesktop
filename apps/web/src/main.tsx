@@ -4,10 +4,10 @@
  * async resolves, then hydrate the persisted theme preference without the
  * legacy startup race.
  */
-import { StrictMode, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { createRoot } from 'react-dom/client';
-import { createBrowserRouter, Navigate, Outlet, RouterProvider, type RouteObject } from 'react-router';
-import type { AppInfo, Transport } from '@archaeodash/client';
+import { createBrowserRouter, Navigate, Outlet, RouterProvider, useLocation, useNavigate, type RouteObject } from 'react-router';
+import type { AppInfo, AuthService, Transport } from '@archaeodash/client';
 import { AppShell } from './shell/AppShell.tsx';
 import { AnalysisSetupProvider } from './analysis-setup/AnalysisSetupContext.tsx';
 import { GroupInclusionProvider } from './datasets/GroupInclusion.tsx';
@@ -35,10 +35,31 @@ import { applyTheme, hydrateTheme, normalizeTheme, readStoredTheme, saveThemePre
 import { AppErrorPage } from './ui/ErrorBoundary.tsx';
 import { HELP_WINDOW_PATH, revealLogFolder } from './ui/external.tsx';
 import { errorText, notify } from './ui/toast-store.ts';
-import { createTransport } from './transport.ts';
+import { createTransport, isDemoMode } from './transport.ts';
+import {
+  HostedGate,
+  HostedWorkspaceContext,
+  observeSession,
+  readLastProject,
+  saveLastProject,
+  type HostedGateState,
+  type HostedWorkspace,
+} from './shell/hosted.tsx';
 import './shell/shell.css';
 
-function AppRoot({ transport }: { transport: Transport }): ReactElement {
+/**
+ * Which server the web app talks to. `plain`: a local single-project API
+ * (development, browser e2e, `?demo`). `hosted`: the hosted server with
+ * accounts; `username` is null while signed out.
+ */
+type ServerMode = { mode: 'checking' } | { mode: 'plain' } | { mode: 'hosted'; username: string | null };
+
+/** The web app can use hosted accounts: HTTP transport, not the demo. */
+function hostedCapable(transport: Transport): boolean {
+  return transport.kind === 'http' && Boolean(transport.auth && transport.hostedWorkspace) && !isDemoMode();
+}
+
+function AppRoot({ transport, sessionEvents }: { transport: Transport; sessionEvents: EventTarget }): ReactElement {
   const [theme, setTheme] = useState<string>(() => readStoredTheme());
   const [appInfo, setAppInfo] = useState<AppInfo | undefined>(undefined);
   const [projectPath, setProjectPath] = useState('');
@@ -96,8 +117,127 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
   const desktop = transport.kind === 'tauri';
   const shellInfo = useMemo(() => ({ appInfo, desktop }), [appInfo, desktop]);
 
+  // ---- Hosted server: session, project scoping, session expiry ----
+  const navigate = useNavigate();
+  const location = useLocation();
+  const locationRef = useRef(location);
+  locationRef.current = location;
+  const [server, setServer] = useState<ServerMode>(() => (hostedCapable(transport) ? { mode: 'checking' } : { mode: 'plain' }));
+  const username = server.mode === 'hosted' ? server.username : null;
+  const usernameRef = useRef<string | null>(null);
+  usernameRef.current = username;
+  /** Where to go back to after signing in again (set when a session ends). */
+  const returnTo = useRef<string | null>(null);
+  const sessionEnded = useRef(false);
+
+  const refreshSession = useCallback(async () => {
+    const auth = transport.auth;
+    if (!hostedCapable(transport) || !auth) return;
+    try {
+      const info = await auth.session();
+      setServer({ mode: 'hosted', username: info.authenticated ? info.username ?? '' : null });
+    } catch {
+      // No session route: a plain single-project API. Later failures keep
+      // the current state (a network blip is not a mode change).
+      setServer((current) => (current.mode === 'checking' ? { mode: 'plain' } : current));
+    }
+  }, [transport]);
+
+  useEffect(() => {
+    void refreshSession();
+    const onChange = () => void refreshSession();
+    sessionEvents.addEventListener('change', onChange);
+    return () => sessionEvents.removeEventListener('change', onChange);
+  }, [refreshSession, sessionEvents]);
+
+  const setHostedProject = useCallback((project: { project_id: string; name: string } | null) => {
+    transport.hostedWorkspace?.set(project?.project_id ?? null);
+    const generation = projectGenerationRef.current + 1;
+    projectGenerationRef.current = generation;
+    setProjectPath(project?.project_id ?? '');
+    setProjectName(project?.name ?? '');
+    setProjectGeneration(generation);
+  }, [transport]);
+
+  const openHostedProject = useCallback((project: { project_id: string; name: string }) => {
+    sessionEnded.current = false;
+    setHostedProject(project);
+    if (usernameRef.current) saveLastProject(usernameRef.current, project.project_id);
+    if (locationRef.current.pathname === '/projects') navigate('/');
+  }, [navigate, setHostedProject]);
+
+  // Sign-in: reopen this user's last project, then leave the Account page.
+  // Sign-out: close the project.
+  const previousUser = useRef<string | null>(null);
+  useEffect(() => {
+    if (server.mode !== 'hosted') return;
+    const before = previousUser.current;
+    previousUser.current = username;
+    if (username === before) return;
+    if (username === null) {
+      setHostedProject(null);
+      return;
+    }
+    if (before !== null) setHostedProject(null); // a different user signed in
+    void hydrateTheme(transport, readStoredTheme()).then(setTheme);
+    let cancelled = false;
+    void (async () => {
+      const last = readLastProject(username);
+      let reopened = false;
+      if (last && transport.hostedProjects) {
+        try {
+          const project = await transport.hostedProjects.get(last);
+          if (cancelled) return;
+          sessionEnded.current = false;
+          setHostedProject(project);
+          reopened = true;
+        } catch {
+          saveLastProject(username, null); // deleted, or no longer reachable
+        }
+      }
+      if (cancelled) return;
+      if (locationRef.current.pathname === '/account') {
+        const target = returnTo.current ?? (reopened ? '/' : '/projects');
+        returnTo.current = null;
+        navigate(target);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [server.mode, username, transport, navigate, setHostedProject]);
+
+  // A scoped request refused with 401: the session ended while working.
+  useEffect(() => {
+    const workspace = transport.hostedWorkspace;
+    if (!workspace || server.mode !== 'hosted') return;
+    workspace.onUnauthorized(() => {
+      if (sessionEnded.current) return;
+      sessionEnded.current = true;
+      const here = locationRef.current;
+      returnTo.current = `${here.pathname}${here.search}`;
+      notify({ kind: 'error', text: 'Your session has ended. Sign in again to continue.' });
+      setServer({ mode: 'hosted', username: null });
+      navigate('/account');
+    });
+    return () => workspace.onUnauthorized(null);
+  }, [transport, server.mode, navigate]);
+
+  const gateState: HostedGateState | null =
+    server.mode === 'checking' ? 'checking'
+      : server.mode === 'hosted' ? (username === null ? 'signed-out' : projectPath ? null : 'no-project')
+      : null;
+  const hostedShell = server.mode === 'plain'
+    ? undefined
+    : { username, gate: gateState ? <HostedGate state={gateState} /> : undefined };
+  const hostedWorkspace = useMemo<HostedWorkspace | null>(
+    () => (server.mode === 'hosted' && username !== null ? { projectId: projectPath, open: openHostedProject } : null),
+    [server.mode, username, projectPath, openHostedProject],
+  );
+
   return (
     <ShellInfoContext.Provider value={shellInfo}>
+    <HostedWorkspaceContext.Provider value={hostedWorkspace}>
     <ExportsProvider service={transport.exports}>
     <AnalysisSetupProvider service={transport.transformations} generation={projectGeneration}>
     <GroupInclusionProvider key={projectPath} projectKey={projectPath || 'default'}>
@@ -113,6 +253,7 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
         void saveThemePreference(transport, chosen);
       }}
       onShowLogFolder={desktop ? showLogFolder : undefined}
+      hosted={hostedShell}
       appInfo={appInfo}
       projects={transport.projects}
       dataManager={transport}
@@ -131,6 +272,7 @@ function AppRoot({ transport }: { transport: Transport }): ReactElement {
     </GroupInclusionProvider>
     </AnalysisSetupProvider>
     </ExportsProvider>
+    </HostedWorkspaceContext.Provider>
     </ShellInfoContext.Provider>
   );
 }
@@ -140,24 +282,21 @@ function showLogFolder(): void {
 }
 
 /** Hosted-only routes: accounts, hosted projects, and email links. */
-function hostedRoutes(transport: Transport): RouteObject[] {
+function hostedRoutes(transport: Transport, auth: AuthService | undefined): RouteObject[] {
   return [
-    { path: 'account', element: <AccountPage auth={transport.auth} /> },
+    { path: 'account', element: <AccountPage auth={auth} /> },
     {
       path: 'projects',
       element: (
-        <HostedProjectsPage
-          projects={transport.hostedProjects}
-          files={transport.hostedFiles}
-        />
+        <HostedProjectsPage projects={transport.hostedProjects} />
       ),
     },
-    { path: 'auth/verify', element: <VerifyEmailPage auth={transport.auth} /> },
-    { path: 'auth/reset', element: <ResetPasswordPage auth={transport.auth} /> },
+    { path: 'auth/verify', element: <VerifyEmailPage auth={auth} /> },
+    { path: 'auth/reset', element: <ResetPasswordPage auth={auth} /> },
   ];
 }
 
-function routeChildren(deps: ExploreDeps, ordinationDeps: OrdinationDeps, visualizeDeps: VisualizeDeps, analysisDeps: AnalysisDeps, transport: Transport): RouteObject[] {
+function routeChildren(deps: ExploreDeps, ordinationDeps: OrdinationDeps, visualizeDeps: VisualizeDeps, analysisDeps: AnalysisDeps, transport: Transport, auth: AuthService | undefined): RouteObject[] {
   return [
     { index: true, element: <HomePage /> },
     // The Data Manager now lives in the sidebar; keep old /data links working.
@@ -174,7 +313,7 @@ function routeChildren(deps: ExploreDeps, ordinationDeps: OrdinationDeps, visual
     { path: 'info/terms', element: <TermsPage /> },
     { path: 'info/privacy', element: <PrivacyPage /> },
     // The desktop app has no hosted accounts or hosted projects.
-    ...(transport.kind === 'tauri' ? [] : hostedRoutes(transport)),
+    ...(transport.kind === 'tauri' ? [] : hostedRoutes(transport, auth)),
     { path: '*', element: <HomePage /> },
   ];
 }
@@ -196,12 +335,17 @@ export function createAppRouter(transport: Transport) {
     ordination: transport.ordination,
     exports: transport.exports,
   };
+  // Sign-in and sign-out on the Account page notify the app root.
+  const sessionEvents = new EventTarget();
+  const auth = transport.auth && hostedCapable(transport)
+    ? observeSession(transport.auth, () => sessionEvents.dispatchEvent(new Event('change')))
+    : transport.auth;
   return createBrowserRouter([
     {
-      element: <AppRoot transport={transport} />,
+      element: <AppRoot transport={transport} sessionEvents={sessionEvents} />,
       // Last resort for errors outside a page (pages have their own boundary).
       errorElement: <AppErrorPage />,
-      children: routeChildren(exploreDeps, ordinationDeps, visualizeDeps, transport, transport),
+      children: routeChildren(exploreDeps, ordinationDeps, visualizeDeps, transport, transport, auth),
     },
   ]);
 }

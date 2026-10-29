@@ -1,20 +1,17 @@
 /**
- * Hosted projects page (Section 10.2 client surface): the per-account
- * project catalog — list, create, and inspect the files of a selected
- * project. Rendered only when the transport exposes `hostedProjects`
- * (hosted HTTP mode); desktop projects are opened directories instead.
+ * Hosted projects page (Section 10.2 client surface): the signed-in user's
+ * projects — list, create, and open one. Opening a project points the
+ * analysis pages and the Data Manager at it; importing source files happens
+ * in the Data Manager, inside the open project. Rendered only when the
+ * transport exposes `hostedProjects` (hosted HTTP mode); desktop projects
+ * are opened directories instead.
  */
-import { useCallback, useEffect, useState, type FormEvent, type ReactElement } from 'react';
-import type {
-  HostedFileMeta,
-  HostedFilesService,
-  HostedProjectsService,
-  QuotaUsage,
-} from '@archaeodash/client';
+import { useCallback, useContext, useEffect, useState, type FormEvent, type ReactElement } from 'react';
+import type { HostedProjectsService } from '@archaeodash/client';
+import { HostedWorkspaceContext } from './hosted.tsx';
 
 export interface HostedProjectsPageProps {
   readonly projects?: HostedProjectsService;
-  readonly files?: HostedFilesService;
 }
 
 function errorText(error: unknown): string {
@@ -27,36 +24,24 @@ function errorText(error: unknown): string {
       ? String(envelope.code)
       : '';
   switch (code) {
-    case 'quota_exceeded':
-      return 'Storage quota exceeded. Delete files or contact the operator.';
-    case 'invalid_path':
-      return 'That path is not allowed (relative, no "..", csv/tsv/xlsx).';
-    case 'unsupported_format':
-      return 'Unsupported format: use csv, tsv, or xlsx.';
+    case 'invalid_project_name':
+      return 'Project names are 1–200 characters.';
+    case 'unauthorized':
     case 'http_401':
-      return 'Sign in on the Account page to manage hosted projects.';
+      return 'Sign in on the Account page to see your projects.';
     default:
       return 'Something went wrong. Please try again.';
   }
 }
 
-export function HostedProjectsPage({ projects, files }: HostedProjectsPageProps): ReactElement {
+export function HostedProjectsPage({ projects }: HostedProjectsPageProps): ReactElement {
   const [list, setList] = useState<{ project_id: string; name: string }[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [files_, setFiles] = useState<HostedFileMeta[]>([]);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [quota, setQuota] = useState<QuotaUsage | null>(null);
-
-  const refreshQuota = useCallback(() => {
-    if (!projects) return;
-    projects
-      .quota()
-      .then((usage) => setQuota(usage))
-      .catch(() => setQuota(null));
-  }, [projects]);
+  // Hosted server, signed in: opening a project scopes the analysis pages to it.
+  const workspace = useContext(HostedWorkspaceContext);
 
   const refreshProjects = useCallback(() => {
     if (!projects) return;
@@ -71,43 +56,14 @@ export function HostedProjectsPage({ projects, files }: HostedProjectsPageProps)
       .finally(() => setBusy(false));
   }, [projects]);
 
-  const refreshFiles = useCallback(
-    (projectId: string) => {
-      if (!files) return;
-      setBusy(true);
-      files
-        .list(projectId)
-        .then((res) => {
-          setFiles(res.files);
-          setError('');
-        })
-        .catch((err) => setError(errorText(err)))
-        .finally(() => setBusy(false));
-    },
-    [files],
-  );
-
   useEffect(() => {
     refreshProjects();
-    refreshQuota();
-  }, [refreshProjects, refreshQuota]);
-
-  useEffect(() => {
-    if (selected) refreshFiles(selected);
-    else setFiles([]);
-  }, [selected, refreshFiles]);
+  }, [refreshProjects]);
 
   if (!projects) {
     return (
       <section aria-labelledby="projects-heading">
         <h1 id="projects-heading">Projects</h1>
-      {quota && (
-        <p aria-label="storage usage">
-          {quota.file_count} file{quota.file_count === 1 ? '' : 's'} ·{' '}
-          {quota.logical_bytes.toLocaleString()} of{' '}
-          {quota.limit_bytes.toLocaleString()} bytes used
-        </p>
-      )}
         <p>Hosted projects require a hosted deployment and a signed-in account.</p>
       </section>
     );
@@ -120,59 +76,12 @@ export function HostedProjectsPage({ projects, files }: HostedProjectsPageProps)
     setBusy(true);
     projects
       .create(trimmed)
-      .then(() => {
+      .then((created) => {
         setName('');
         setNotice(`Project “${trimmed}” created.`);
         setError('');
-        refreshProjects();
-        refreshQuota();
-      })
-      .catch((err) => {
-        setNotice('');
-        setError(errorText(err));
-      })
-      .finally(() => setBusy(false));
-  };
-
-  const upload = (event: FormEvent<HTMLFormElement> & { target: HTMLFormElement }) => {
-    event.preventDefault();
-    if (!files || !selected) return;
-    const input = event.target.elements.namedItem('file') as HTMLInputElement | null;
-    const pathInput = event.target.elements.namedItem('path') as HTMLInputElement | null;
-    const file = input?.files?.[0];
-    const path = (pathInput?.value ?? '').trim() || file?.name;
-    if (!file || !path) return;
-    setBusy(true);
-    file
-      .arrayBuffer()
-      .then((buffer) =>
-        files.upload({
-          projectId: selected,
-          path,
-          content: new Uint8Array(buffer),
-        }),
-      )
-      .then(() => {
-        setError('');
-        refreshFiles(selected);
-        refreshQuota();
-      })
-      .catch((err) => {
-        setNotice('');
-        setError(errorText(err));
-      })
-      .finally(() => setBusy(false));
-  };
-
-  const removeFile = (fileId: string) => {
-    if (!files || !selected) return;
-    setBusy(true);
-    files
-      .delete(fileId)
-      .then(() => {
-        setError('');
-        refreshFiles(selected);
-        refreshQuota();
+        if (workspace && created) workspace.open(created);
+        else refreshProjects();
       })
       .catch((err) => {
         setNotice('');
@@ -184,13 +93,7 @@ export function HostedProjectsPage({ projects, files }: HostedProjectsPageProps)
   return (
     <section aria-labelledby="projects-heading">
       <h1 id="projects-heading">Projects</h1>
-      {quota && (
-        <p aria-label="storage usage">
-          {quota.file_count} file{quota.file_count === 1 ? '' : 's'} ·{' '}
-          {quota.logical_bytes.toLocaleString()} of{' '}
-          {quota.limit_bytes.toLocaleString()} bytes used
-        </p>
-      )}
+      <p>Open a project to work with it. Import source files from the Data Manager once the project is open.</p>
       {error && (
         <p role="alert" className="form-error">
           {error}
@@ -219,71 +122,28 @@ export function HostedProjectsPage({ projects, files }: HostedProjectsPageProps)
       {list.length === 0 ? (
         <p>No projects yet.</p>
       ) : (
-        <ul aria-label="Hosted projects">
-          {list.map((project) => (
-            <li key={project.project_id}>
-              <button
-                type="button"
-                onClick={() => setSelected(project.project_id)}
-                aria-pressed={selected === project.project_id}
-              >
-                {project.name}
-              </button>
-            </li>
-          ))}
+        <ul aria-label="Hosted projects" className="hosted-project-list">
+          {list.map((project) => {
+            const isOpen = workspace?.projectId === project.project_id;
+            return (
+              <li key={project.project_id}>
+                <span className="hosted-project-name">{project.name}</span>
+                {workspace &&
+                  (isOpen ? (
+                    <span className="project-current">Open now</span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => workspace.open(project)}
+                      aria-label={`Open ${project.name}`}
+                    >
+                      Open
+                    </button>
+                  ))}
+              </li>
+            );
+          })}
         </ul>
-      )}
-      {selected && files && (
-        <>
-          <h2>Files</h2>
-          <form
-            onSubmit={upload}
-            aria-label="Upload file"
-          >
-            <label>
-              Logical path (e.g. sources/INAA.csv)
-              <input name="path" placeholder="sources/INAA.csv" />
-            </label>
-            <label>
-              File
-              <input type="file" name="file" accept=".csv,.tsv,.xlsx" required />
-            </label>
-            <button type="submit" disabled={busy}>
-              Upload
-            </button>
-          </form>
-          {files_.length === 0 ? (
-            <p>No files in this project.</p>
-          ) : (
-            <table>
-              <caption>
-                Files in the selected project (logical path, size, parse state)
-              </caption>
-              <thead>
-                <tr>
-                  <th scope="col">Path</th>
-                  <th scope="col">Size</th>
-                  <th scope="col">Parse</th>
-                  <th scope="col">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {files_.map((file) => (
-                  <tr key={file.file_id}>
-                    <td>{file.logical_path}</td>
-                    <td>{file.size_bytes} B</td>
-                    <td>{file.parse_state}</td>
-                    <td>
-                      <button type="button" onClick={() => removeFile(file.file_id)}>
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </>
       )}
     </section>
   );

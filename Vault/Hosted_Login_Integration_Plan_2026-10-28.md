@@ -57,7 +57,7 @@ A can later move to B behind the same HTTP surface.
 6. **Account deletion and retention.** Deleting an account or project also deletes its workspace folders, and the retention sweep covers them.
 
 ### Web UI (`apps/web`)
-1. **Hosted startup flow:** no session → Account (login or register); after login → Projects. Choosing a project creates `HttpTransport` with base URL `/w/<project-id>` and opens the Data Manager.
+1. **Hosted startup flow** (done 2026-10-28, see [[Hosted_Web_Login_Flow_2026-10-28]]): no session → Account (login or register); after login → Projects. Choosing a project creates `HttpTransport` with base URL `/w/<project-id>` and opens the Data Manager.
 2. **Top bar:** show the signed-in user, the current project, a project switcher and Log out.
 3. **Expired sessions:** a 401 from any call goes to the login page and comes back afterwards.
 4. **Hide desktop-only controls** (there is already a `desktop` flag in `ShellInfoContext`).
