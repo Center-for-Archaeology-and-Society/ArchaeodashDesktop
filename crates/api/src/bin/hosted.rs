@@ -12,6 +12,7 @@
 //! `AUTH_ALLOW_DEV_EMAIL=1` so it can never silently serve production.
 
 use archaeodash_api::auth::AuthState;
+use archaeodash_api::hosted::serve_web_ui;
 use archaeodash_api::hosted_files::HostedFileStore;
 use archaeodash_api::workspaces::{WorkspaceRegistry, DEFAULT_OPEN_WORKSPACES};
 use archaeodash_api::{finalize_hosted_router, hosted_router, HostedState};
@@ -124,7 +125,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         workspaces,
     };
 
-    let app = finalize_hosted_router(hosted_router(state));
+    // AUTH_WEB_DIR: the built web client (`apps/web/dist`), served for all
+    // non-API paths. Unset: API only (e.g. behind a separate static server).
+    let mut app = hosted_router(state);
+    if let Some(dir) = std::env::var("AUTH_WEB_DIR")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    {
+        if !std::path::Path::new(&dir).join("index.html").is_file() {
+            return Err(format!("AUTH_WEB_DIR has no index.html: {dir}").into());
+        }
+        tracing::info!(web_dir = %dir, "serving the web client");
+        app = serve_web_ui(app, dir);
+    }
+    let app = finalize_hosted_router(app);
 
     // Retention sweep (Section 6.9): hourly, purges catalog tombstones older
     // than AUTH_RETENTION_DAYS (default 30) along with their trash objects.

@@ -47,7 +47,7 @@ A can later move to B behind the same HTTP surface.
    - then pass the request to that project's router.
 
    A path prefix, rather than a header, keeps SSE job events working, because `EventSource` cannot send headers.
-3. **One server binary.** `hosted` serves auth, projects, the scoped analysis routes, health checks, and the static `dist/` (with an `index.html` fallback for `/account`, `/projects` and the other routes). Apply the existing security headers and correlation IDs to all of it.
+3. **One server binary** (done 2026-10-28, see [[Hosted_Single_Image_2026-10-28]]). `hosted` serves auth, projects, the scoped analysis routes, health checks, and the static `dist/` (with an `index.html` fallback for `/account`, `/projects` and the other routes). Apply the existing security headers and correlation IDs to all of it.
 4. **Quota and limits:**
    - check workspace size against `AUTH_QUOTA_BYTES` before upload or import commit;
    - set a request body limit;

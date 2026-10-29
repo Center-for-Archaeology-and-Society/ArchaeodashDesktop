@@ -1,0 +1,24 @@
+# Build context for deploy/container/Dockerfile (BuildKit reads this file
+# instead of the repository's .dockerignore, which belongs to the R image).
+# Allow only what the image needs.
+*
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.base.json
+!packages/
+!apps/web/
+!apps/desktop/src-tauri/
+!crates/
+!tests/parity/
+!rust-toolchain.toml
+!Cargo.toml
+!Cargo.lock
+!deploy/container/healthcheck
+
+# Never local build output, dependencies or secrets.
+**/node_modules
+**/dist
+**/target
+**/.env
+**/.env.*

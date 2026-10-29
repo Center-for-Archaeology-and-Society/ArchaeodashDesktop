@@ -113,6 +113,9 @@ pub fn hosted_router(state: HostedState) -> Router {
         )
         .with_state(state.clone());
     let health = Router::new()
+        // App name and version for the web client's footer (same as the
+        // local API's `/healthz`); readiness stays on /api/v1/health/ready.
+        .route("/healthz", get(crate::healthz))
         .route("/api/v1/health/live", get(health_live))
         .route("/api/v1/health/ready", get(health_ready))
         .with_state(state);
@@ -1136,6 +1139,33 @@ async fn observe_request(request: Request<axum::body::Body>, next: Next) -> Resp
     response
 }
 
+/// Serves the built web client (`vite build` output) for every path no API
+/// route claims: files from `dist`, and `index.html` for client-side routes
+/// such as `/account` or `/explore`. Unknown API paths (`/api/...`,
+/// `/w/...`, `/healthz`) stay JSON 404s so clients never mistake the app
+/// page for an API response. Apply before [`finalize_hosted_router`] so the
+/// security headers cover the static files too.
+pub fn serve_web_ui(router: Router, dist: impl Into<std::path::PathBuf>) -> Router {
+    use tower::ServiceExt;
+    let dist = dist.into();
+    let files = tower_http::services::ServeDir::new(&dist).fallback(
+        tower_http::services::ServeFile::new(dist.join("index.html")),
+    );
+    router.fallback(move |request: Request<axum::body::Body>| {
+        let files = files.clone();
+        async move {
+            let path = request.uri().path();
+            if path.starts_with("/api/") || path.starts_with("/w/") || path == "/healthz" {
+                return (StatusCode::NOT_FOUND, json_error_envelope("not_found")).into_response();
+            }
+            match files.oneshot(request).await {
+                Ok(response) => response.map(axum::body::Body::new),
+                Err(never) => match never {},
+            }
+        }
+    })
+}
+
 /// Composes the full hosted middleware stack, innermost first:
 /// request-id assignment, then request logging (sees the assigned ID),
 /// then security headers on every response.
@@ -1236,6 +1266,68 @@ mod header_hygiene {
             .expect("infallible");
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
         let _ = (cookie, csrf); // used by the DB-backed round trip below
+    }
+
+    #[tokio::test]
+    async fn healthz_reports_the_app_version() {
+        let (state, _sink) = hosted_test_router().await;
+        let res = hosted_router(state)
+            .oneshot(
+                axum::http::Request::get("/healthz")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let info: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert!(info["version"].is_string(), "{info}");
+    }
+
+    #[tokio::test]
+    async fn web_ui_serves_files_and_app_routes_but_not_unknown_api_paths() {
+        let dist = tempfile::tempdir().expect("dist");
+        std::fs::write(dist.path().join("index.html"), "<html>app</html>").expect("index");
+        std::fs::create_dir(dist.path().join("assets")).expect("assets");
+        std::fs::write(dist.path().join("assets/app.js"), "console.log(1)").expect("js");
+        let api = Router::new().route("/api/v1/thing", get(|| async { "api" }));
+        let app = apply_security_headers(serve_web_ui(api, dist.path()));
+        let get_body = |path: &'static str| {
+            let app = app.clone();
+            async move {
+                let res = app
+                    .oneshot(
+                        axum::http::Request::get(path)
+                            .body(Body::empty())
+                            .expect("request"),
+                    )
+                    .await
+                    .expect("infallible");
+                let status = res.status();
+                let csp = res.headers().contains_key("content-security-policy");
+                let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+                    .await
+                    .expect("body");
+                (status, String::from_utf8_lossy(&body).to_string(), csp)
+            }
+        };
+        let (status, body, csp) = get_body("/assets/app.js").await;
+        assert_eq!((status, body.as_str()), (StatusCode::OK, "console.log(1)"));
+        assert!(csp, "static files carry the security headers");
+        for route in ["/", "/explore", "/account", "/auth/verify"] {
+            let (status, body, _) = get_body(route).await;
+            assert_eq!(status, StatusCode::OK, "{route}");
+            assert_eq!(body, "<html>app</html>", "{route}");
+        }
+        assert_eq!(get_body("/api/v1/thing").await.1, "api");
+        for missing in ["/api/v1/nope", "/w/x/api/v1/groups", "/healthz"] {
+            let (status, body, _) = get_body(missing).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+            assert!(body.contains("not_found"), "{missing}: {body}");
+        }
     }
 }
 

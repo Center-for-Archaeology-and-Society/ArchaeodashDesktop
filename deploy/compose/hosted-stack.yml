@@ -29,8 +29,10 @@ services:
     # Not published on the host: only the API service reaches the database.
 
   api:
+    # One image: the API plus the built web client (served for every
+    # non-API path). Build context is the repository root.
     build:
-      context: ..
+      context: ../..
       dockerfile: deploy/container/Dockerfile
     restart: unless-stopped
     depends_on:
@@ -54,6 +56,9 @@ services:
       AUTH_APPLY_MIGRATIONS: "1"
       # Section 6.4: per-user object namespace root (opaque UUID keys).
       AUTH_FILE_STORE_DIR: /data/user-files
+      # Hosted projects' analysis workspaces live in the same tree; this caps
+      # how many project routers stay open at once (default 64).
+      AUTH_OPEN_WORKSPACES: ${AUTH_OPEN_WORKSPACES:-64}
       # Section 6.9: per-user logical byte quota (reserve before upload,
       # reconcile after). Default 1 GiB when unset.
       AUTH_QUOTA_BYTES: ${AUTH_QUOTA_BYTES:-1073741824}

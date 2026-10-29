@@ -130,7 +130,7 @@ async fn jobs_cancel(
         .ok_or_else(missing_job)
 }
 
-async fn healthz() -> Json<AppInfo> {
+pub(crate) async fn healthz() -> Json<AppInfo> {
     Json(app_info("http", true))
 }
 
