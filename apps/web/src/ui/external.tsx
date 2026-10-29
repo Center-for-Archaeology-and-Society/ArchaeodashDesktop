@@ -5,6 +5,7 @@
  * browser they open a new tab.
  */
 import type { MouseEvent, ReactElement, ReactNode } from 'react';
+import { BASE_PATH } from '../basePath.ts';
 import { isTauri } from '../transport.ts';
 import { errorText, notify } from './toast-store.ts';
 
@@ -42,7 +43,7 @@ export async function openHelpWindow(): Promise<void> {
     await invokeDesktop('open_help_window');
     return;
   }
-  window.open(HELP_WINDOW_PATH, 'archaeodash-help', 'width=900,height=800,resizable=yes,scrollbars=yes');
+  window.open(`${BASE_PATH}${HELP_WINDOW_PATH}`, 'archaeodash-help', 'width=900,height=800,resizable=yes,scrollbars=yes');
 }
 
 /** Desktop only: opens the app's log folder in the system file manager. */

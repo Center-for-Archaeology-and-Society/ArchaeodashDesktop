@@ -5,6 +5,7 @@ import { Link } from 'react-router';
 import helpMarkdown from '../content/help.md?raw';
 import privacyMarkdown from '../content/privacy.md?raw';
 import termsMarkdown from '../content/terms.md?raw';
+import { publicUrl } from '../basePath.ts';
 import { ExternalLink, followExternal, isExternalUrl, openHelpWindow } from '../ui/external.tsx';
 import { errorText, notify } from '../ui/toast-store.ts';
 
@@ -161,8 +162,8 @@ export function HomePage(): ReactElement {
       <div className="card home-hero">
         <img
           className="home-logo"
-          src="/logo-256.png"
-          srcSet="/logo-256.png 256w, /logo-512.png 512w"
+          src={publicUrl('logo-256.png')}
+          srcSet={`${publicUrl('logo-256.png')} 256w, ${publicUrl('logo-512.png')} 512w`}
           sizes="120px"
           width={120}
           height={120}

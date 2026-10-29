@@ -1,0 +1,72 @@
+# ArchaeoDash hosted server on cas, served by the shared Apache vhost at
+# https://cas.rc.asu.edu/archaeodash/ (see apache-archaeodash.conf).
+#
+# Lives in /srv/archaeodash on cas (local disk, not the NFS share), with:
+#   .env           root-only (mode 600), from env.example; never committed
+#   postgres/      PostgreSQL data
+#   user-files/    accounts' files and project workspaces (owned by 10001)
+#
+# The image is built on home2 with
+#   docker build -f deploy/container/Dockerfile \
+#     --build-arg ARCHAEODASH_BASE_PATH=/archaeodash -t archaeodash-hosted:<tag> .
+# and copied over with `docker save | ssh cas docker load`; cas never builds.
+name: archaeodash
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: archaeodash_control
+    volumes:
+      - /srv/archaeodash/postgres:/var/lib/postgresql/data
+    # Loopback only: the app reaches it from the host network.
+    ports:
+      - "127.0.0.1:55433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d archaeodash_control"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 2g
+
+  app:
+    image: archaeodash-hosted:${ARCHAEODASH_TAG:?set ARCHAEODASH_TAG in .env}
+    restart: unless-stopped
+    # Host network so the app reaches the host's postfix on 127.0.0.1:25
+    # (it listens on loopback only). The app itself binds loopback only;
+    # Apache is the only way in.
+    network_mode: host
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:55433/archaeodash_control
+      AUTH_BIND: 127.0.0.1:18787
+      AUTH_BASE_URL: https://cas.rc.asu.edu/archaeodash
+      AUTH_PEPPER: ${AUTH_PEPPER:?set AUTH_PEPPER in .env}
+      # Apache on this host appends the client address to X-Forwarded-For.
+      AUTH_TRUSTED_PROXIES: 127.0.0.1,::1
+      AUTH_EMAIL_MODE: smtp-local
+      AUTH_SMTP_HOST: 127.0.0.1
+      AUTH_SMTP_PORT: "25"
+      AUTH_SMTP_FROM: ${AUTH_SMTP_FROM:?set AUTH_SMTP_FROM in .env}
+      AUTH_LOG_FORMAT: json
+      AUTH_APPLY_MIGRATIONS: "1"
+      AUTH_FILE_STORE_DIR: /data/user-files
+      AUTH_QUOTA_BYTES: ${AUTH_QUOTA_BYTES:-1073741824}
+      AUTH_MAX_REQUEST_BYTES: ${AUTH_MAX_REQUEST_BYTES:-67108864}
+      # cas also runs production Shiny, heurist and CollectiveAccess: keep
+      # analyses to a quarter of its 16 CPUs.
+      AUTH_ANALYSIS_SLOTS: ${AUTH_ANALYSIS_SLOTS:-4}
+      AUTH_ANALYSIS_SLOTS_PER_USER: ${AUTH_ANALYSIS_SLOTS_PER_USER:-2}
+    volumes:
+      - /srv/archaeodash/user-files:/data/user-files
+    cpus: 8
+    mem_limit: 8g
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

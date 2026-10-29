@@ -8,6 +8,7 @@
  */
 import { HttpTransport, TauriTransport, type Transport } from '@archaeodash/client';
 import { activity, activityLabel, JobActivity, jobFinishedNotice, returnsJobSnapshot } from './activity.ts';
+import { BASE_PATH } from './basePath.ts';
 import { notify } from './ui/toast-store.ts';
 
 declare global {
@@ -79,5 +80,5 @@ export async function createTransport(): Promise<Transport> {
     const { demoFetch, demoEventSource } = await import('./demo/demo-fetch.ts');
     return new HttpTransport(undefined, trackedFetch(demoFetch), demoEventSource);
   }
-  return new HttpTransport(undefined, trackedFetch((input, init) => fetch(input, init)));
+  return new HttpTransport(BASE_PATH, trackedFetch((input, init) => fetch(input, init)));
 }

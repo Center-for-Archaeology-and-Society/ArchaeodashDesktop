@@ -95,4 +95,4 @@ A can later move to B behind the same HTTP surface.
 2. Web hosted flow (login, then projects, then analysis), with the 401 handling.
 3. Single binary serving `dist/`, plus the fixed Dockerfile and compose file. Run end to end locally on home2 with the dev email sink.
 4. Route audit, quota and job limits.
-5. cas: DNS and certificate, compose, Apache vhost, SMTP, backups, healthcheck. Invite-only beta.
+5. cas: DNS and certificate, compose, Apache vhost, SMTP, backups, healthcheck. Invite-only beta. (2026-10-29: sub-path chosen; repo work and rehearsal done, see [[Cas_Hosted_Deployment_2026-10-29]].)

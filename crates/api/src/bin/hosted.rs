@@ -8,11 +8,12 @@
 //! required migrations are absent. No DDL runs in user sessions.
 //!
 //! Email adapters (Section 11.1): `AUTH_EMAIL_MODE=sendmail` (default),
-//! `smtp`, or `dev`. `dev` accepts links in-process and is refused unless
+//! `smtp` (TLS and login), `smtp-local` (plain SMTP to a loopback mail
+//! server), or `dev`. `dev` accepts links in-process and is refused unless
 //! `AUTH_ALLOW_DEV_EMAIL=1` so it can never silently serve production.
 
 use archaeodash_api::auth::AuthState;
-use archaeodash_api::hosted::serve_web_ui;
+use archaeodash_api::hosted::{serve_web_ui, trust_forwarded_client};
 use archaeodash_api::hosted_files::HostedFileStore;
 use archaeodash_api::workspaces::{WorkspaceLimits, WorkspaceRegistry, DEFAULT_OPEN_WORKSPACES};
 use archaeodash_api::{finalize_hosted_router, hosted_router, HostedState};
@@ -43,6 +44,20 @@ fn build_email() -> Result<Arc<dyn EmailSender>, String> {
             env("AUTH_SMTP_PASSWORD")?,
             env("AUTH_SMTP_FROM")?,
         ))),
+        // Plain SMTP to the host's own mail server; the container must share
+        // the host network to reach it on loopback.
+        "smtp-local" => Ok(Arc::new(
+            SmtpEmailSender::local(
+                env("AUTH_SMTP_HOST")?,
+                env("AUTH_SMTP_PORT")?
+                    .parse()
+                    .map_err(|_| "AUTH_SMTP_PORT is not a number".to_string())?,
+                env("AUTH_SMTP_FROM")?,
+            )
+            .map_err(|_| {
+                "AUTH_EMAIL_MODE=smtp-local needs a loopback AUTH_SMTP_HOST".to_string()
+            })?,
+        )),
         "dev" => {
             if std::env::var("AUTH_ALLOW_DEV_EMAIL").as_deref() != Ok("1") {
                 return Err(
@@ -164,6 +179,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         tracing::info!(web_dir = %dir, "serving the web client");
         app = serve_web_ui(app, dir);
+    }
+    // AUTH_TRUSTED_PROXIES: comma-separated addresses of reverse proxies
+    // (for example 127.0.0.1 for Apache on the same host) whose
+    // X-Forwarded-For names the client for login and registration throttles.
+    if let Ok(list) = std::env::var("AUTH_TRUSTED_PROXIES") {
+        let trusted = list
+            .split(',')
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| {
+                v.parse::<std::net::IpAddr>()
+                    .map_err(|_| format!("AUTH_TRUSTED_PROXIES has a bad address: {v}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if !trusted.is_empty() {
+            tracing::info!(?trusted, "trusting X-Forwarded-For from these proxies");
+            app = trust_forwarded_client(app, trusted);
+        }
     }
     let app = finalize_hosted_router(app);
 

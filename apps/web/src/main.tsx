@@ -34,6 +34,7 @@ import { AnalysisPage, type AnalysisDeps } from './clustering/AnalysisPage.tsx';
 import { applyTheme, hydrateTheme, normalizeTheme, readStoredTheme, saveThemePreference, themeStorageKey } from './theme.ts';
 import { AppErrorPage } from './ui/ErrorBoundary.tsx';
 import { HELP_WINDOW_PATH, revealLogFolder } from './ui/external.tsx';
+import { BASE_PATH } from './basePath.ts';
 import { errorText, notify } from './ui/toast-store.ts';
 import { createTransport, isDemoMode } from './transport.ts';
 import {
@@ -347,14 +348,14 @@ export function createAppRouter(transport: Transport) {
       errorElement: <AppErrorPage />,
       children: routeChildren(exploreDeps, ordinationDeps, visualizeDeps, transport, transport, auth),
     },
-  ]);
+  ], BASE_PATH ? { basename: BASE_PATH } : undefined);
 }
 
 export async function boot(rootEl: Element | null): Promise<void> {
   if (!rootEl) throw new Error('missing #root');
   // Paint the stored theme before anything async resolves (Section 9.3).
   applyTheme(readStoredTheme());
-  if (window.location.pathname === HELP_WINDOW_PATH) {
+  if (window.location.pathname === `${BASE_PATH}${HELP_WINDOW_PATH}`) {
     // The separate Help window: static help only, no backend. Follow theme
     // changes made in the main window (same origin, shared local storage).
     window.addEventListener('storage', (event) => {

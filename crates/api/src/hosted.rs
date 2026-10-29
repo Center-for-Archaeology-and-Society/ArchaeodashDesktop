@@ -1174,6 +1174,45 @@ pub fn serve_web_ui(router: Router, dist: impl Into<std::path::PathBuf>) -> Rout
     })
 }
 
+/// Behind a reverse proxy every request arrives from the proxy, so login and
+/// registration throttles would share one address for everybody. When the
+/// connecting peer is one of `trusted` proxies, this replaces the peer
+/// address with the client address the proxy appended to
+/// `X-Forwarded-For` (the last entry; earlier entries come from the client
+/// and are ignored). Requests from anywhere else keep their own address.
+pub fn trust_forwarded_client(router: Router, trusted: Vec<std::net::IpAddr>) -> Router {
+    use axum::extract::ConnectInfo;
+    use std::net::SocketAddr;
+    let trusted = Arc::new(trusted);
+    router.layer(middleware::from_fn(
+        move |mut request: Request<axum::body::Body>, next: Next| {
+            let trusted = trusted.clone();
+            async move {
+                let peer = request
+                    .extensions()
+                    .get::<ConnectInfo<SocketAddr>>()
+                    .map(|info| info.0);
+                if let Some(peer) = peer.filter(|p| trusted.contains(&p.ip())) {
+                    let forwarded = request
+                        .headers()
+                        .get_all("x-forwarded-for")
+                        .iter()
+                        .filter_map(|v| v.to_str().ok())
+                        .flat_map(|v| v.split(','))
+                        .last()
+                        .and_then(|v| v.trim().parse::<std::net::IpAddr>().ok());
+                    if let Some(client) = forwarded {
+                        request
+                            .extensions_mut()
+                            .insert(ConnectInfo(SocketAddr::new(client, peer.port())));
+                    }
+                }
+                next.run(request).await
+            }
+        },
+    ))
+}
+
 /// Composes the full hosted middleware stack, innermost first:
 /// request-id assignment, then request logging (sees the assigned ID),
 /// then security headers on every response.
@@ -1293,6 +1332,58 @@ mod header_hygiene {
             .expect("body");
         let info: serde_json::Value = serde_json::from_slice(&body).expect("json");
         assert!(info["version"].is_string(), "{info}");
+    }
+
+    #[tokio::test]
+    async fn forwarded_client_is_trusted_only_from_the_proxy() {
+        use axum::extract::ConnectInfo;
+        use std::net::SocketAddr;
+        use tower::ServiceExt;
+        let app =
+            trust_forwarded_client(
+                Router::new().route(
+                    "/ip",
+                    get(|ConnectInfo(addr): ConnectInfo<SocketAddr>| async move {
+                        addr.ip().to_string()
+                    }),
+                ),
+                vec!["127.0.0.1".parse().expect("ip")],
+            );
+        let ask = |peer: &str, forwarded: Option<&str>| {
+            let app = app.clone();
+            let peer: SocketAddr = peer.parse().expect("peer");
+            let forwarded = forwarded.map(str::to_string);
+            async move {
+                let mut builder = Request::builder().uri("/ip");
+                if let Some(value) = forwarded {
+                    builder = builder.header("x-forwarded-for", value);
+                }
+                let mut request = builder.body(axum::body::Body::empty()).expect("request");
+                request.extensions_mut().insert(ConnectInfo(peer));
+                let response = app.oneshot(request).await.expect("response");
+                let body = axum::body::to_bytes(response.into_body(), 1024)
+                    .await
+                    .expect("body");
+                String::from_utf8(body.to_vec()).expect("utf8")
+            }
+        };
+        // From the proxy: the last forwarded entry (the one the proxy added).
+        assert_eq!(
+            ask("127.0.0.1:5000", Some("203.0.113.9")).await,
+            "203.0.113.9"
+        );
+        assert_eq!(
+            ask("127.0.0.1:5000", Some("1.2.3.4, 203.0.113.9")).await,
+            "203.0.113.9"
+        );
+        // From the proxy without (or with a garbled) header: the proxy itself.
+        assert_eq!(ask("127.0.0.1:5000", None).await, "127.0.0.1");
+        assert_eq!(ask("127.0.0.1:5000", Some("nonsense")).await, "127.0.0.1");
+        // From anyone else: the header is ignored.
+        assert_eq!(
+            ask("198.51.100.7:5000", Some("203.0.113.9")).await,
+            "198.51.100.7"
+        );
     }
 
     #[tokio::test]

@@ -76,22 +76,35 @@ pub fn redact_email(email: &str) -> String {
 }
 
 /// Builds an absolute action link (verify/reset) from a configured base URL.
-/// Rejects base URLs with paths or queries so tokens cannot end up in
-/// unexpected origins; the API layer owns the path.
+/// The base may name the sub-path the app is served under
+/// (`https://host/archaeodash`), but never a query, fragment or credentials,
+/// so a token can only land on that page of that origin; the API layer owns
+/// the rest of the path.
 pub fn build_action_link(
     base_url: &str,
     path: &str,
     token_presentation: &str,
 ) -> Result<String, EmailError> {
-    let base = url::Url::parse(base_url).map_err(|_| EmailError::SendFailed {
+    let mut base = url::Url::parse(base_url).map_err(|_| EmailError::SendFailed {
         mechanism: "link-build",
         detail: None,
     })?;
-    if !matches!(base.scheme(), "http" | "https") || !base.path().is_empty() && base.path() != "/" {
+    if !matches!(base.scheme(), "http" | "https")
+        || base.query().is_some()
+        || base.fragment().is_some()
+        || !base.username().is_empty()
+        || base.password().is_some()
+        || base.cannot_be_a_base()
+    {
         return Err(EmailError::SendFailed {
             mechanism: "link-build",
             detail: None,
         });
+    }
+    // `join` replaces the last path segment unless the base ends in `/`.
+    if !base.path().ends_with('/') {
+        let with_slash = format!("{}/", base.path());
+        base.set_path(&with_slash);
     }
     let joined = base
         .join(path.trim_start_matches('/'))
@@ -245,15 +258,28 @@ impl EmailSender for SendmailEmailSender {
     }
 }
 
-/// SMTP adapter over `lettre` with rustls TLS. Configuration comes from
-/// deployment env; credentials never appear in logs or errors.
+/// SMTP adapter over `lettre`: TLS with credentials to a mail relay, or
+/// plain SMTP to a mail server on the same machine ([`Self::local`]).
+/// Configuration comes from deployment env; credentials never appear in logs
+/// or errors.
 #[derive(Debug, Clone)]
 pub struct SmtpEmailSender {
     host: String,
     port: u16,
-    username: String,
-    password: String,
+    /// `None` for the plain local relay.
+    credentials: Option<(String, String)>,
     from: String,
+}
+
+/// Whether `host` names this machine (loopback), the only place plain,
+/// unauthenticated SMTP is allowed to go.
+pub fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 impl SmtpEmailSender {
@@ -261,10 +287,28 @@ impl SmtpEmailSender {
         Self {
             host,
             port,
-            username,
-            password,
+            credentials: Some((username, password)),
             from,
         }
+    }
+
+    /// Plain SMTP without TLS or login to the host's own mail server (for
+    /// example postfix on 127.0.0.1:25), which then relays the message.
+    /// Refuses any host that is not loopback, so nothing travels a network
+    /// in clear text.
+    pub fn local(host: String, port: u16, from: String) -> Result<Self, EmailError> {
+        if !is_loopback_host(&host) {
+            return Err(EmailError::SendFailed {
+                mechanism: "smtp-local",
+                detail: None,
+            });
+        }
+        Ok(Self {
+            host,
+            port,
+            credentials: None,
+            from,
+        })
     }
 }
 
@@ -294,17 +338,22 @@ impl EmailSender for SmtpEmailSender {
                     mechanism: "smtp",
                     detail: None,
                 })?;
-            let mailer = AsyncSmtpTransport::<Tokio1Executor>::relay(&self.host)
-                .map_err(|e| EmailError::SendFailed {
-                    mechanism: "smtp",
-                    detail: Some(Box::new(e)),
-                })?
-                .port(self.port)
-                .credentials(Credentials::new(
-                    self.username.clone(),
-                    self.password.clone(),
-                ))
-                .build();
+            let mailer = match &self.credentials {
+                Some((username, password)) => {
+                    AsyncSmtpTransport::<Tokio1Executor>::relay(&self.host)
+                        .map_err(|e| EmailError::SendFailed {
+                            mechanism: "smtp",
+                            detail: Some(Box::new(e)),
+                        })?
+                        .port(self.port)
+                        .credentials(Credentials::new(username.clone(), password.clone()))
+                        .build()
+                }
+                // Loopback only (checked in `local`).
+                None => AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&self.host)
+                    .port(self.port)
+                    .build(),
+            };
             mailer
                 .send(email)
                 .await
@@ -338,6 +387,48 @@ mod tests {
         let stored = sink.stored();
         assert_eq!(stored.len(), 1);
         assert!(stored[0].text_body.contains("secret-token"));
+    }
+
+    #[test]
+    fn plain_local_smtp_is_loopback_only() {
+        for host in ["127.0.0.1", "localhost", "::1", "[::1]", "127.0.0.2"] {
+            assert!(
+                SmtpEmailSender::local(host.into(), 25, "a@b.example".into()).is_ok(),
+                "{host}"
+            );
+        }
+        for host in ["10.0.0.5", "smtp.example.org", "0.0.0.0", "172.17.0.1"] {
+            assert!(
+                SmtpEmailSender::local(host.into(), 25, "a@b.example".into()).is_err(),
+                "{host}"
+            );
+        }
+    }
+
+    #[test]
+    fn action_links_keep_the_sub_path_and_refuse_queries() {
+        let link = |base: &str| build_action_link(base, "/auth/verify", "tok");
+        assert_eq!(
+            link("https://cas.example/archaeodash").ok().as_deref(),
+            Some("https://cas.example/archaeodash/auth/verify?token=tok")
+        );
+        assert_eq!(
+            link("https://cas.example/archaeodash/").ok().as_deref(),
+            Some("https://cas.example/archaeodash/auth/verify?token=tok")
+        );
+        assert_eq!(
+            link("https://archaeodash.example").ok().as_deref(),
+            Some("https://archaeodash.example/auth/verify?token=tok")
+        );
+        for bad in [
+            "https://cas.example/a?x=1",
+            "https://cas.example/a#f",
+            "https://user:pw@cas.example/",
+            "ftp://cas.example/",
+            "mailto:a@b.example",
+        ] {
+            assert!(link(bad).is_err(), "{bad}");
+        }
     }
 
     #[tokio::test]

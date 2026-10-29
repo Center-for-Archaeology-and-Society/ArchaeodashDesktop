@@ -15,6 +15,7 @@ import { ActivityIndicator } from './ActivityIndicator.tsx';
 import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
 import { Toasts } from '../ui/Toasts.tsx';
 import { isAnalysisPath } from './hosted.tsx';
+import { publicUrl } from '../basePath.ts';
 
 export interface AppShellProps {
   readonly theme: string;
@@ -204,8 +205,8 @@ export function AppShell({
         <span className="brand">
           <img
             className="brand-mark"
-            src="/brand-mark.png"
-            srcSet="/brand-mark.png 1x, /brand-mark@2x.png 2x, /brand-mark@3x.png 3x"
+            src={publicUrl('brand-mark.png')}
+            srcSet={`${publicUrl('brand-mark.png')} 1x, ${publicUrl('brand-mark@2x.png')} 2x, ${publicUrl('brand-mark@3x.png')} 3x`}
             width={44}
             height={28}
             alt=""

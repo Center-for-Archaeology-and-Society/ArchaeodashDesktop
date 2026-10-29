@@ -12,6 +12,9 @@
 # ---- Web client: vite build of apps/web (workspace packages are source) ----
 FROM node:22-bookworm AS web
 WORKDIR /src
+# Sub-path the client is served under behind a reverse proxy (for example
+# /archaeodash); empty for the site root.
+ARG ARCHAEODASH_BASE_PATH=
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
