@@ -1762,6 +1762,60 @@ a.start-open {
   text-decoration: none;
 }
 
+/* Account forms (sign in, register, password reset): a narrow card with
+   each label above its control and the main action full width. */
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  width: 100%;
+  max-width: 26rem;
+  margin: 0.75rem 0 1rem;
+  padding: 1.25rem 1.35rem;
+}
+
+.auth-form h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.auth-form .auth-note {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+}
+
+.auth-form .field :where(input, select) {
+  width: 100%;
+}
+
+.auth-consent {
+  align-items: flex-start;
+  font-size: 0.85rem;
+}
+
+.auth-consent input {
+  margin-top: 0.2rem;
+}
+
+.auth-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.auth-submit {
+  width: 100%;
+}
+
+.auth-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.25rem 0.5rem;
+}
+
 /* Hosted projects page: one row per project with its Open action. */
 .hosted-project-list {
   list-style: none;

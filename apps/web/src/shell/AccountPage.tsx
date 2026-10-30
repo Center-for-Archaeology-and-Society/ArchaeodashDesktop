@@ -184,6 +184,7 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
         <>
           {mode === 'signin' && (
             <form
+              className="card auth-form"
               aria-label="Sign in"
               onSubmit={submit(
                 async (form) => {
@@ -201,15 +202,15 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
               )}
             >
               <h2>Sign in</h2>
-              <label>
+              <label className="field">
                 Username or email
                 <input name="identifier" autoComplete="username" required />
               </label>
-              <label>
+              <label className="field">
                 Password
                 <input name="password" type="password" autoComplete="current-password" required />
               </label>
-              <label>
+              <label className="field">
                 Stay signed in
                 <select name="remember" defaultValue="">
                   <option value="">For this session only</option>
@@ -217,19 +218,24 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
                   <option value="90">90 days</option>
                 </select>
               </label>
-              <button type="submit" disabled={busy}>
-                Sign in
-              </button>{' '}
-              <button type="button" onClick={() => setMode('register')}>
-                Register as a new user
-              </button>{' '}
-              <button type="button" onClick={() => setMode('reset-request')}>
-                Forgot your password?
-              </button>
+              <div className="auth-actions">
+                <button type="submit" className="btn btn-primary auth-submit" disabled={busy}>
+                  Sign in
+                </button>
+                <div className="auth-links">
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setMode('register')}>
+                    Register as a new user
+                  </button>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setMode('reset-request')}>
+                    Forgot your password?
+                  </button>
+                </div>
+              </div>
             </form>
           )}
           {mode === 'register' && (
             <form
+              className="card auth-form"
               aria-label="Register"
               onSubmit={submit(async (form) => {
                 const data = new FormData(form);
@@ -245,13 +251,11 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
               })}
             >
               <h2>Register</h2>
-              <p>
+              <p className="auth-note">
                 You must accept the notice and verify your email before your
-                first sign-in. See the{' '}
-                <Link to="/info/terms">Terms &amp; Conditions</Link> and{' '}
-                <Link to="/info/privacy">Privacy Policy</Link>.
+                first sign-in.
               </p>
-              <label>
+              <label className="field">
                 Username
                 <input
                   name="username"
@@ -261,11 +265,11 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
                   required
                 />
               </label>
-              <label>
+              <label className="field">
                 Email
                 <input name="email" type="email" autoComplete="email" required />
               </label>
-              <label>
+              <label className="field">
                 Password (at least 12 characters)
                 <input
                   name="password"
@@ -275,21 +279,36 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
                   required
                 />
               </label>
-              <label>
-                <input name="consent" type="checkbox" required /> I agree to the
-                Terms &amp; Conditions and the Privacy Policy
-                {consentVersion ? <> (version {consentVersion})</> : null}
+              <label className="field-check auth-consent">
+                <input name="consent" type="checkbox" required />
+                {/* New tabs, so reading the notice keeps the half-filled form. */}
+                <span>
+                  I agree to the{' '}
+                  <Link to="/info/terms" target="_blank" rel="noopener noreferrer">
+                    Terms &amp; Conditions
+                  </Link>{' '}
+                  and the{' '}
+                  <Link to="/info/privacy" target="_blank" rel="noopener noreferrer">
+                    Privacy Policy
+                  </Link>
+                  {consentVersion ? <> (version {consentVersion})</> : null}
+                </span>
               </label>
-              <button type="submit" disabled={busy || !consentVersion}>
-                Register
-              </button>{' '}
-              <button type="button" onClick={() => setMode('signin')}>
-                Back to sign in
-              </button>
+              <div className="auth-actions">
+                <button type="submit" className="btn btn-primary auth-submit" disabled={busy || !consentVersion}>
+                  Register
+                </button>
+                <div className="auth-links">
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setMode('signin')}>
+                    Back to sign in
+                  </button>
+                </div>
+              </div>
             </form>
           )}
           {mode === 'reset-request' && (
             <form
+              className="card auth-form"
               aria-label="Request password reset"
               onSubmit={submit(async (form) => {
                 const data = new FormData(form);
@@ -299,20 +318,25 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
               })}
             >
               <h2>Reset your password</h2>
-              <label>
+              <label className="field">
                 Email
                 <input name="email" type="email" autoComplete="email" required />
               </label>
-              <button type="submit" disabled={busy}>
-                Send reset email
-              </button>{' '}
-              <button type="button" onClick={() => setMode('signin')}>
-                Back to sign in
-              </button>
+              <div className="auth-actions">
+                <button type="submit" className="btn btn-primary auth-submit" disabled={busy}>
+                  Send reset email
+                </button>
+                <div className="auth-links">
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setMode('signin')}>
+                    Back to sign in
+                  </button>
+                </div>
+              </div>
             </form>
           )}
           {mode === 'reset-confirm' && (
             <form
+              className="card auth-form"
               aria-label="Choose a new password"
               onSubmit={submit(async (form) => {
                 const data = new FormData(form);
@@ -326,7 +350,7 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
               })}
             >
               <h2>Choose a new password</h2>
-              <label>
+              <label className="field">
                 New password (at least 12 characters)
                 <input
                   name="password"
@@ -336,12 +360,16 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
                   required
                 />
               </label>
-              <button type="submit" disabled={busy}>
-                Update password
-              </button>{' '}
-              <button type="button" onClick={() => setMode('signin')}>
-                Back to sign in
-              </button>
+              <div className="auth-actions">
+                <button type="submit" className="btn btn-primary auth-submit" disabled={busy}>
+                  Update password
+                </button>
+                <div className="auth-links">
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setMode('signin')}>
+                    Back to sign in
+                  </button>
+                </div>
+              </div>
             </form>
           )}
           {error && <p role="alert">{error}</p>}
@@ -440,6 +468,7 @@ export function ResetPasswordPage({ auth }: AccountPageProps): ReactElement {
     <section aria-labelledby="reset-heading">
       <h1 id="reset-heading">Choose a new password</h1>
       <form
+        className="card auth-form"
         aria-label="Choose a new password"
         onSubmit={(event) => {
           event.preventDefault();
@@ -453,7 +482,7 @@ export function ResetPasswordPage({ auth }: AccountPageProps): ReactElement {
             .catch((err: unknown) => setError(errorText(err)));
         }}
       >
-        <label>
+        <label className="field">
           New password (at least 12 characters)
           <input
             name="password"
@@ -463,7 +492,11 @@ export function ResetPasswordPage({ auth }: AccountPageProps): ReactElement {
             required
           />
         </label>
-        <button type="submit">Update password</button>
+        <div className="auth-actions">
+          <button type="submit" className="btn btn-primary auth-submit">
+            Update password
+          </button>
+        </div>
       </form>
       {error && <p role="alert">{error}</p>}
     </section>
