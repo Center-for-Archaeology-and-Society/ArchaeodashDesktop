@@ -1,12 +1,4 @@
-import type { GroupRowsResponse, TransformationDefinition, AnalysisInputOptions } from '@archaeodash/client';
-
-/** Only named, recomputed columns can be selected; persisted measured data stays untouched. */
-export function analysisColumns(data: GroupRowsResponse, definition: TransformationDefinition | null): string[] {
-  if (!definition) return data.elemental_columns;
-  const ratios = definition.ratios.map(r => r.output_name ?? `${r.numerator}_${r.denominator}`.replace(/[^\p{L}\p{N}._-]/gu, '_'));
-  // Matches the backend's final columns: selected elements plus ratio outputs ('append'), or just the ratios ('only').
-  return [...new Set(definition.ratio_mode === 'only' && ratios.length ? ratios : [...definition.elemental_columns, ...ratios])];
-}
+import type { GroupRowsResponse, AnalysisInputOptions } from '@archaeodash/client';
 
 export function projectionLabels(data: GroupRowsResponse, column: string): string[] {
   const index = data.descriptive_columns.indexOf(column);

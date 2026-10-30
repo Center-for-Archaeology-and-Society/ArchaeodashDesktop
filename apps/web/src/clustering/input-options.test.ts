@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { GroupRowsResponse, TransformationDefinition } from '@archaeodash/client';
+import type { GroupRowsResponse } from '@archaeodash/client';
 import {
-  analysisColumns, defaultIdColumn, groupEligibility, pcCountOptions, projectionLabels, sourceFeatureCount, sourceOptions, uniqueIdColumns,
+  defaultIdColumn, groupEligibility, pcCountOptions, projectionLabels, sourceFeatureCount, sourceOptions, uniqueIdColumns,
 } from './input-options.ts';
 const data: GroupRowsResponse = { path: 'g', revision_id: 'r', visible_id_column: 'ID', legacy_rowid_column: 'rowid', elemental_columns: ['a', 'b'], descriptive_columns: ['Group'], rows: ['B', 'A', 'B', null].map(g => ({ analytical_uuid: 'hidden', elemental: [1, 2], descriptive: [g] })) };
 
@@ -16,11 +16,6 @@ test('source requests carry only applicable ordination controls', () => {
 test('projection labels exclude missing groups and deduplicate without exposing identities', () => {
   assert.deepEqual(projectionLabels(data, 'Group'), ['A', 'B']);
   assert.deepEqual(projectionLabels(data, 'absent'), []);
-});
-test('ratio-only input controls use output names and append includes required operands', () => {
-  const definition: TransformationDefinition = { name: 'ratios', transform_method: 'none', imputation_method: 'none', elemental_columns: ['a'], descriptive_columns: [], ratios: [{ numerator: 'a', denominator: 'b' }], ratio_mode: 'only' };
-  assert.deepEqual(analysisColumns(data, definition), ['a_b']);
-  assert.deepEqual(analysisColumns(data, { ...definition, ratio_mode: 'append' }), ['a', 'a_b']);
 });
 
 test('ID choices keep only columns with a unique value per row, falling back to the visible ID', () => {

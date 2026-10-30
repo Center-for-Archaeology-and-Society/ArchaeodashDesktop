@@ -1,6 +1,6 @@
 import { runAnalysisJob } from './job-workflow.ts';
 import {
-  analysisColumns, defaultIdColumn, groupEligibility, pcCountOptions, projectionLabels, sourceFeatureCount, sourceOptions, uniqueIdColumns,
+  defaultIdColumn, groupEligibility, pcCountOptions, projectionLabels, sourceFeatureCount, sourceOptions, uniqueIdColumns,
 } from './input-options.ts';
 import { includedAfterMove, moveAcrossSources } from './multi-source-move.ts';
 import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
@@ -12,7 +12,7 @@ import type { ClusterGroupSources } from './ClusterGroups.tsx';
 import { asRowsResponse, defaultGroupColumn, inputPaths } from '../visualize/combine.ts';
 import { holdGroupUpdates, notifyGroupsChanged } from '../data-manager/events.ts';
 import { useAnalysisSetup } from '../analysis-setup/AnalysisSetupContext.tsx';
-import { ANALYSIS_SETUP_NAME, UMAP_DEFAULT_DIMENSIONS, UMAP_SEED, analysisInput, setupSummary, umapMaxDimensions } from '../analysis-setup/setup.ts';
+import { UMAP_DEFAULT_DIMENSIONS, UMAP_SEED, analysisInput, setupSummary, umapMaxDimensions } from '../analysis-setup/setup.ts';
 import { ResultAssignment } from './ResultAssignment.tsx';
 import { AnalysisPlots } from './AnalysisPlots.tsx';
 import { layoutDendrogram } from './dendrogram-model.ts';
@@ -22,7 +22,7 @@ import type { GridColumn } from './grid-model.ts';
 import { EligibleGroupPicker, GroupSizesTable } from './MembershipGroups.tsx';
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import type {
-  AnalysisSource, ClusterDistanceMetric, ClusterLinkage, TransformationDefinition, AnalysisJobSnapshot, AnalysisJobRequest,
+  AnalysisSource, ClusterDistanceMetric, ClusterLinkage, AnalysisJobSnapshot, AnalysisJobRequest,
   Transport, ClusterMethod, MembershipMethod, TransferUnitsRequest, BatchTransferUnitsRequest, GroupCandidate, ApplyClustersRequest,
   ClusterFitResponse, ClusterDiagnosticsResponse,
   MembershipProbabilitiesResponse, EuclideanMatchesResponse, TableCell,
@@ -33,7 +33,7 @@ import { PageHeader } from '../ui/PageHeader.tsx';
 
 export type AnalysisKind = 'cluster' | 'membership' | 'euclidean';
 /** `ordination` labels the PC-count choices with explained variance (optional). */
-export type AnalysisDeps = Pick<Transport, 'groups' | 'clustering' | 'jobs' | 'transformations'> & Partial<Pick<Transport, 'ordination'>>;
+export type AnalysisDeps = Pick<Transport, 'groups' | 'clustering' | 'jobs'> & Partial<Pick<Transport, 'ordination'>>;
 export type AnalysisResult =
   | { kind: 'fit'; data: ClusterFitResponse }
   | { kind: 'diagnostics'; data: ClusterDiagnosticsResponse }
@@ -250,24 +250,15 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   const [diagnosticMetric, setDiagnosticMetric] = useState<'euclidean' | 'manhattan'>('euclidean');
   const [diagnosticMethod, setDiagnosticMethod] = useState<'kmeans' | 'pam'>('kmeans');
   const [projection, setProjection] = useState<string[] | null>(null);
-  const [definitions, setDefinitions] = useState<TransformationDefinition[]>([]);
-  const [definitionName, setDefinitionName] = useState('');
   const analysisSetup = useAnalysisSetup();
-  // Elements come from the Data Manager's Analysis setup; this page only
-  // chooses whether to use its transform, measured values, or a saved
-  // definition.
+  // Values always follow the Data Manager's Analysis setup (elements,
+  // imputation, ratios and transform); other setups are loaded there.
   const setupInput = useMemo(
     () => (data ? analysisInput(analysisSetup.setup, data.elemental_columns) : null),
     [data, analysisSetup.setup],
   );
-  const savedDefinitions = definitions.filter(d => d.name !== ANALYSIS_SETUP_NAME);
-  const usingSetup = definitionName === ANALYSIS_SETUP_NAME && !!analysisSetup.setup;
-  const savedDefinition = savedDefinitions.find(d => d.name === definitionName) ?? null;
-  const definition = usingSetup ? (setupInput?.transformation ?? null) : savedDefinition;
-  const columns = useMemo(
-    () => (!data ? [] : savedDefinition && !usingSetup ? analysisColumns(data, savedDefinition) : (setupInput?.columns ?? data.elemental_columns)),
-    [data, savedDefinition, usingSetup, setupInput],
-  );
+  const definition = setupInput?.transformation ?? null;
+  const columns = useMemo(() => (!data ? [] : (setupInput?.columns ?? data.elemental_columns)), [data, setupInput]);
   const [job, setJob] = useState<AnalysisJobSnapshot | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const activeJob = useRef<AbortController | null>(null);
@@ -287,12 +278,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   // Rows key of the inputs `result` was computed from.
   const [resultRowsKey, setResultRowsKey] = useState('');
   const generation = useRef(0);
-  useEffect(() => {
-    let active = true;
-    deps.transformations.list().then(async list => Promise.all(list.transformations.map(d => deps.transformations.load(d.name))))
-      .then(found => { if (active) setDefinitions(found); }).catch(e => { if (active) setError(`Could not load transformations: ${String(e)}`); });
-    return () => { active = false; generation.current++; activeJob.current?.abort(); };
-  }, [deps]);
+  useEffect(() => () => { generation.current++; activeJob.current?.abort(); }, [deps]);
   // New samples (a Dataset change) or a new setup: reset settings. With
   // several groups the synthetic group column is the default grouping.
   // Samples moving between groups keep the settings.
@@ -306,7 +292,6 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     if (!previous || previous.key !== contentKey || previous.setup !== analysisSetup.setup) {
       setGroup(defaultGroup);
       setId(defaultIdColumn(data, ids)); setSourceGroup(defaultGroup); setPlotGroup(defaultGroup); setProjection(null);
-      setDefinitionName(analysisSetup.setup ? ANALYSIS_SETUP_NAME : '');
       return;
     }
     // Same samples: keep each choice unless its column is gone.
@@ -476,9 +461,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   }
   const disabled = busy || !data || !columns.length || (kind !== 'cluster' && (!group || !id)) || (source === 'lda' && !sourceGroup);
   const submit = (event: FormEvent) => { event.preventDefault(); void run(); };
-  const elementsNote = !data ? '' : savedDefinition && !usingSetup
-    ? `Columns from “${savedDefinition.name}”: ${columns.length}.`
-    : `${setupSummary(analysisSetup.setup, data.elemental_columns)}${definitionName === '' && analysisSetup.setup ? ' (measured values, no transform)' : ''}.`;
+  const elementsNote = !data ? '' : `${setupSummary(analysisSetup.setup, data.elemental_columns)}.`;
   return <section className="page" aria-label={titles[kind]}>
     <PageHeader title={titles[kind]} description={descriptions[kind]}>
       <label className="field field-inline">Dataset <GroupMultiSelect disabled={busy} options={dataset.options} selected={dataset.selectedPaths} onChange={next => { reset(); dataset.setSelectedPaths(next); }} /></label>
@@ -488,10 +471,6 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     <form className="card settings-card" onSubmit={submit} aria-label="Analysis settings form">
       <header className="card-header"><h2 className="card-title">Analysis settings</h2></header>
       {data ? <fieldset className="form-grid" disabled={busy} onChange={reset}><legend className="visually-hidden">Analysis settings</legend>
-        <label className="field">Values <select value={definitionName} onChange={e => setDefinitionName(e.target.value)}>
-          {analysisSetup.setup && <option value={ANALYSIS_SETUP_NAME}>Analysis setup (Data Manager)</option>}
-          <option value="">Measured values</option>{savedDefinitions.map(d => <option key={d.name}>{d.name}</option>)}
-        </select></label>
         <label className="field">Analysis source <select value={source} onChange={e => setSource(e.target.value as AnalysisSource)}>
           <option value="elements">Elements / ratios</option><option value="pca">PCA scores</option><option value="umap">UMAP dimensions</option><option value="lda">Linear discriminants</option>
         </select></label>
@@ -533,7 +512,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
           {kind === 'euclidean' && <p className="field-hint field-wide">Same-group matches are filtered after the match limit is applied.</p>}
         </>}
       </fieldset> : <p className="empty-note">Load a dataset to choose settings.</p>}
-      {data && <p className="setup-in-use">Elements: {elementsNote} Choose elements in the Data Manager’s Analysis setup.</p>}
+      {data && <p className="setup-in-use">Analysis setup: {elementsNote} Change it in the Data Manager.</p>}
       <div className="form-actions">
         <button type="submit" className="btn btn-primary" disabled={disabled}><BusyLabel busy={busy && !moving.current && !!activeJob.current} busyText="Running…">Run analysis</BusyLabel></button>
         {kind === 'cluster' && <button type="button" className="btn" disabled={disabled} onClick={() => void run(true)}>Run cluster diagnostics</button>}
