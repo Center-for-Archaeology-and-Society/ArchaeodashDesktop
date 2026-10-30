@@ -13,6 +13,7 @@
 //! `AUTH_ALLOW_DEV_EMAIL=1` so it can never silently serve production.
 
 use archaeodash_api::auth::AuthState;
+use archaeodash_api::guests::{sweep_guests, GuestLimits, GuestSessions};
 use archaeodash_api::hosted::{serve_web_ui, trust_forwarded_client};
 use archaeodash_api::hosted_files::HostedFileStore;
 use archaeodash_api::workspaces::{WorkspaceLimits, WorkspaceRegistry, DEFAULT_OPEN_WORKSPACES};
@@ -143,11 +144,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         limits.job_workers = v.max(1);
     }
     tracing::info!(?limits, "workspace limits");
-    let workspaces = Arc::new(WorkspaceRegistry::with_limits(
-        &file_root,
-        open_workspaces,
-        limits,
-    ));
+    let mut registry = WorkspaceRegistry::with_limits(&file_root, open_workspaces, limits);
+    // Anonymous guest sessions: on unless AUTH_GUESTS=0. Their workspaces
+    // live in AUTH_GUEST_DIR (emptied at startup) and are swept below.
+    if std::env::var("AUTH_GUESTS").as_deref() != Ok("0") {
+        let dir = std::env::var("AUTH_GUEST_DIR")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "/tmp/archaeodash-guests".to_string());
+        let mut guest_limits = GuestLimits::default();
+        let env_u64 = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok());
+        if let Some(v) = env_u64("AUTH_GUEST_QUOTA_BYTES") {
+            guest_limits.quota_bytes = v;
+        }
+        if let Some(v) = env_u64("AUTH_GUEST_IDLE_SECS") {
+            guest_limits.idle = std::time::Duration::from_secs(v);
+        }
+        if let Some(v) = env_u64("AUTH_GUEST_MAX_AGE_SECS") {
+            guest_limits.max_age = std::time::Duration::from_secs(v);
+        }
+        if let Some(v) = env_u64("AUTH_GUEST_TOTAL_BYTES") {
+            guest_limits.total_bytes = v;
+        }
+        if let Some(v) = env_usize("AUTH_GUEST_MAX_SESSIONS") {
+            guest_limits.max_sessions = v.max(1);
+        }
+        if let Some(v) = env_u64("AUTH_GUEST_STARTS_PER_IP_PER_HOUR") {
+            guest_limits.starts_per_ip_per_hour = u32::try_from(v).unwrap_or(u32::MAX).max(1);
+        }
+        tracing::info!(guest_dir = %dir, ?guest_limits, "guest sessions enabled");
+        registry = registry.with_guests(GuestSessions::new(&dir, guest_limits)?);
+    }
+    let workspaces = Arc::new(registry);
+    // Guest sweep: every 10 minutes, on top of the sweeps before each new
+    // session and each request that adds data.
+    let sweep_registry = workspaces.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            sweep_guests(sweep_registry.clone()).await;
+        }
+    });
     // Section 6.9: per-user logical byte quota for upload reservations.
     // Default 1 GiB — generous for INAA-scale spreadsheets, not unbounded.
     let quota_bytes: i64 = std::env::var("AUTH_QUOTA_BYTES")

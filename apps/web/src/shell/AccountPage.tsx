@@ -8,6 +8,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactElement } from '
 import { Link } from 'react-router';
 import type { AuthService, SessionInfo } from '@archaeodash/client';
 import { BusyNote } from '../ui/Busy.tsx';
+import { GuestStart } from './hosted.tsx';
 
 export interface AccountPageProps {
   /** Hosted-account service; absent in desktop (Tauri) mode. */
@@ -374,6 +375,7 @@ export function AccountPage({ auth }: AccountPageProps): ReactElement {
           )}
           {error && <p role="alert">{error}</p>}
           {notice && <p role="status">{notice}</p>}
+          {mode === 'signin' && <GuestStart />}
         </>
       )}
     </section>

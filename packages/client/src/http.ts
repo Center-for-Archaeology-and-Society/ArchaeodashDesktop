@@ -90,6 +90,8 @@ import {
   type HostedProjectsService,
   type HostedProjectSummary,
   type HostedWorkspaceService,
+  type GuestService,
+  type GuestSessionInfo,
   type QuotaUsage,
 } from './transport.ts';
 
@@ -129,6 +131,7 @@ export class HttpTransport implements Transport {
   readonly hostedFiles: HostedFilesService;
   readonly hostedTransformations: HostedTransformationsService;
   readonly hostedWorkspace: HostedWorkspaceService;
+  readonly guest: GuestService;
 
   constructor(
     baseUrl: string = '',
@@ -155,6 +158,7 @@ export class HttpTransport implements Transport {
     this.hostedFiles = this.makeHostedFiles();
     this.hostedTransformations = this.makeHostedTransformations();
     this.hostedWorkspace = this.makeHostedWorkspace();
+    this.guest = this.makeGuest();
   }
 
   /**
@@ -507,9 +511,38 @@ export class HttpTransport implements Transport {
         current = projectId;
         this.workspacePrefix = projectId ? `/w/${encodeURIComponent(projectId)}` : '';
       },
+      setGuest: (token) => {
+        current = null;
+        this.workspacePrefix = token ? `/g/${encodeURIComponent(token)}` : '';
+      },
       current: () => current,
       onUnauthorized: (handler) => {
         this.unauthorizedHandler = handler;
+      },
+    };
+  }
+
+  private makeGuest(): GuestService {
+    // ping and end send the bare token as text: no cookie or CSRF is
+    // involved, and `end` must work from `navigator.sendBeacon` on unload.
+    const text = (token: string): RequestInit => ({
+      method: 'POST',
+      headers: { 'content-type': 'text/plain' },
+      body: token,
+    });
+    return {
+      start: () => this.rootRequest<GuestSessionInfo>('POST', '/api/v1/guest'),
+      ping: async (token) => {
+        const res = await this.fetchImpl(this.url('/api/v1/guest/ping', undefined, true), text(token));
+        if (res.status === 401) return false;
+        if (!res.ok) throw await this.toError(res);
+        return true;
+      },
+      end: (token) => {
+        const url = this.url('/api/v1/guest/end', undefined, true);
+        const beacon = typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function';
+        if (beacon && navigator.sendBeacon(url, new Blob([token], { type: 'text/plain' }))) return;
+        void this.fetchImpl(url, { ...text(token), keepalive: true }).catch(() => {});
       },
     };
   }

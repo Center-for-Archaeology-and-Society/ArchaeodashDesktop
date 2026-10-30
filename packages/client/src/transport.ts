@@ -373,6 +373,29 @@ export interface Transport {
   readonly hostedTransformations?: HostedTransformationsService;
   /** Hosted project scoping of the analysis services; absent in desktop (Tauri) mode. */
   readonly hostedWorkspace?: HostedWorkspaceService;
+  /** Hosted server only: anonymous guest sessions. */
+  readonly guest?: GuestService;
+}
+
+/** A started guest session (`POST /api/v1/guest`). */
+export interface GuestSessionInfo {
+  /** The only key to the session's workspace; keep it in page memory. */
+  readonly token: string;
+  readonly quota_bytes: number;
+  readonly idle_secs: number;
+  readonly max_age_secs: number;
+}
+
+/**
+ * Anonymous guest sessions: a temporary workspace without an account,
+ * deleted when the page closes or after the server's idle and age limits.
+ */
+export interface GuestService {
+  start(): Promise<GuestSessionInfo>;
+  /** Keeps the session alive; false once the server has ended it. */
+  ping(token: string): Promise<boolean>;
+  /** Ends the session now. Safe to call while the page unloads. */
+  end(token: string): void;
 }
 
 /**
@@ -384,6 +407,8 @@ export interface Transport {
 export interface HostedWorkspaceService {
   /** Scopes analysis requests to a project; null removes the scope. */
   set(projectId: string | null): void;
+  /** Scopes analysis requests to a guest session (`/g/<token>`); null removes it. */
+  setGuest(token: string | null): void;
   /** The scoped project ID, or null. */
   current(): string | null;
   /**

@@ -547,6 +547,54 @@ test('http: an open hosted project scopes analysis routes; account, catalog and 
   assert.deepEqual(sources, [`/w/${id}/api/v1/jobs/j1/events`]);
 });
 
+test('http: a guest session scopes analysis routes to /g/<token>; ping and end send the bare token', async () => {
+  const calls: { url: string; method: string; body: unknown }[] = [];
+  let pingStatus = 204;
+  const transport = new HttpTransport('/archaeodash', async (input, init) => {
+    const url = String(input);
+    calls.push({ url, method: init?.method ?? 'GET', body: init?.body });
+    if (url.endsWith('/api/v1/guest')) {
+      return new Response(JSON.stringify({ token: 'tok_123-abc', quota_bytes: 10, idle_secs: 60, max_age_secs: 600 }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (url.endsWith('/api/v1/guest/ping')) return new Response(null, { status: pingStatus });
+    if (url.endsWith('/api/v1/guest/end')) return new Response(null, { status: 204 });
+    return new Response(JSON.stringify({ groups: [], authenticated: false }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+  const session = await transport.guest.start();
+  assert.equal(session.token, 'tok_123-abc');
+  transport.hostedWorkspace.setGuest(session.token);
+  assert.equal(transport.hostedWorkspace.current(), null);
+  await transport.groups.scan();
+  await transport.auth.session();
+  assert.equal(await transport.guest.ping(session.token), true);
+  pingStatus = 401;
+  assert.equal(await transport.guest.ping(session.token), false);
+  transport.guest.end(session.token);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  transport.hostedWorkspace.setGuest(null);
+  await transport.groups.scan();
+  assert.deepEqual(
+    calls.map((c) => `${c.method} ${c.url}`),
+    [
+      'POST /archaeodash/api/v1/guest',
+      'GET /archaeodash/g/tok_123-abc/api/v1/groups',
+      'GET /archaeodash/api/v1/auth/session',
+      'POST /archaeodash/api/v1/guest/ping',
+      'POST /archaeodash/api/v1/guest/ping',
+      'POST /archaeodash/api/v1/guest/end',
+      'GET /archaeodash/api/v1/groups',
+    ],
+  );
+  assert.equal(calls[3]?.body, 'tok_123-abc');
+  assert.equal(calls[5]?.body, 'tok_123-abc');
+});
+
 test('http: a 401 on a scoped request calls the session-ended handler; root 401s do not', async () => {
   const transport = new HttpTransport('', async () =>
     new Response(JSON.stringify({ code: 'unauthorized', message: 'Sign in to continue.' }), {

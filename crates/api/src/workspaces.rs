@@ -71,13 +71,13 @@ const GROWING_ROUTES: &[&str] = &[
     "/api/v1/transformations",
 ];
 
-fn is_analysis(path: &str) -> bool {
+pub(crate) fn is_analysis(path: &str) -> bool {
     ANALYSIS_ROUTES
         .iter()
         .any(|prefix| path.starts_with(prefix))
 }
 
-fn grows(method: &Method, path: &str) -> bool {
+pub(crate) fn grows(method: &Method, path: &str) -> bool {
     method == Method::POST && GROWING_ROUTES.contains(&path)
 }
 
@@ -128,6 +128,8 @@ pub struct WorkspaceRegistry {
     open: Mutex<OpenWorkspaces>,
     analysis: Arc<Semaphore>,
     analysis_per_user: Mutex<HashMap<Uuid, Arc<Semaphore>>>,
+    /// Anonymous guest sessions (`/g/{token}`), when enabled.
+    guests: Option<Arc<crate::guests::GuestSessions>>,
 }
 
 #[derive(Default)]
@@ -156,6 +158,36 @@ impl WorkspaceRegistry {
             limits,
             open: Mutex::new(OpenWorkspaces::default()),
             analysis_per_user: Mutex::new(HashMap::new()),
+            guests: None,
+        }
+    }
+
+    /// Enables anonymous guest sessions (see [`crate::guests`]).
+    #[must_use]
+    pub fn with_guests(mut self, guests: crate::guests::GuestSessions) -> Self {
+        self.guests = Some(Arc::new(guests));
+        self
+    }
+
+    /// The guest sessions, when enabled.
+    pub fn guests(&self) -> Option<&Arc<crate::guests::GuestSessions>> {
+        self.guests.as_ref()
+    }
+
+    /// Opens an analysis router on `dir` (created if missing) with this
+    /// registry's job and body limits.
+    pub(crate) fn open_router(&self, dir: &Path) -> Result<Router, String> {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let dir = std::fs::canonicalize(dir).map_err(|e| e.to_string())?;
+        let jobs = AnalysisJobs::with_limits(&dir, self.limits.job_workers, self.limits.job_queue);
+        Ok(root_router(AppState::open_with_jobs(&dir, jobs)?)
+            .layer(DefaultBodyLimit::max(self.limits.max_request_bytes)))
+    }
+
+    /// Drops the analysis slots kept for a user or guest that is gone.
+    pub fn forget_slots(&self, id: Uuid) {
+        if let Ok(mut per_user) = self.analysis_per_user.lock() {
+            per_user.remove(&id);
         }
     }
 
@@ -191,12 +223,7 @@ impl WorkspaceRegistry {
         }
         // Opening happens under the lock so one project never gets two
         // service sets (two job lists) from concurrent first requests.
-        let dir = self.workspace_dir(user_id, project_id);
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let dir = std::fs::canonicalize(&dir).map_err(|e| e.to_string())?;
-        let jobs = AnalysisJobs::with_limits(&dir, self.limits.job_workers, self.limits.job_queue);
-        let router = root_router(AppState::open_with_jobs(&dir, jobs)?)
-            .layer(DefaultBodyLimit::max(self.limits.max_request_bytes));
+        let router = self.open_router(&self.workspace_dir(user_id, project_id))?;
         if open.routers.len() >= self.capacity {
             let oldest = open
                 .routers
@@ -291,7 +318,7 @@ impl WorkspaceRegistry {
 }
 
 /// Total size of the regular files under `dir` (symlinks are not followed).
-fn tree_bytes(dir: &Path) -> u64 {
+pub(crate) fn tree_bytes(dir: &Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
     };
@@ -328,7 +355,7 @@ fn not_found() -> Response {
     (StatusCode::NOT_FOUND, json_error_envelope("not_found")).into_response()
 }
 
-fn server_busy() -> Response {
+pub(crate) fn server_busy() -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
         Json(archaeodash_contracts::ErrorEnvelope {
@@ -448,7 +475,7 @@ pub(crate) async fn remove_deleted_workspace(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)] // test code; panics are the failure mode
 
     use super::*;
@@ -521,7 +548,7 @@ mod tests {
 
     /// Auth state over a lazily connected pool: requests rejected before
     /// any database query (no session, missing CSRF) need no database.
-    fn offline_auth_state() -> AuthState {
+    pub(crate) fn offline_auth_state() -> AuthState {
         let pool = sqlx::PgPool::connect_lazy("postgres://nobody:nopass@127.0.0.1:9/nodb")
             .expect("lazy pool builds");
         AuthState {

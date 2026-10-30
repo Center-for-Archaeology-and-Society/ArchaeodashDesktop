@@ -25,6 +25,8 @@ export type {
   HostedProjectSummary,
   HostedFileMeta,
   QuotaUsage,
+  GuestService,
+  GuestSessionInfo,
 } from './transport.ts';
 export {
   themes,

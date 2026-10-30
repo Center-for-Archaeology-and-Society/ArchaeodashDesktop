@@ -1816,6 +1816,31 @@ a.start-open {
   gap: 0.25rem 0.5rem;
 }
 
+/* Guest sessions: the start button, its note, and the top-bar badge. */
+.guest-start {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+  max-width: 26rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.guest-note {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+}
+
+.guest-badge {
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
 /* Hosted projects page: one row per project with its Open action. */
 .hosted-project-list {
   list-style: none;

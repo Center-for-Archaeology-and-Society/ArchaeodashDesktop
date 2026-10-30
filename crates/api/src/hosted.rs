@@ -112,6 +112,16 @@ pub fn hosted_router(state: HostedState) -> Router {
             any(crate::workspaces::workspace_dispatch),
         )
         .with_state(state.clone());
+    // Anonymous guest sessions (404 unless enabled in the registry).
+    let guests = Router::new()
+        .route("/api/v1/guest", post(crate::guests::guest_start))
+        .route("/api/v1/guest/ping", post(crate::guests::guest_ping))
+        .route("/api/v1/guest/end", post(crate::guests::guest_end))
+        .route(
+            crate::guests::GUEST_ROUTE,
+            any(crate::guests::guest_dispatch),
+        )
+        .with_state(state.clone());
     // Removes a project's workspace after the catalog route deletes it.
     let after_delete =
         middleware::from_fn_with_state(state.clone(), crate::workspaces::remove_deleted_workspace);
@@ -128,6 +138,7 @@ pub fn hosted_router(state: HostedState) -> Router {
         .merge(files)
         .merge(transformations)
         .merge(workspaces)
+        .merge(guests)
         .layer(after_delete)
         .layer(middleware::from_fn(assign_request_id));
     apply_security_headers(app)
@@ -1163,7 +1174,11 @@ pub fn serve_web_ui(router: Router, dist: impl Into<std::path::PathBuf>) -> Rout
         let files = files.clone();
         async move {
             let path = request.uri().path();
-            if path.starts_with("/api/") || path.starts_with("/w/") || path == "/healthz" {
+            if path.starts_with("/api/")
+                || path.starts_with("/w/")
+                || path.starts_with("/g/")
+                || path == "/healthz"
+            {
                 return (StatusCode::NOT_FOUND, json_error_envelope("not_found")).into_response();
             }
             match files.oneshot(request).await {

@@ -40,6 +40,8 @@ export interface AppShellProps {
 export interface HostedShell {
   /** Signed-in username; null while signed out or still checking. */
   readonly username: string | null;
+  /** A temporary guest session is open (no account). */
+  readonly guest?: boolean;
   /** Shown instead of the analysis pages until signed in with a project open. */
   readonly gate?: ReactElement;
 }
@@ -216,6 +218,11 @@ export function AppShell({
         {hosted && (
           <span className="hosted-controls">
             {projectName && <span className="project-name" aria-label="Current project">{projectName}</span>}
+            {hosted.guest && (
+              <span className="guest-badge" title="Guest session: data is deleted when you close or reload this page">
+                Temporary
+              </span>
+            )}
             {hosted.username && (
               <NavLink to="/projects" className="project-open">
                 {projectPath ? 'Switch Project' : 'Open Project'}
@@ -293,7 +300,7 @@ export function AppShell({
               {projectName && <p aria-label="Current project">Project: {projectName}</p>}
               <p className="sidebar-note">
                 {hosted && !projectPath
-                  ? 'Sign in and open a project to see its group files here.'
+                  ? 'Sign in and open a project, or continue as a guest, to see group files here.'
                   : projects && !projectPath
                   ? 'Open a project folder to see its group files here.'
                   : 'Import source files, inspect project groups, then choose a group in an analysis view.'}

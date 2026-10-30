@@ -61,6 +61,14 @@ services:
       # analyses to a quarter of its 16 CPUs.
       AUTH_ANALYSIS_SLOTS: ${AUTH_ANALYSIS_SLOTS:-4}
       AUTH_ANALYSIS_SLOTS_PER_USER: ${AUTH_ANALYSIS_SLOTS_PER_USER:-2}
+      # Anonymous guest sessions (no account): a temporary workspace in the
+      # container's /tmp, deleted when the page closes, after 2 h idle or
+      # 24 h, and least recently used first above the total. AUTH_GUESTS=0
+      # turns them off.
+      AUTH_GUESTS: ${AUTH_GUESTS:-1}
+      AUTH_GUEST_QUOTA_BYTES: ${AUTH_GUEST_QUOTA_BYTES:-209715200}
+      AUTH_GUEST_TOTAL_BYTES: ${AUTH_GUEST_TOTAL_BYTES:-5368709120}
+      AUTH_GUEST_MAX_SESSIONS: ${AUTH_GUEST_MAX_SESSIONS:-100}
     volumes:
       - /srv/archaeodash/user-files:/data/user-files
     cpus: 8

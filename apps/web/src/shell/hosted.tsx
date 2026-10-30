@@ -4,7 +4,7 @@
  * project through `transport.hostedWorkspace`; until a project is open the
  * analysis pages show a short gate instead.
  */
-import { createContext, type ReactElement } from 'react';
+import { createContext, useContext, type ReactElement } from 'react';
 import { Link } from 'react-router';
 import type { AuthService, HostedProjectSummary } from '@archaeodash/client';
 import { BusyNote } from '../ui/Busy.tsx';
@@ -66,6 +66,41 @@ export function saveLastProject(username: string, projectId: string | null): voi
   }
 }
 
+/** Starting and state of an anonymous guest session (hosted mode only). */
+export interface GuestControl {
+  /** A guest session is open in this page. */
+  readonly active: boolean;
+  /** A guest session is being started. */
+  readonly starting: boolean;
+  readonly start: () => void;
+}
+
+/** Provided by the app root when the server offers guest sessions. */
+export const GuestContext = createContext<GuestControl | null>(null);
+
+/** "Continue without an account", or a note while a guest session is open. */
+export function GuestStart(): ReactElement | null {
+  const guest = useContext(GuestContext);
+  if (!guest) return null;
+  if (guest.active) {
+    return (
+      <p className="guest-note" role="note">
+        You are using a guest session. Its data is deleted when you close or reload this page, or sign in.
+      </p>
+    );
+  }
+  return (
+    <div className="guest-start">
+      <button type="button" className="btn" onClick={guest.start} disabled={guest.starting}>
+        {guest.starting ? 'Starting…' : 'Continue without an account'}
+      </button>
+      <p className="guest-note">
+        Try ArchaeoDash with temporary storage. Nothing is kept after you close or reload the page.
+      </p>
+    </div>
+  );
+}
+
 export type HostedGateState = 'checking' | 'signed-out' | 'no-project';
 
 /** Shown in place of an analysis page until signed in with a project open. */
@@ -84,6 +119,7 @@ export function HostedGate({ state }: { state: HostedGateState }): ReactElement 
         <h1 id="start-heading">Sign in to continue</h1>
         <p>Your projects and group files are stored with your account. Sign in, or create an account, to work with them.</p>
         <Link className="start-open" to="/account">Sign in or create an account</Link>
+        <GuestStart />
       </section>
     );
   }

@@ -8,7 +8,7 @@ import { renderToString } from 'react-dom/server';
 import { MemoryRouter } from 'react-router';
 import type { AuthService, SessionInfo } from '@archaeodash/client';
 import { AppShell } from './AppShell.tsx';
-import { HostedGate, HostedWorkspaceContext, isAnalysisPath, observeSession, readLastProject, saveLastProject } from './hosted.tsx';
+import { GuestContext, GuestStart, HostedGate, HostedWorkspaceContext, isAnalysisPath, observeSession, readLastProject, saveLastProject } from './hosted.tsx';
 import { HostedProjectsPage } from './HostedProjectsPage.tsx';
 
 test('analysis pages need an open hosted project; home, account, projects and info do not', () => {
@@ -78,6 +78,33 @@ test('observeSession reports successful sign-in and sign-out, not failures', asy
   await assert.rejects(observed.login({ identifier: 'ada', password: 'x' }));
   assert.equal(changes, 3);
   assert.equal(await observed.session(), session, 'other calls pass through');
+});
+
+test('guest start offers an account-free session, then explains it while open', () => {
+  const render = (value: { active: boolean; starting: boolean } | null) =>
+    renderToString(
+      <MemoryRouter>
+        <GuestContext.Provider value={value && { ...value, start: () => {} }}>
+          <HostedGate state="signed-out" />
+          <GuestStart />
+        </GuestContext.Provider>
+      </MemoryRouter>,
+    );
+  assert.ok(!render(null).includes('Continue without an account'), 'hidden when the server has no guests');
+  const offered = render({ active: false, starting: false });
+  assert.ok(offered.includes('Continue without an account'));
+  assert.ok(offered.includes('Nothing is kept after you close or reload the page'));
+  assert.ok(render({ active: false, starting: true }).includes('Starting…'));
+  const open = render({ active: true, starting: false });
+  assert.ok(open.includes('You are using a guest session'));
+  assert.ok(!open.includes('Continue without an account'));
+});
+
+test('the top bar marks a guest session as temporary', () => {
+  const html = shell('/explore', { username: null, guest: true } as never, 'Guest session', 'guest-1');
+  assert.ok(html.includes('Guest session'));
+  assert.ok(html.includes('Temporary'));
+  assert.ok(html.includes('Sign in'));
 });
 
 test('the last project is remembered per user and survives missing storage', () => {

@@ -74,6 +74,14 @@ services:
       # Section 6.9: hourly retention sweep purges catalog tombstones older
       # than this many days along with their trash objects. Default 30.
       AUTH_RETENTION_DAYS: ${AUTH_RETENTION_DAYS:-30}
+      # Anonymous guest sessions (no account): a temporary workspace in the
+      # container's /tmp, deleted when the page closes, after 2 h idle or
+      # 24 h, and least recently used first above the total. AUTH_GUESTS=0
+      # turns them off.
+      AUTH_GUESTS: ${AUTH_GUESTS:-1}
+      AUTH_GUEST_QUOTA_BYTES: ${AUTH_GUEST_QUOTA_BYTES:-209715200}
+      AUTH_GUEST_TOTAL_BYTES: ${AUTH_GUEST_TOTAL_BYTES:-5368709120}
+      AUTH_GUEST_MAX_SESSIONS: ${AUTH_GUEST_MAX_SESSIONS:-100}
     ports:
       - "127.0.0.1:8080:8080"
     volumes:

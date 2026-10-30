@@ -38,11 +38,13 @@ import { BASE_PATH } from './basePath.ts';
 import { errorText, notify } from './ui/toast-store.ts';
 import { createTransport, isDemoMode } from './transport.ts';
 import {
+  GuestContext,
   HostedGate,
   HostedWorkspaceContext,
   observeSession,
   readLastProject,
   saveLastProject,
+  type GuestControl,
   type HostedGateState,
   type HostedWorkspace,
 } from './shell/hosted.tsx';
@@ -151,14 +153,92 @@ function AppRoot({ transport, sessionEvents }: { transport: Transport; sessionEv
     return () => sessionEvents.removeEventListener('change', onChange);
   }, [refreshSession, sessionEvents]);
 
-  const setHostedProject = useCallback((project: { project_id: string; name: string } | null) => {
-    transport.hostedWorkspace?.set(project?.project_id ?? null);
+  /** Shows `key`/`name` as the open project and resets per-project state. */
+  const scopeTo = useCallback((key: string, name: string) => {
     const generation = projectGenerationRef.current + 1;
     projectGenerationRef.current = generation;
-    setProjectPath(project?.project_id ?? '');
-    setProjectName(project?.name ?? '');
+    setProjectPath(key);
+    setProjectName(name);
     setProjectGeneration(generation);
-  }, [transport]);
+  }, []);
+
+  const setHostedProject = useCallback((project: { project_id: string; name: string } | null) => {
+    transport.hostedWorkspace?.set(project?.project_id ?? null);
+    scopeTo(project?.project_id ?? '', project?.name ?? '');
+  }, [transport, scopeTo]);
+
+  // ---- Guest session: the token lives only in this page's memory ----
+  const [guestToken, setGuestToken] = useState<string | null>(null);
+  const guestTokenRef = useRef<string | null>(null);
+  guestTokenRef.current = guestToken;
+  const [guestStarting, setGuestStarting] = useState(false);
+
+  /** Ends the guest session (server data deleted) and closes it here. */
+  const endGuest = useCallback(() => {
+    const token = guestTokenRef.current;
+    if (!token) return;
+    transport.guest?.end(token);
+    guestTokenRef.current = null;
+    setGuestToken(null);
+    transport.hostedWorkspace?.setGuest(null);
+    scopeTo('', '');
+  }, [transport, scopeTo]);
+
+  const startGuest = useCallback(async () => {
+    const guest = transport.guest;
+    if (!guest || guestTokenRef.current) return;
+    setGuestStarting(true);
+    try {
+      const session = await guest.start();
+      sessionEnded.current = false;
+      transport.hostedWorkspace?.setGuest(session.token);
+      guestTokenRef.current = session.token;
+      setGuestToken(session.token);
+      // A fresh key per session, never derived from the token.
+      scopeTo(`guest-${Date.now()}`, 'Guest session');
+      notify({ kind: 'info', text: 'Guest session started. Your work is kept only while this page stays open.' });
+      if (['/account', '/projects'].includes(locationRef.current.pathname)) navigate('/');
+    } catch (error) {
+      notify({ kind: 'error', text: `Could not start a guest session: ${errorText(error)}` });
+    } finally {
+      setGuestStarting(false);
+    }
+  }, [transport, scopeTo, navigate]);
+
+  // While a guest session is open: keep it alive, warn before leaving, and
+  // end it on the server when the page goes away.
+  useEffect(() => {
+    const guest = transport.guest;
+    if (!guestToken || !guest) return;
+    const ping = window.setInterval(() => {
+      void guest.ping(guestToken).then((alive) => {
+        if (!alive && guestTokenRef.current === guestToken) guestEndedRef.current();
+      }).catch(() => {});
+    }, 5 * 60 * 1000);
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    const leave = () => guest.end(guestToken);
+    window.addEventListener('beforeunload', warn);
+    window.addEventListener('pagehide', leave);
+    return () => {
+      window.clearInterval(ping);
+      window.removeEventListener('beforeunload', warn);
+      window.removeEventListener('pagehide', leave);
+    };
+  }, [transport, guestToken]);
+
+  /** The server ended the guest session (idle, too old, or storage cleanup). */
+  const guestEndedRef = useRef<() => void>(() => {});
+  guestEndedRef.current = () => {
+    guestTokenRef.current = null;
+    setGuestToken(null);
+    transport.hostedWorkspace?.setGuest(null);
+    scopeTo('', '');
+    notify({ kind: 'error', text: 'Your guest session has ended and its data was deleted. Start a new one, or sign in to keep your work.' });
+    navigate('/account');
+  };
 
   const openHostedProject = useCallback((project: { project_id: string; name: string }) => {
     sessionEnded.current = false;
@@ -180,6 +260,7 @@ function AppRoot({ transport, sessionEvents }: { transport: Transport; sessionEv
       return;
     }
     if (before !== null) setHostedProject(null); // a different user signed in
+    if (guestTokenRef.current) endGuest(); // signing in ends a guest session
     void hydrateTheme(transport, readStoredTheme()).then(setTheme);
     let cancelled = false;
     void (async () => {
@@ -206,13 +287,17 @@ function AppRoot({ transport, sessionEvents }: { transport: Transport; sessionEv
     return () => {
       cancelled = true;
     };
-  }, [server.mode, username, transport, navigate, setHostedProject]);
+  }, [server.mode, username, transport, navigate, setHostedProject, endGuest]);
 
   // A scoped request refused with 401: the session ended while working.
   useEffect(() => {
     const workspace = transport.hostedWorkspace;
     if (!workspace || server.mode !== 'hosted') return;
     workspace.onUnauthorized(() => {
+      if (guestTokenRef.current) {
+        guestEndedRef.current();
+        return;
+      }
       if (sessionEnded.current) return;
       sessionEnded.current = true;
       const here = locationRef.current;
@@ -226,11 +311,17 @@ function AppRoot({ transport, sessionEvents }: { transport: Transport; sessionEv
 
   const gateState: HostedGateState | null =
     server.mode === 'checking' ? 'checking'
-      : server.mode === 'hosted' ? (username === null ? 'signed-out' : projectPath ? null : 'no-project')
+      : server.mode === 'hosted' ? (projectPath ? null : username === null ? 'signed-out' : 'no-project')
       : null;
   const hostedShell = server.mode === 'plain'
     ? undefined
-    : { username, gate: gateState ? <HostedGate state={gateState} /> : undefined };
+    : { username, guest: guestToken !== null, gate: gateState ? <HostedGate state={gateState} /> : undefined };
+  const guestControl = useMemo<GuestControl | null>(
+    () => (server.mode === 'hosted' && transport.guest
+      ? { active: guestToken !== null, starting: guestStarting, start: () => void startGuest() }
+      : null),
+    [server.mode, transport, guestToken, guestStarting, startGuest],
+  );
   const hostedWorkspace = useMemo<HostedWorkspace | null>(
     () => (server.mode === 'hosted' && username !== null ? { projectId: projectPath, open: openHostedProject } : null),
     [server.mode, username, projectPath, openHostedProject],
@@ -239,6 +330,7 @@ function AppRoot({ transport, sessionEvents }: { transport: Transport; sessionEv
   return (
     <ShellInfoContext.Provider value={shellInfo}>
     <HostedWorkspaceContext.Provider value={hostedWorkspace}>
+    <GuestContext.Provider value={guestControl}>
     <ExportsProvider service={transport.exports}>
     <AnalysisSetupProvider service={transport.transformations} generation={projectGeneration}>
     <GroupInclusionProvider key={projectPath} projectKey={projectPath || 'default'}>
@@ -273,6 +365,7 @@ function AppRoot({ transport, sessionEvents }: { transport: Transport; sessionEv
     </GroupInclusionProvider>
     </AnalysisSetupProvider>
     </ExportsProvider>
+    </GuestContext.Provider>
     </HostedWorkspaceContext.Provider>
     </ShellInfoContext.Provider>
   );
