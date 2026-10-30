@@ -2,7 +2,7 @@ Up: [[Index]]
 
 # Hosted guest sessions (2026-10-29)
 
-Anonymous use of the hosted app, on top of [[Hosted_Project_Workspaces_2026-10-28]] and [[Cas_Hosted_Deployment_2026-10-29]]. Owner's rule: data is held in temporary files and can only be reached while the page is open, and it is cleared daily, or sooner when storage runs short. Not committed or deployed yet.
+Anonymous use of the hosted app, on top of [[Hosted_Project_Workspaces_2026-10-28]] and [[Cas_Hosted_Deployment_2026-10-29]]. Owner's rule: data is held in temporary files and can only be reached while the page is open, and it is cleared daily, or sooner when storage runs short. Committed in `cfe6205` and live on cas since 2026-10-30.
 
 ## How it works
 - **Starting:** `POST /api/v1/guest` creates a workspace in `AUTH_GUEST_DIR` (default `/tmp/archaeodash-guests`, inside the container) and returns a random token (`OpaqueToken`, 256-bit).
@@ -57,4 +57,8 @@ Anonymous use of the hosted app, on top of [[Hosted_Project_Workspaces_2026-10-2
 
 ## Not done
 - Guests can't save a session into an account. Signing in ends it, and the note says so.
-- Not deployed to cas.
+- A tab discarded without page-close events (seen when closing the desktop app's browser pane tab) sends no end beacon; that session waits for the 2 h idle sweep.
+
+## Live on cas (2026-10-30)
+- Image `cas-cfe6205`; `/srv/archaeodash/compose.yml` updated with the `AUTH_GUEST*` lines (previous copy kept as `compose.yml.bak-cfe6205`). Guests use the container's `/tmp`; cas root has ~140 GB free.
+- Checked through Apache: start (201), ping (204), end (204), then the old token gets 401. In a browser, "Continue without an account" opens the Data Manager as "Guest session", and navigating away logged `removed guest session` at once.
