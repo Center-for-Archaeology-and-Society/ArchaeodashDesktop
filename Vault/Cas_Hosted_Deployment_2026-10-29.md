@@ -66,5 +66,6 @@ Step 5 of [[Hosted_Login_Integration_Plan_2026-10-28]]. The owner chose a sub-pa
 - **Redeploys:** build on home2 as `archaeodash-hosted:cas-<short sha>` (with `--build-arg ARCHAEODASH_BASE_PATH=/archaeodash`), ship it through homepc, set `ARCHAEODASH_TAG` in `/srv/archaeodash/.env`, then `up -d app`. Postgres keeps running.
   - 2026-10-29: `cas-804bb54` (sign-in page layout and terms links). App healthy; public pages return 200.
   - 2026-10-30: `cas-cfe6205` (anonymous guest sessions, see [[Hosted_Guest_Sessions_2026-10-29]]); compose file updated, backup `compose.yml.bak-cfe6205`. App healthy; public pages return 200.
+  - 2026-10-30: `cas-4e0a443` (responsive multiplot pickers and pop-out plot windows, see [[Multiplot_Responsive_Pickers_And_Popout_Windows_2026-10-30]]). App healthy; public pages and `/archaeodash/multiplot-window/...` return 200.
 - **Not yet checked:** delivery of a real verification email; check `/var/log/mail.log` after the first sign-up.
 - **Follow-ups:** add the URL to `security/live_healthcheck.sh`; commit the repo changes. Registration is open to anyone; quota 1 GB per user; 4 analysis slots.
