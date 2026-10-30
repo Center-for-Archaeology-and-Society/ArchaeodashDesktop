@@ -15,6 +15,10 @@ use axum::Router;
 
 /// Enforced Content-Security-Policy for the hosted UI (Section 11.3: no
 /// `unsafe-eval`, no remote script execution).
+///
+/// `img-src` allows `blob:` because Plotly's PNG export loads the chart's
+/// SVG as an image from a `blob:` URL before drawing it on a canvas. Blob
+/// URLs can only be created by scripts already running on this origin.
 pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
      base-uri 'self'; \
      object-src 'none'; \
@@ -22,7 +26,7 @@ pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
      form-action 'self'; \
      script-src 'self'; \
      style-src 'self' 'unsafe-inline'; \
-     img-src 'self' data:; \
+     img-src 'self' data: blob:; \
      font-src 'self'; \
      connect-src 'self'";
 

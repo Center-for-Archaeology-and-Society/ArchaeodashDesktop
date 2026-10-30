@@ -1016,7 +1016,8 @@ mod tests {
             "default-src 'self'",
             "script-src 'self'",
             "style-src 'self' 'unsafe-inline'",
-            "img-src 'self' data:",
+            // blob: lets Plotly's PNG export load the chart image.
+            "img-src 'self' data: blob:",
             "frame-ancestors 'self'",
             "form-action 'self'",
             "base-uri 'self'",
