@@ -11,10 +11,10 @@ use archaeodash_contracts::{
     PartitionPreview,
 };
 use archaeodash_data_io::{
-    build_group_rows, default_chem_columns_for_frame, default_id_column, load_source,
-    parse_r_numeric, partition_by_group, sanitize_group_name, write_group_rows, CandidateStatus,
-    ColumnRoles, GroupFileData, GroupProfile, GroupRow, ImportError, ImportRecipe, LoadedSource,
-    Partition, ScanCandidate, SourceFormat, TextFrame, PROFILE_VERSION,
+    build_group_rows, default_chem_columns_for_frame, default_id_column, fill_blank_groups,
+    load_source, parse_r_numeric, partition_by_group, sanitize_group_name, write_group_rows,
+    CandidateStatus, ColumnRoles, GroupFileData, GroupProfile, GroupRow, ImportError, ImportRecipe,
+    LoadedSource, Partition, ScanCandidate, SourceFormat, TextFrame, PROFILE_VERSION,
 };
 use archaeodash_file_store_fs::FsGroupFileStore;
 use archaeodash_storage::{
@@ -40,12 +40,14 @@ fn io_err(e: std::io::Error) -> ImportError {
 
 /// Resolves the two mutually exclusive import grouping modes. No grouping is
 /// valid for a metadata-only preview; commits must always select a mode.
+/// Empty group cells become `(blank)` in `frame`; the count is returned with
+/// the partitions so the user can be warned.
 fn import_partitions(
-    frame: &archaeodash_data_io::TextFrame,
+    frame: &mut archaeodash_data_io::TextFrame,
     group_column: Option<&str>,
     group_name: Option<&str>,
     required: bool,
-) -> Result<Vec<Partition>, ImportError> {
+) -> Result<(Vec<Partition>, usize), ImportError> {
     let column = group_column.filter(|column| !column.trim().is_empty());
     let name = group_name.filter(|name| !name.trim().is_empty());
     if group_name.is_some() && name.is_none() {
@@ -55,15 +57,21 @@ fn import_partitions(
         (Some(_), Some(_)) => Err(ImportError::Parse(
             "choose either a group column or one group name, not both".into(),
         )),
-        (Some(column), None) => partition_by_group(frame, column),
-        (None, Some(name)) => Ok(vec![Partition {
-            group_name: name.trim().to_string(),
-            row_indices: (0..frame.n_rows()).collect(),
-        }]),
+        (Some(column), None) => {
+            let filled = fill_blank_groups(frame, column)?;
+            Ok((partition_by_group(frame, column)?, filled))
+        }
+        (None, Some(name)) => Ok((
+            vec![Partition {
+                group_name: name.trim().to_string(),
+                row_indices: (0..frame.n_rows()).collect(),
+            }],
+            0,
+        )),
         (None, None) if required => Err(ImportError::Parse(
             "choose a group column or provide one group name".into(),
         )),
-        (None, None) => Ok(Vec::new()),
+        (None, None) => Ok((Vec::new(), 0)),
     }
 }
 
@@ -447,25 +455,26 @@ impl ImportService {
         req: &ImportPreviewRequest,
     ) -> Result<ImportPreviewResponse, ImportError> {
         let loaded = self.load(&req.source, req.sheet.as_deref())?;
-        let frame = loaded.frame;
+        let mut frame = loaded.frame;
         let id_column = default_id_column(&frame.columns);
         let elemental_columns = default_chem_columns_for_frame(&frame);
-        let partitions: Vec<PartitionPreview> = import_partitions(
-            &frame,
+        let (partitions, blank_group_values) = import_partitions(
+            &mut frame,
             req.group_column.as_deref(),
             req.group_name.as_deref(),
             false,
-        )?
-        .into_iter()
-        .map(|partition| PartitionPreview {
-            suggested_path: format!(
-                "{DEFAULT_DESTINATION_DIR}/{}.parquet",
-                sanitize_group_name(&partition.group_name)
-            ),
-            row_count: partition.row_indices.len() as u64,
-            group_name: partition.group_name,
-        })
-        .collect();
+        )?;
+        let partitions: Vec<PartitionPreview> = partitions
+            .into_iter()
+            .map(|partition| PartitionPreview {
+                suggested_path: format!(
+                    "{DEFAULT_DESTINATION_DIR}/{}.parquet",
+                    sanitize_group_name(&partition.group_name)
+                ),
+                row_count: partition.row_indices.len() as u64,
+                group_name: partition.group_name,
+            })
+            .collect();
         let source_sha256 = sha256_file(&self.resolve(&req.source)?)?;
         let sheet = loaded.sheet.as_deref();
         let existing_groups = self
@@ -486,6 +495,7 @@ impl ImportService {
             id_column,
             elemental_columns,
             partitions,
+            blank_group_values: blank_group_values as u64,
             sheet: loaded.sheet,
             sheets: loaded.sheets,
             source_sha256: Some(source_sha256),
@@ -522,7 +532,7 @@ impl ImportService {
     ) -> Result<ImportCommitResponse, ImportError> {
         let source_path = self.resolve(&req.source)?;
         let loaded = self.load(&req.source, req.sheet.as_deref())?;
-        let frame = loaded.frame;
+        let mut frame = loaded.frame;
 
         let visible_id_column = resolve_visible_id(req.visible_id_column.as_deref(), &frame);
         let elemental_columns = req
@@ -549,9 +559,9 @@ impl ImportService {
         // groups are found on case-insensitive file systems.
         let destination_dir = crate::groups::on_disk_folder(&self.root, &destination_dir);
         // Validate partitioning before any filesystem side effects: a commit
-        // rejected for blank group values must not create directories.
-        let partitions = import_partitions(
-            &frame,
+        // rejected for its grouping must not create directories.
+        let (partitions, blank_group_values) = import_partitions(
+            &mut frame,
             Some(&req.group_column),
             req.group_name.as_deref(),
             true,
@@ -586,6 +596,7 @@ impl ImportService {
         Ok(ImportCommitResponse {
             source: req.source.clone(),
             groups,
+            blank_group_values: blank_group_values as u64,
         })
     }
 
@@ -1391,15 +1402,30 @@ mod tests {
     }
 
     #[test]
-    fn commit_rejects_blank_group_values() {
+    fn blank_group_values_import_as_the_blank_group() {
         let dir = tempdir::tempdir().expect("tempdir");
         std::fs::write(
             dir.path().join("blank.csv"),
-            "anid,Site,as\nA1,Baca,1\nA2,,2\n",
+            "anid,Site,as\nA1,Baca,1\nA2,,2\nA3, ,3\n",
         )
         .expect("write");
         let service = ImportService::new(dir.path()).expect("service");
-        let err = service
+        let preview = service
+            .preview(&ImportPreviewRequest {
+                source: "blank.csv".into(),
+                group_column: Some("Site".into()),
+                group_name: None,
+                sheet: None,
+            })
+            .expect("preview");
+        assert_eq!(preview.blank_group_values, 2);
+        let names: Vec<_> = preview
+            .partitions
+            .iter()
+            .map(|p| (p.group_name.as_str(), p.row_count))
+            .collect();
+        assert_eq!(names, vec![("Baca", 1), ("(blank)", 2)]);
+        let resp = service
             .commit(&ImportCommitRequest {
                 sheet: None,
                 source: "blank.csv".into(),
@@ -1410,10 +1436,14 @@ mod tests {
                 destination_dir: None,
                 group_name: None,
             })
-            .expect_err("blank group rejected");
-        assert!(matches!(err, ImportError::Parse(msg) if msg.contains("blank")));
-        // Nothing was published for the rejected import.
-        assert!(!dir.path().join("groups").exists());
+            .expect("blank groups import");
+        assert_eq!(resp.blank_group_values, 2);
+        assert_eq!(resp.groups.len(), 2);
+        assert_eq!(resp.groups[1].group_name, "(blank)");
+        // The stored group column says "(blank)" too.
+        let blank = read_group_file(&dir.path().join(&resp.groups[1].path)).expect("blank group");
+        assert_eq!(blank.rows.len(), 2);
+        assert_eq!(blank.rows[0].descriptive[0].as_deref(), Some("(blank)"));
     }
 
     #[test]

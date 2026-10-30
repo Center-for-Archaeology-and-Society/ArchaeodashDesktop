@@ -146,11 +146,12 @@ export function ImportWizard({ transport, onImported, onClose }: ImportWizardPro
       }));
       setDone(result);
       const groups = `${result.groups.length} group${result.groups.length === 1 ? '' : 's'}`;
-      setMessage(mode === 'append'
+      const blanks = blankGroupNote(result.blank_group_values ?? 0, groupColumn, 'were');
+      setMessage((mode === 'append'
         ? `Added ${rows} rows to ${groups} in “${destinationFolder}”.`
         : mode === 'replace_source'
           ? `Replaced the groups from this file in “${destinationFolder}” with ${groups} (${rows} rows).`
-          : `Imported ${groups} (${rows} rows).`);
+          : `Imported ${groups} (${rows} rows).`) + (blanks ? ` ${blanks}` : ''));
       await onImported?.(result);
     });
   };
@@ -201,6 +202,7 @@ export function ImportWizard({ transport, onImported, onClose }: ImportWizardPro
           onCancel={onClose}
         />}
         <p className="import-wizard-folder">Group files are saved in the folder <strong>{destinationFolder || '(choose a folder)'}</strong>.</p>
+        {groupMode === 'column' && (preview.blank_group_values ?? 0) > 0 && <p className="import-wizard-warning" role="note">{blankGroupNote(preview.blank_group_values ?? 0, groupColumn, 'will be')}</p>}
         {preview.partitions.length ? <ul>{preview.partitions.map((partition, index) => <li key={`${partition.group_name}-${index}`}>{partition.group_name}: {partition.row_count} rows</li>)}</ul> : <p>No groups found for this column.</p>}
         {!done && <button type="button" disabled={locked || !preview.partitions.length || !measured.length || !mode || !destinationFolder} onClick={() => void commit()}>{mode === 'append' ? 'Add rows' : mode === 'replace_source' ? 'Replace groups' : groupMode === 'single' ? 'Import one group' : 'Import groups'}</button>}
       </>}
@@ -212,4 +214,13 @@ export function ImportWizard({ transport, onImported, onClose }: ImportWizardPro
       <button ref={closeRef} type="button" className="fm-tool fm-tool-primary" onClick={onClose}>Close</button>
     </div>}
   </div>;
+}
+
+/** Warning for rows with an empty group cell, which import into "(blank)". */
+export function blankGroupNote(count: number, column: string, verb: 'will be' | 'were'): string {
+  if (count <= 0) return '';
+  const rows = count === 1 ? '1 row has' : `${count} rows have`;
+  return verb === 'were'
+    ? `${count === 1 ? '1 row' : `${count} rows`} with no ${column} value ${count === 1 ? 'was' : 'were'} put in the group “(blank)”.`
+    : `${rows} no ${column} value; ${count === 1 ? 'it' : 'they'} will be imported into the group “(blank)”.`;
 }

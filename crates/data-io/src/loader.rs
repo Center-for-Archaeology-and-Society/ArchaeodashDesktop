@@ -275,19 +275,13 @@ pub fn group_partitions(
         .column_index(group_col)
         .ok_or_else(|| ImportError::Parse(format!("missing group column {group_col}")))?;
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    let mut blanks = 0usize;
     for row in &frame.rows {
-        match &row[idx] {
-            Some(v) if !v.trim().is_empty() => *counts.entry(v.clone()).or_insert(0) += 1,
-            _ => blanks += 1,
-        }
-    }
-    if blanks > 0 {
-        // Section 7.2 item 12: blank group values require an explicit
-        // destination choice; plain partitioning rejects them.
-        return Err(ImportError::Parse(format!(
-            "group column {group_col} has {blanks} blank value(s); choose an explicit destination"
-        )));
+        // Blank group values count under the "(blank)" group, as import does.
+        let value = match &row[idx] {
+            Some(v) if !v.trim().is_empty() => v.clone(),
+            _ => crate::group_profile::BLANK_GROUP_LABEL.to_string(),
+        };
+        *counts.entry(value).or_insert(0) += 1;
     }
     Ok(counts.into_iter().collect())
 }

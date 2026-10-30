@@ -79,6 +79,10 @@ pub struct ImportPreviewResponse {
     pub elemental_columns: Vec<String>,
     /// Partition summary; empty when the request omitted `group_column`.
     pub partitions: Vec<PartitionPreview>,
+    /// Rows whose group column is empty; they are listed (and imported)
+    /// under the group `(blank)`.
+    #[serde(default)]
+    pub blank_group_values: u64,
     /// Worksheet that was read (XLSX sources only).
     #[serde(default)]
     pub sheet: Option<String>,
@@ -166,7 +170,8 @@ pub struct ImportRecipeDto {
 pub struct ImportCommitRequest {
     /// Project-relative path of the source CSV/TSV/XLSX.
     pub source: String,
-    /// Group column; blank values are rejected. Empty only when `group_name` is set.
+    /// Group column; blank values are imported as the group `(blank)`. Empty
+    /// only when `group_name` is set.
     #[serde(default)]
     pub group_column: String,
     /// Assign every row to one group instead of partitioning by a column.
@@ -210,6 +215,9 @@ pub struct ImportCommitResponse {
     pub source: String,
     /// One entry per published group Parquet file, in partition order.
     pub groups: Vec<CommittedGroup>,
+    /// Rows whose group column was empty and were imported into `(blank)`.
+    #[serde(default)]
+    pub blank_group_values: u64,
 }
 
 /// Summary of one group Parquet file (Section 10.2 `GET /groups/{id}` shape,
@@ -1763,6 +1771,7 @@ mod tests {
                 row_count: 12,
                 suggested_path: "groups/Baca.parquet".into(),
             }],
+            blank_group_values: 0,
             sheet: Some("INAA".into()),
             sheets: vec!["Notes".into(), "INAA".into()],
             source_sha256: Some("abc".into()),

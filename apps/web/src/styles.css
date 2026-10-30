@@ -1832,6 +1832,13 @@ a.start-open {
   color: var(--fg-muted);
 }
 
+.import-wizard-warning {
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
 .guest-badge {
   padding: 0.1rem 0.5rem;
   border-radius: 999px;

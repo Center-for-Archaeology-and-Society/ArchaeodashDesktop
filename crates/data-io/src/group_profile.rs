@@ -78,8 +78,33 @@ pub struct Partition {
     pub row_indices: Vec<usize>,
 }
 
-/// Partitions rows by the group column; blank values are rejected (Section
-/// 7.2 item 12: explicit destination required).
+/// Group value given to rows whose group cell is empty.
+pub const BLANK_GROUP_LABEL: &str = "(blank)";
+
+/// Replaces empty (or whitespace-only) cells in the group column with
+/// [`BLANK_GROUP_LABEL`], so those rows import as one group and the stored
+/// group column says so. Returns how many cells were filled.
+pub fn fill_blank_groups(frame: &mut TextFrame, group_col: &str) -> Result<usize, ImportError> {
+    let idx = frame
+        .column_index(group_col)
+        .ok_or_else(|| ImportError::Parse(format!("missing group column {group_col}")))?;
+    let mut filled = 0;
+    for row in &mut frame.rows {
+        let blank = match &row[idx] {
+            Some(v) => v.trim().is_empty(),
+            None => true,
+        };
+        if blank {
+            row[idx] = Some(BLANK_GROUP_LABEL.to_string());
+            filled += 1;
+        }
+    }
+    Ok(filled)
+}
+
+/// Partitions rows by the group column. Empty cells fall in the
+/// [`BLANK_GROUP_LABEL`] group (callers fill them first with
+/// [`fill_blank_groups`] so the stored value matches).
 pub fn partition_by_group(
     frame: &TextFrame,
     group_col: &str,
@@ -92,12 +117,7 @@ pub fn partition_by_group(
     for (i, row) in frame.rows.iter().enumerate() {
         let value = match &row[idx] {
             Some(v) if !v.trim().is_empty() => v.clone(),
-            _ => {
-                return Err(ImportError::Parse(format!(
-                    "group column {group_col} has a blank value at source row {}; choose an explicit destination",
-                    i + 1
-                )))
-            }
+            _ => BLANK_GROUP_LABEL.to_string(),
         };
         if !map.contains_key(&value) {
             order.push(value.clone());
@@ -944,6 +964,35 @@ pub fn assert_no_derived_columns(profile: &GroupProfile) -> Result<(), ImportErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blank_group_cells_become_the_blank_group() {
+        let mut frame = super::TextFrame {
+            columns: vec!["Site".into(), "as".into()],
+            rows: vec![
+                vec![Some("Baca".into()), Some("1".into())],
+                vec![None, Some("2".into())],
+                vec![Some("  ".into()), Some("3".into())],
+            ],
+        };
+        // Unfilled blanks still partition under the label.
+        let parts = super::partition_by_group(&frame, "Site").expect("partitions");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[1].group_name, super::BLANK_GROUP_LABEL);
+        assert_eq!(parts[1].row_indices, vec![1, 2]);
+        assert_eq!(
+            super::fill_blank_groups(&mut frame, "Site").expect("fill"),
+            2
+        );
+        assert_eq!(frame.rows[1][0].as_deref(), Some("(blank)"));
+        assert_eq!(frame.rows[2][0].as_deref(), Some("(blank)"));
+        assert_eq!(frame.rows[0][0].as_deref(), Some("Baca"));
+        assert_eq!(
+            super::fill_blank_groups(&mut frame, "Site").expect("refill"),
+            0
+        );
+        assert!(super::fill_blank_groups(&mut frame, "Missing").is_err());
+    }
 
     #[test]
     fn checksum_is_order_sensitive_and_stable() {

@@ -70,6 +70,8 @@ export interface ImportPreviewResponse {
   id_column?: string | null;
   elemental_columns: string[];
   partitions: PartitionPreview[];
+  /** Rows whose group column is empty; they are listed (and imported) under "(blank)". */
+  blank_group_values?: number;
   /** Worksheet that was read (XLSX sources only). */
   sheet?: string | null;
   /** Every worksheet in an XLSX source, in workbook order; empty for CSV/TSV. */
@@ -133,6 +135,8 @@ export interface CommittedGroup {
 export interface ImportCommitResponse {
   source: string;
   groups: CommittedGroup[];
+  /** Rows whose group column was empty and were imported into "(blank)". */
+  blank_group_values?: number;
 }
 
 // --- Source files (Section 10.4) ---

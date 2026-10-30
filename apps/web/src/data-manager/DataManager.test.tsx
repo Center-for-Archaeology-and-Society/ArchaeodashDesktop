@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { GroupCandidate, GroupSummary } from '@archaeodash/contracts';
 import { AddColumnForm, DataManager, GroupDetails, GroupFileTree, RENAME_SETTLE_MS, RenameGroupForm, columnNameProblem, draggedGroups, dropProblem, exclusionsAfterRename, folderNodes, groupFileStem, groupNameProblem, groupsWithColumn, loadGroupFiles, pathLike, renameGroupFile, renamedEntry, renamedExclusions, withoutStaleExclusions, type DataManagerTransport, type GroupFileEntry } from './DataManager.tsx';
 import { RERUN_DELAY_MS } from '../ordination/rerun.ts';
-import { ImportWizard } from './ImportWizard.tsx';
+import { ImportWizard, blankGroupNote } from './ImportWizard.tsx';
 import { DEFAULT_VALUE_OPTIONS, ImportValueOptions, recipeFromOptions } from './ImportValueOptions.tsx';
 import { ImportProgress, elapsedLabel, importStepLabel } from './ImportProgress.tsx';
 import { ImportDialog } from './ImportDialog.tsx';
@@ -482,4 +482,12 @@ test('a renamed group keeps the separators of the scanned path (Windows)', () =>
   assert.equal(pathLike('Site\\A.parquet', 'Site/A2.parquet'), 'Site\\A2.parquet');
   assert.equal(pathLike('Site/A.parquet', 'Site/A2.parquet'), 'Site/A2.parquet');
   assert.deepEqual(renamedExclusions(['Site\\A.parquet', 'Site\\B.parquet'], 'Site\\A.parquet', 'Site/A2.parquet'), ['Site\\A2.parquet', 'Site\\B.parquet']);
+});
+
+test('blank group values get a warning before and after import', () => {
+  assert.equal(blankGroupNote(0, 'Site', 'will be'), '');
+  assert.equal(blankGroupNote(1, 'Site', 'will be'), '1 row has no Site value; it will be imported into the group “(blank)”.');
+  assert.equal(blankGroupNote(3, 'Site', 'will be'), '3 rows have no Site value; they will be imported into the group “(blank)”.');
+  assert.equal(blankGroupNote(1, 'Site', 'were'), '1 row with no Site value was put in the group “(blank)”.');
+  assert.equal(blankGroupNote(2, 'Site', 'were'), '2 rows with no Site value were put in the group “(blank)”.');
 });
