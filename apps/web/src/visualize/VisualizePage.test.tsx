@@ -122,6 +122,8 @@ test('visualize page renders axis/filter/ellipse/symbol/label/assignment control
     assert.ok(html.includes(label), `missing control label: ${label}`);
   }
   assert.ok(html.includes('selected'), 'selection summary present');
+  // Elements is the default axis source, so Multiplot can be chosen.
+  assert.match(html, /<select aria-label="Plot mode"(?![^>]*disabled)/);
 });
 
 test('selected-rows table shows ANID, metadata, and predictors but never the uuid', () => {

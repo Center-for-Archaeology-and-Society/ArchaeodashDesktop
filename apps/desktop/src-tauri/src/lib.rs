@@ -125,6 +125,80 @@ async fn open_help_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// True for a multiplot window label: `multiplot-` then letters, digits, `-`.
+fn valid_multiplot_label(label: &str) -> bool {
+    label.len() <= 96
+        && label.strip_prefix("multiplot-").is_some_and(|rest| {
+            !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+}
+
+/// True for the pop-out route `multiplot-window/<key>[/<x>-<y>]`, so this
+/// command can open nothing but the multiplot view.
+fn valid_multiplot_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("multiplot-window/") else {
+        return false;
+    };
+    let mut parts = rest.split('/');
+    let key_ok = parts.next().is_some_and(|k| {
+        (8..=64).contains(&k.len())
+            && k.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    });
+    let pair_ok = match parts.next() {
+        None => true,
+        Some(pair) => pair.split_once('-').is_some_and(|(x, y)| {
+            [x, y]
+                .iter()
+                .all(|n| (1..=4).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_digit()))
+        }),
+    };
+    key_ok && pair_ok && parts.next().is_none()
+}
+
+/// Opens multiplot figures in their own window (the web client saved the
+/// data for it; the window needs no backend). Focuses an open one.
+#[tauri::command]
+async fn open_multiplot_window(
+    app: tauri::AppHandle,
+    label: String,
+    path: String,
+    title: String,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    if !valid_multiplot_label(&label) || !valid_multiplot_path(&path) {
+        return Err("invalid multiplot window request".into());
+    }
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.unminimize();
+        return window.set_focus().map_err(|e| e.to_string());
+    }
+    let title: String = title
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(120)
+        .collect();
+    let size = |v: f64, default: f64| {
+        if v.is_finite() {
+            v.clamp(320.0, 4000.0)
+        } else {
+            default
+        }
+    };
+    let url = tauri::WebviewUrl::App(path.into());
+    let _window = tauri::WebviewWindowBuilder::new(&app, &label, url)
+        .title(format!("{title} — ArchaeoDash"))
+        .inner_size(size(width, 900.0), size(height, 800.0))
+        .build()
+        .map_err(|e| format!("could not open the plot window: {e}"))?;
+    #[cfg(windows)]
+    if let Ok(hwnd) = _window.hwnd() {
+        windows_icon::apply(hwnd.0);
+    }
+    Ok(())
+}
+
 impl DesktopState {
     fn empty() -> Self {
         Self {
@@ -885,6 +959,7 @@ pub fn run() {
             projects::reveal_project,
             logging::reveal_log_folder,
             open_help_window,
+            open_multiplot_window,
             list_group_folders,
             create_group_folder,
             rename_group_folder,
@@ -898,6 +973,31 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod multiplot_window_tests {
+    use super::{valid_multiplot_label, valid_multiplot_path};
+
+    #[test]
+    fn only_the_multiplot_route_and_labels_are_accepted() {
+        assert!(valid_multiplot_path("multiplot-window/abc12345xyz"));
+        assert!(valid_multiplot_path("multiplot-window/abc12345xyz/0-3"));
+        assert!(!valid_multiplot_path("help-window"));
+        assert!(!valid_multiplot_path("multiplot-window/short"));
+        assert!(!valid_multiplot_path("multiplot-window/abc12345xyz/0-3/x"));
+        assert!(!valid_multiplot_path(
+            "multiplot-window/abc12345xyz/../visualize"
+        ));
+        assert!(!valid_multiplot_path("multiplot-window/ABC12345XYZ"));
+        assert!(!valid_multiplot_path(
+            "https://example.com/multiplot-window/abc12345xyz"
+        ));
+        assert!(valid_multiplot_label("multiplot-abc12345xyz-0"));
+        assert!(!valid_multiplot_label("main"));
+        assert!(!valid_multiplot_label("multiplot-"));
+        assert!(!valid_multiplot_label("multiplot-a b"));
+    }
 }
 
 #[cfg(test)]

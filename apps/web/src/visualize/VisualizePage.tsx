@@ -418,10 +418,14 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
   );
 
   // Reset axes to the first two dimensions whenever the axis source changes.
+  // Multiplot draws element columns only, so other sources use one plot.
   useEffect(() => {
     setXIdx(0);
     setYIdx(1);
+    if (source !== 'elements') setPlotMode('single');
   }, [source]);
+  const multiplotAvailable = source === 'elements';
+  const showMultiplot = plotMode === 'multiplot' && multiplotAvailable;
 
   const filteredIdx = useMemo(() => {
     const all = combined.rows.map((_, i) => i);
@@ -663,6 +667,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
             ))}
           </select>
         </label>
+        {!showMultiplot && (<>
         <label>
           X axis
           <select value={String(xIdx)} onChange={(e) => setXIdx(Number(e.target.value))}>
@@ -688,6 +693,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
             X and Y must be different axes; the legacy plot rejects identical selections.
           </span>
         )}
+        </>)}
       </div>
       <div className="explore-controls">
         <label>
@@ -722,9 +728,14 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
             ))}
           </select>
         </label>
-        <label>
+        <label title={multiplotAvailable ? undefined : 'Multiplot plots element columns only; choose Elements under Axes to use it.'}>
           Plot mode
-          <select value={plotMode} onChange={(e) => setPlotMode(e.target.value as 'single' | 'multiplot')}>
+          <select
+            aria-label="Plot mode"
+            value={showMultiplot ? 'multiplot' : 'single'}
+            disabled={!multiplotAvailable}
+            onChange={(e) => setPlotMode(e.target.value as 'single' | 'multiplot')}
+          >
             <option value="single">Single plot</option>
             <option value="multiplot">Multiplot</option>
           </select>
@@ -801,7 +812,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       {scoreState === 'loading' && <BusyNote>Computing {source.toUpperCase()}…</BusyNote>}
       {scoreState !== null && scoreState !== 'loading' && <p role="alert">{scoreState}</p>}
       {scores.kind === 'loaded' && scores.data.note && <p className="muted">{scores.data.note}</p>}
-      {plotMode === 'multiplot' && combined.rows.length > 0 ? (
+      {showMultiplot && combined.rows.length > 0 ? (
         <Multiplot
           {...multiplotData}
           onSelect={selectUuids}

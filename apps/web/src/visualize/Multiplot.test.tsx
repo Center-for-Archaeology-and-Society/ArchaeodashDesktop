@@ -2,7 +2,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToString } from 'react-dom/server';
-import { Multiplot, type MultiplotProps } from './Multiplot.tsx';
+import { Multiplot, PANEL_CHUNK, panelsPerStep, type MultiplotProps } from './Multiplot.tsx';
+import { buildSnapshot, newSnapshotKey, parsePopoutRoute, popoutRoute } from './multiplot-window.ts';
 
 const UUID_A = '0197bbbb-0000-7000-8000-00000000000a';
 const UUID_B = '0197bbbb-0000-7000-8000-00000000000b';
@@ -117,4 +118,41 @@ test('static panels draw axis ticks and survive large inputs without spreading',
   };
   const html = renderToString(<Multiplot {...props} />);
   assert.ok(html.includes('>20000<'), 'tick labels rendered');
+});
+
+test('drawing steps shrink when each panel holds many points', () => {
+  assert.equal(panelsPerStep(4), PANEL_CHUNK);
+  assert.equal(panelsPerStep(10_000), 6);
+  assert.equal(panelsPerStep(100_000), 1);
+});
+
+test('the open-in-new-window control offers one window or one per plot', () => {
+  const html = renderToString(<Multiplot {...baseProps()} />);
+  assert.ok(html.includes('All plots in one window'));
+  assert.ok(html.includes('One window per plot'));
+  assert.ok(html.includes('Open in new window'));
+  const inWindow = renderToString(<Multiplot {...baseProps()} windowControls={false} />);
+  assert.ok(!inWindow.includes('Open in new window'), 'hidden inside a pop-out window');
+});
+
+test('pop-out snapshots keep only the plotted columns and filtered rows', () => {
+  const props = baseProps();
+  const snap = buildSnapshot(
+    { ...props, palette: ['#111', '#222'], rowIndices: [1, 3] },
+    { x: ['Zr'], y: ['Ti'], mode: 'static', pointSize: 2, height: 900 },
+  );
+  assert.deepEqual(snap.columns, ['Ti', 'Zr']);
+  assert.deepEqual(snap.values, [[2, 4], [1, 3]]);
+  assert.deepEqual(snap.groupLabels, ['Baca', 'Other']);
+  assert.deepEqual(snap.rowUuids, [UUID_B, '0197bbbb-0000-7000-8000-00000000000d']);
+  assert.deepEqual([snap.x, snap.y], [['Zr'], ['Ti']]);
+});
+
+test('pop-out routes round-trip and reject anything else', () => {
+  const key = newSnapshotKey();
+  assert.match(key, /^[a-z0-9]{8,64}$/);
+  assert.deepEqual(parsePopoutRoute(popoutRoute(key)), { key, pair: null });
+  assert.deepEqual(parsePopoutRoute(popoutRoute(key, { x: 2, y: 0 })), { key, pair: { x: 2, y: 0 } });
+  assert.equal(parsePopoutRoute('/visualize'), null);
+  assert.equal(parsePopoutRoute(`${popoutRoute(key)}/../x`), null);
 });

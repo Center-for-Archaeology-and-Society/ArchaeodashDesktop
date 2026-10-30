@@ -6,8 +6,14 @@
  * per procedure 13), progressive drawing with stop/continue, and plot save
  * (SVG download in static mode; Plotly toImage SVG in interactive mode; the
  * uuid stays internal to selection only).
+ *
+ * Changing the X/Y pickers stops drawing at once; the grid follows the new
+ * choice once the pickers settle. Drawn panels are memoized, so a picker
+ * click never redraws them, and each drawing step is a React transition,
+ * so input is handled between steps. The plots can open in new windows
+ * (all in one, or one per plot); see multiplot-window.ts.
  */
-import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import type { Data, Layout } from 'plotly.js-dist-min';
 import {
   crossPairs,
@@ -22,6 +28,15 @@ import {
 import { colorFor, groupColors } from './visualize-model.ts';
 import { plotTheme } from '../charts/PlotlyChart.tsx';
 import { plotlyText } from '../charts/plotly-text.ts';
+import {
+  MAX_PLOT_WINDOWS,
+  buildSnapshot,
+  newSnapshotKey,
+  onPopoutSelection,
+  openPopouts,
+  type PopoutLayout,
+  type PopoutTarget,
+} from './multiplot-window.ts';
 import { PlotSaveButtons, combineSvgParts, saveSvgPart, serializeSvg, svgFromDataUrl, type ImageFormat, type SvgPart } from '../ui/PlotSave.tsx';
 
 export const MIN_HEIGHT = 500;
@@ -58,6 +73,10 @@ export interface MultiplotProps {
   /** Initial X / Y column names (default: every column on both axes). */
   readonly initialX?: readonly string[];
   readonly initialY?: readonly string[];
+  readonly initialPointSize?: number;
+  readonly initialHeight?: number;
+  /** Show the "open in new window" controls (off inside a pop-out window). */
+  readonly windowControls?: boolean;
 }
 
 export interface PanelTrace {
@@ -207,11 +226,19 @@ export function InteractivePanel({
   onSelect?: (uuids: readonly string[]) => void;
 }): ReactElement {
   const holder = useRef<HTMLDivElement | null>(null);
+  const plotlyRef = useRef<PlotlyModule | null>(null);
   // The latest callback, so a new function identity never redraws the panel.
   const selectRef = useRef(onSelect);
   useEffect(() => {
     selectRef.current = onSelect;
   }, [onSelect]);
+  // Removing a panel frees its WebGL context (browsers allow only a few).
+  useEffect(() => {
+    const el = holder.current;
+    return () => {
+      if (el && plotlyRef.current) plotlyRef.current.purge(el);
+    };
+  }, []);
 
   useEffect(() => {
     if (!holder.current) return;
@@ -219,6 +246,7 @@ export function InteractivePanel({
     void (async () => {
       const Plotly = (await import('plotly.js-dist-min')) as PlotlyModule;
       if (disposed || !holder.current) return;
+      plotlyRef.current = Plotly;
       const data: Data[] = traces.map((t) => ({
         type: 'scattergl',
         mode: 'markers',
@@ -312,48 +340,174 @@ function ColumnPicker({
   );
 }
 
+/** Points drawn per progressive step, so one step never blocks for long. */
+export const POINTS_PER_STEP = 60_000;
+/** Quiet time after the last picker change before the grid follows it. */
+export const PICKER_SETTLE_MS = 500;
+
+/** Panels per drawing step: PANEL_CHUNK, fewer when each panel has many points. */
+export function panelsPerStep(pointsPerPanel: number): number {
+  return Math.max(1, Math.min(PANEL_CHUNK, Math.floor(POINTS_PER_STEP / Math.max(1, pointsPerPanel))));
+}
+
+interface AxisChoice {
+  readonly x: readonly string[] | null;
+  readonly y: readonly string[] | null;
+}
+
+type PopoutState = { kind: 'idle' } | { kind: 'busy' } | { kind: 'error'; text: string };
+
+/** Unset choices follow the available columns (all on both axes). */
+function chosenColumns(choice: readonly string[] | null, columns: readonly string[]): string[] {
+  return (choice ?? columns).filter((c) => columns.includes(c));
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
+}
+
 export function Multiplot(props: MultiplotProps): ReactElement {
-  const [pointSize, setPointSize] = useState(2);
-  const [height, setHeight] = useState(DEFAULT_HEIGHT);
+  const [pointSize, setPointSize] = useState(props.initialPointSize ?? 2);
+  const [height, setHeight] = useState(props.initialHeight ?? DEFAULT_HEIGHT);
   const [mode, setMode] = useState<MultiplotMode>(props.initialMode ?? 'static');
-  const [xChoice, setXChoice] = useState<readonly string[] | null>(props.initialX ?? null);
-  const [yChoice, setYChoice] = useState<readonly string[] | null>(props.initialY ?? null);
-  const [renderCount, setRenderCount] = useState(PANEL_CHUNK);
+  // `draft` is what the pickers show (changes at once); `applied` is what
+  // the grid draws (follows the pickers once they settle).
+  const [draft, setDraft] = useState<AxisChoice>(() => ({ x: props.initialX ?? null, y: props.initialY ?? null }));
+  const [applied, setApplied] = useState<AxisChoice>(draft);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
   const [drawing, setDrawing] = useState(true);
   const gridRef = useRef<HTMLDivElement | null>(null);
 
-  // Unset choices follow the available columns (all on both axes).
-  const xCols = useMemo(() => (xChoice ?? props.columns).filter((c) => props.columns.includes(c)), [xChoice, props.columns]);
-  const yCols = useMemo(() => (yChoice ?? props.columns).filter((c) => props.columns.includes(c)), [yChoice, props.columns]);
+  const draftX = useMemo(() => chosenColumns(draft.x, props.columns), [draft.x, props.columns]);
+  const draftY = useMemo(() => chosenColumns(draft.y, props.columns), [draft.y, props.columns]);
+  const xCols = useMemo(() => chosenColumns(applied.x, props.columns), [applied.x, props.columns]);
+  const yCols = useMemo(() => chosenColumns(applied.y, props.columns), [applied.y, props.columns]);
   const xIdx = useMemo(() => xCols.map((c) => props.columns.indexOf(c)), [xCols, props.columns]);
   const yIdx = useMemo(() => yCols.map((c) => props.columns.indexOf(c)), [yCols, props.columns]);
   const pairs = useMemo(() => crossPairs(xIdx, yIdx), [xIdx, yIdx]);
+  const draftPairs = useMemo(
+    () => crossPairs(draftX.map((c) => props.columns.indexOf(c)), draftY.map((c) => props.columns.indexOf(c))),
+    [draftX, draftY, props.columns],
+  );
   const plan: SamplingPlan = useMemo(
     () => samplingPlan(props.rowIndices, props.groupLabels, pairs.length, pairs.length),
     [props.rowIndices, props.groupLabels, pairs.length],
   );
+  const indices = mode === 'interactive' ? plan.indices : props.rowIndices;
+  // SVG panels cost one DOM node per point; Plotly panels draw with WebGL
+  // after the step, so only SVG steps shrink with the point count.
+  const step = mode === 'interactive' ? PANEL_CHUNK : panelsPerStep(indices.length);
+  const [renderCount, setRenderCount] = useState(step);
   const panelHeight = Math.max(MIN_PANEL_HEIGHT, Math.floor(height / Math.max(1, yCols.length)));
 
-  // Draw panels a chunk at a time so a large grid never freezes the page;
-  // the user can stop and continue.
+  // Draw panels a step at a time so a large grid never freezes the page;
+  // the user can stop and continue. Steps are transitions, so React stops
+  // a step's render to handle a click or key press.
   useEffect(() => {
-    setRenderCount(PANEL_CHUNK);
+    setRenderCount(step);
     setDrawing(true);
-  }, [pairs, mode]);
+  }, [pairs, mode, step]);
   useEffect(() => {
     if (!drawing || renderCount >= pairs.length) return;
-    const timer = setTimeout(() => setRenderCount((n) => n + PANEL_CHUNK), 30);
+    const timer = setTimeout(() => startTransition(() => setRenderCount((n) => n + step)), 30);
     return () => clearTimeout(timer);
-  }, [drawing, renderCount, pairs.length]);
+  }, [drawing, renderCount, pairs.length, step]);
   const shown = Math.min(renderCount, pairs.length);
-  const visible = new Set(pairs.slice(0, shown).map((p) => `${p.xIndex}-${p.yIndex}`));
+  const committed = useRef(shown);
+  useEffect(() => {
+    committed.current = shown;
+  }, [shown]);
 
-  const palette = props.palette ?? groupColors(props.groupNames.length);
+  // Touching the X/Y pickers stops drawing at once (and drops a step that
+  // is still rendering); the grid follows the pickers once they settle.
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stopForPickers = useCallback(() => {
+    setDrawing(false);
+    setRenderCount(committed.current);
+    if (settleTimer.current !== null) clearTimeout(settleTimer.current);
+    settleTimer.current = setTimeout(() => {
+      settleTimer.current = null;
+      const next = draftRef.current;
+      startTransition(() => {
+        setApplied(next);
+        setDrawing(true);
+      });
+    }, PICKER_SETTLE_MS);
+  }, []);
+  useEffect(() => () => {
+    if (settleTimer.current !== null) clearTimeout(settleTimer.current);
+  }, []);
+  const pickX = useCallback((next: string[]) => {
+    setDraft((d) => ({ ...d, x: next }));
+    stopForPickers();
+  }, [stopForPickers]);
+  const pickY = useCallback((next: string[]) => {
+    setDraft((d) => ({ ...d, y: next }));
+    stopForPickers();
+  }, [stopForPickers]);
+
+  const palette = useMemo(() => props.palette ?? groupColors(props.groupNames.length), [props.palette, props.groupNames.length]);
   const legendGroups = useMemo(() => {
     const present = new Set<string>();
     for (const row of props.rowIndices) present.add(props.groupLabels[row] ?? 'All');
     return props.groupNames.filter((g) => present.has(g));
   }, [props.rowIndices, props.groupLabels, props.groupNames]);
+
+  // Pop-out windows: selections made there come back to this page.
+  const [popLayout, setPopLayout] = useState<PopoutLayout>('all');
+  const [popState, setPopState] = useState<PopoutState>({ kind: 'idle' });
+  const openedKeys = useRef(new Set<string>());
+  const onSelectRef = useRef(props.onSelect);
+  onSelectRef.current = props.onSelect;
+  useEffect(
+    () => onPopoutSelection((key) => openedKeys.current.has(key), (uuids) => onSelectRef.current?.(uuids)),
+    [],
+  );
+  const openWindows = () => {
+    if (draftPairs.length === 0) return;
+    if (popLayout === 'each' && draftPairs.length > MAX_PLOT_WINDOWS) {
+      setPopState({
+        kind: 'error',
+        text: `That is ${draftPairs.length} plots; one window per plot opens at most ${MAX_PLOT_WINDOWS}. Pick fewer X or Y columns.`,
+      });
+      return;
+    }
+    const key = newSnapshotKey();
+    openedKeys.current.add(key);
+    const snapshot = buildSnapshot({ ...props, palette }, { x: draftX, y: draftY, mode, pointSize, height });
+    const col = (i: number) => snapshot.columns.indexOf(props.columns[i] ?? '');
+    const screenW = window.screen?.availWidth || 1600;
+    const screenH = window.screen?.availHeight || 1000;
+    const targets: PopoutTarget[] = popLayout === 'all'
+      ? [{
+          title: 'Multiplot',
+          width: clamp(draftX.length * (PANEL_WIDTH + 24) + 80, 640, screenW),
+          height: clamp(height + 280, 600, screenH),
+        }]
+      : draftPairs.map((p) => ({
+          title: `${props.columns[p.yIndex] ?? 'Y'} by ${props.columns[p.xIndex] ?? 'X'}`,
+          pair: { x: col(p.xIndex), y: col(p.yIndex) },
+          width: clamp(760, 400, screenW),
+          height: clamp(680, 400, screenH),
+        }));
+    setPopState({ kind: 'busy' });
+    openPopouts(key, snapshot, targets)
+      .then(({ blocked }) => {
+        if (blocked === 0) setPopState({ kind: 'idle' });
+        else {
+          setPopState({
+            kind: 'error',
+            text: blocked === targets.length
+              ? 'The browser blocked the new window. Allow pop-ups for this site and try again.'
+              : `The browser blocked ${blocked} of ${targets.length} windows. Allow pop-ups for this site and try again.`,
+          });
+        }
+      })
+      .catch((err: unknown) => {
+        setPopState({ kind: 'error', text: `Could not open the plot window: ${err instanceof Error ? err.message : String(err)}` });
+      });
+  };
 
   /** Saves every drawn panel as one image (grid layout). */
   const savePlots = async (format: ImageFormat): Promise<unknown> => {
@@ -393,12 +547,13 @@ export function Multiplot(props: MultiplotProps): ReactElement {
   };
 
   const samplingStatus = mode === 'interactive' ? samplingStatusText(plan) : null;
+  const rowUuids = props.rowUuids ?? NO_UUIDS;
 
   return (
     <div className="multiplot">
-      <div className="explore-controls">
-        <ColumnPicker label="X" columns={props.columns} selected={xCols} onChange={setXChoice} />
-        <ColumnPicker label="Y" columns={props.columns} selected={yCols} onChange={setYChoice} />
+      <div className="explore-controls" onPointerDownCapture={stopForPickers} onKeyDownCapture={stopForPickers}>
+        <ColumnPicker label="X" columns={props.columns} selected={draftX} onChange={pickX} />
+        <ColumnPicker label="Y" columns={props.columns} selected={draftY} onChange={pickY} />
       </div>
       <div className="explore-controls">
         <label>
@@ -437,19 +592,30 @@ export function Multiplot(props: MultiplotProps): ReactElement {
           />
         </label>
         <PlotSaveButtons name="Multiplot" save={savePlots} />
+        {props.windowControls !== false && (
+          <span className="multiplot-popout" role="group" aria-label="Open in new window">
+            <select aria-label="New window layout" value={popLayout} onChange={(e) => setPopLayout(e.target.value as PopoutLayout)}>
+              <option value="all">All plots in one window</option>
+              <option value="each">One window per plot</option>
+            </select>
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={draftPairs.length === 0 || popState.kind === 'busy'}
+              onClick={openWindows}
+              title="Open the plots in a separate window"
+            >
+              {popLayout === 'each'
+                ? `Open ${draftPairs.length} window${draftPairs.length === 1 ? '' : 's'}`
+                : 'Open in new window'}
+            </button>
+          </span>
+        )}
       </div>
+      {popState.kind === 'error' && <p role="alert">{popState.text}</p>}
       {samplingStatus !== null && <p role={plan.errorText === null ? 'status' : 'alert'}>{samplingStatus}</p>}
       {pairs.length === 0 && <p className="muted">Pick X and Y columns (at least one pair of different columns) for a multiplot.</p>}
-      {legendGroups.length > 0 && pairs.length > 0 && (
-        <ul className="multiplot-legend" aria-label="Groups">
-          {legendGroups.map((g) => (
-            <li key={g}>
-              <span className="multiplot-swatch" style={{ background: palette[props.groupNames.indexOf(g)] ?? '#888' }} />
-              {g}
-            </li>
-          ))}
-        </ul>
-      )}
+      {legendGroups.length > 0 && pairs.length > 0 && <GroupLegend groups={legendGroups} groupNames={props.groupNames} palette={palette} />}
       {shown < pairs.length && (
         <p className="multiplot-progress" role="status">
           {drawing ? `Drawing panels: ${shown} of ${pairs.length}` : `Stopped after ${shown} of ${pairs.length} panels.`}{' '}
@@ -467,53 +633,108 @@ export function Multiplot(props: MultiplotProps): ReactElement {
         ref={gridRef}
         style={{ gridTemplateColumns: `repeat(${Math.max(1, xCols.length)}, max-content)` }}
       >
-        {yIdx.flatMap((y) =>
-          xIdx.map((x) => {
-            const key = `${x}-${y}`;
-            if (x === y) return <div key={key} className="multiplot-cell multiplot-cell-empty" aria-hidden="true" />;
-            if (!visible.has(key)) return <div key={key} className="multiplot-cell multiplot-cell-pending" style={{ width: PANEL_WIDTH, height: panelHeight }} />;
-            return (
-              <MultiplotPanel
-                key={key}
-                props={props}
-                pair={{ xIndex: x, yIndex: y }}
-                plan={plan}
-                pointSize={pointSize}
-                height={panelHeight}
-                mode={mode}
-              />
-            );
-          }),
-        )}
+        {(() => {
+          let order = 0;
+          return yIdx.flatMap((y) =>
+            xIdx.map((x) => {
+              const key = `${x}-${y}`;
+              if (x === y) return <div key={key} className="multiplot-cell multiplot-cell-empty" aria-hidden="true" />;
+              // Pairs draw in grid order, so the first `shown` panels are drawn.
+              if (order++ >= shown) return <div key={key} className="multiplot-cell multiplot-cell-pending" style={{ width: PANEL_WIDTH, height: panelHeight }} />;
+              return (
+                <MultiplotPanel
+                  key={key}
+                  columns={props.columns}
+                  values={props.values}
+                  groupLabels={props.groupLabels}
+                  groupNames={props.groupNames}
+                  palette={props.palette}
+                  rowUuids={rowUuids}
+                  onSelect={props.onSelect}
+                  xIndex={x}
+                  yIndex={y}
+                  indices={indices}
+                  pointSize={pointSize}
+                  width={PANEL_WIDTH}
+                  height={panelHeight}
+                  mode={mode}
+                />
+              );
+            }),
+          );
+        })()}
       </div>
     </div>
   );
 }
 
-function MultiplotPanel({
-  props,
-  pair,
-  plan,
+/** Group color key shared by the grid and the pop-out windows. */
+export function GroupLegend({
+  groups,
+  groupNames,
+  palette,
+}: {
+  groups: readonly string[];
+  groupNames: readonly string[];
+  palette: readonly string[];
+}): ReactElement {
+  return (
+    <ul className="multiplot-legend" aria-label="Groups">
+      {groups.map((g) => (
+        <li key={g}>
+          <span className="multiplot-swatch" style={{ background: palette[groupNames.indexOf(g)] ?? '#888' }} />
+          {g}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export interface MultiplotPanelProps {
+  readonly columns: readonly string[];
+  readonly values: MultiplotProps['values'];
+  readonly groupLabels: readonly string[];
+  readonly groupNames: readonly string[];
+  readonly palette?: readonly string[];
+  readonly rowUuids: readonly string[];
+  readonly onSelect?: (uuids: readonly string[]) => void;
+  readonly xIndex: number;
+  readonly yIndex: number;
+  /** Rows to draw (the sampling plan in interactive mode). */
+  readonly indices: readonly number[];
+  readonly pointSize: number;
+  readonly width: number;
+  readonly height: number;
+  readonly mode: MultiplotMode;
+}
+
+/**
+ * One X × Y panel. Memoized on plain, stable props: a picker click or any
+ * other change in the grid around it never redraws a finished panel.
+ */
+export const MultiplotPanel = memo(function MultiplotPanel({
+  columns,
+  values,
+  groupLabels,
+  groupNames,
+  palette,
+  rowUuids,
+  onSelect,
+  xIndex,
+  yIndex,
+  indices,
   pointSize,
+  width,
   height,
   mode,
-}: {
-  props: MultiplotProps;
-  pair: PlotPair;
-  plan: SamplingPlan;
-  pointSize: number;
-  height: number;
-  mode: MultiplotMode;
-}): ReactElement {
-  const indices = mode === 'interactive' ? plan.indices : props.rowIndices;
-  const { values, groupLabels, groupNames, palette } = props;
+}: MultiplotPanelProps): ReactElement {
+  const pair = useMemo(() => ({ xIndex, yIndex }), [xIndex, yIndex]);
   const traces = useMemo(
     () => panelPoints({ values, groupLabels, groupNames, palette }, pair, indices).traces,
-    // pair is rebuilt each render; its two indices identify it.
-    [values, groupLabels, groupNames, palette, pair.xIndex, pair.yIndex, indices],
+    [values, groupLabels, groupNames, palette, pair, indices],
   );
-  const xLabel = props.columns[pair.xIndex] ?? `X${pair.xIndex}`;
-  const yLabel = props.columns[pair.yIndex] ?? `Y${pair.yIndex}`;
+  const xLabel = columns[xIndex] ?? `X${xIndex}`;
+  const yLabel = columns[yIndex] ?? `Y${yIndex}`;
   if (mode === 'interactive') {
     return (
       <div className="multiplot-cell">
@@ -521,12 +742,12 @@ function MultiplotPanel({
           pair={pair}
           xLabel={xLabel}
           yLabel={yLabel}
-          width={PANEL_WIDTH}
+          width={width}
           height={height}
           pointSize={pointSize}
           traces={traces}
-          rowUuids={props.rowUuids ?? NO_UUIDS}
-          onSelect={props.onSelect}
+          rowUuids={rowUuids}
+          onSelect={onSelect}
         />
       </div>
     );
@@ -537,13 +758,13 @@ function MultiplotPanel({
         pair={pair}
         xLabel={xLabel}
         yLabel={yLabel}
-        width={PANEL_WIDTH}
+        width={width}
         height={height}
         pointSize={pointSize}
         traces={traces}
       />
     </div>
   );
-}
+});
 
 const NO_UUIDS: readonly string[] = [];

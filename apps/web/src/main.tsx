@@ -30,6 +30,8 @@ import { HostedProjectsPage } from './shell/HostedProjectsPage.tsx';
 import { ExplorePage, type ExploreDeps } from './explore/ExplorePage.tsx';
 import { OrdinationPage, type OrdinationDeps } from './ordination/OrdinationPage.tsx';
 import { VisualizePage, type VisualizeDeps } from './visualize/VisualizePage.tsx';
+import { MultiplotWindow } from './visualize/MultiplotWindow.tsx';
+import { parsePopoutRoute } from './visualize/multiplot-window.ts';
 import { AnalysisPage, type AnalysisDeps } from './clustering/AnalysisPage.tsx';
 import { applyTheme, hydrateTheme, normalizeTheme, readStoredTheme, saveThemePreference, themeStorageKey } from './theme.ts';
 import { AppErrorPage } from './ui/ErrorBoundary.tsx';
@@ -458,6 +460,21 @@ export async function boot(rootEl: Element | null): Promise<void> {
     createRoot(rootEl).render(
       <StrictMode>
         <HelpWindow />
+      </StrictMode>,
+    );
+    return;
+  }
+  const popout = parsePopoutRoute(window.location.pathname);
+  if (popout) {
+    // A multiplot pop-out window: plots only, read from the data the main
+    // window saved; no backend. Follows theme changes like Help.
+    window.addEventListener('storage', (event) => {
+      if (event.key === themeStorageKey) applyTheme(normalizeTheme(event.newValue));
+    });
+    document.title = 'Multiplot — ArchaeoDash';
+    createRoot(rootEl).render(
+      <StrictMode>
+        <MultiplotWindow snapshotKey={popout.key} pair={popout.pair} />
       </StrictMode>,
     );
     return;

@@ -1416,6 +1416,21 @@ span[role='alert'] {
   gap: 0.25rem;
 }
 
+.multiplot-popout {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+/* Multiplot pop-out windows: no shell around them. */
+.multiplot-window {
+  padding: 0.75rem 1rem;
+}
+
+.multiplot-window-single {
+  overflow: hidden;
+}
+
 .multiplot-legend {
   display: flex;
   flex-wrap: wrap;
