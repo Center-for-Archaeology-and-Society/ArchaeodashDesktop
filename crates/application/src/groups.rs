@@ -16,7 +16,7 @@ use archaeodash_contracts::{
 use archaeodash_data_io::{sanitize_group_name, GroupFileData, GroupProfile, GroupRow};
 use archaeodash_file_store_fs::FsGroupFileStore;
 use archaeodash_storage::{
-    assert_schema_compatible, plan_copy, plan_merge, plan_move, FileInput, GroupFileStore,
+    align_row, merged_roles, plan_copy, plan_merge, plan_move, FileInput, GroupFileStore,
     PlannedOutput, StoreError, Transaction, TransactionAction,
 };
 use uuid::Uuid;
@@ -761,9 +761,13 @@ impl GroupService {
             inputs.push(Self::input_of(&source.path, &data));
             sources.push((source.path.clone(), data));
         }
-        for (path, data) in &sources[1..] {
-            assert_schema_compatible(&sources[0].0, &sources[0].1, path, data)?;
-        }
+        // Groups with other columns: the cluster groups get the first
+        // group's columns plus the others' (absent measured values are 0).
+        let others: Vec<(&str, &archaeodash_data_io::ColumnRoles)> = sources[1..]
+            .iter()
+            .map(|(path, data)| (path.as_str(), &data.profile.roles))
+            .collect();
+        let roles = merged_roles(&sources[0].0, &sources[0].1.profile.roles, &others)?;
 
         // Rows per cluster, in source order.
         let mut cluster_of: HashMap<Uuid, usize> = HashMap::new();
@@ -781,7 +785,7 @@ impl GroupService {
             for row in &data.rows {
                 match cluster_of.get(&row.uuid) {
                     Some(&cluster) => {
-                        rows_of[cluster].push(row.clone());
+                        rows_of[cluster].push(align_row(row, &data.profile.roles, &roles));
                         placed += 1;
                     }
                     None => missing += 1,
@@ -870,7 +874,7 @@ impl GroupService {
                 group_name: name,
                 revision_id,
                 rows,
-                roles: first.roles.clone(),
+                roles: roles.clone(),
                 recipe: first.import_recipe.clone(),
                 source_path: first.source_path.clone(),
                 source_sha256: first.source_sha256.clone(),
@@ -2119,16 +2123,72 @@ mod tests {
     }
 
     #[test]
+    fn moves_between_groups_with_other_measured_columns_fill_zeros() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (service, paths) = commit_two_groups(dir.path());
+        // Hooper measures `zn` and `as` (in that order) and has no `fe`.
+        let destination = read_group_file(&dir.path().join(&paths[1])).expect("destination");
+        let mut profile = destination.profile.clone();
+        profile.roles.elemental = vec!["zn".into(), "as".into()];
+        let mut rows = destination.rows.clone();
+        for row in &mut rows {
+            row.elemental = vec![Some(9.0), Some(5.0)];
+        }
+        write_group_rows(&dir.path().join(&paths[1]), profile, &rows).expect("rewrite");
+        let source = read_group_file(&dir.path().join(&paths[0])).expect("source");
+        let destination = read_group_file(&dir.path().join(&paths[1])).expect("destination");
+        let moved = source.rows[0].uuid;
+        service
+            .transfer_units(&TransferUnitsRequest {
+                action: TransferAction::Move,
+                source_path: paths[0].clone(),
+                expected_source_revision: source.profile.revision_id.clone(),
+                destination_path: paths[1].clone(),
+                destination_group_name: None,
+                selected_uuids: vec![moved.to_string()],
+            })
+            .expect("move across schemas");
+        let after = read_group_file(&dir.path().join(&paths[1])).expect("destination after");
+        assert_eq!(after.profile.roles.elemental, vec!["zn", "as", "fe"]);
+        // Existing rows: `fe` is 0; the moved row: `zn` is 0, values by name.
+        assert_eq!(
+            after.rows[0].elemental,
+            vec![Some(9.0), Some(5.0), Some(0.0)]
+        );
+        let row = after
+            .rows
+            .iter()
+            .find(|r| r.uuid == moved)
+            .expect("moved row");
+        assert_eq!(row.elemental, vec![Some(0.0), Some(1.5), Some(3.0)]);
+        assert_eq!(after.rows.len(), destination.rows.len() + 1);
+        service.validate(&paths[1]).expect("destination validates");
+
+        // Merging the rest back unions the columns as well.
+        let merged = service
+            .merge_groups(&MergeGroupsRequest {
+                sources: vec![paths[0].clone(), paths[1].clone()],
+                new_group_name: "All".into(),
+            })
+            .expect("merge across schemas");
+        assert_eq!(merged.outputs[0].elemental_columns, vec!["as", "fe", "zn"]);
+        assert_eq!(merged.outputs[0].row_count, 3);
+    }
+
+    #[test]
     fn batch_move_rejects_schema_mismatch_before_any_write() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (service, paths) = commit_two_groups(dir.path());
         let source = read_group_file(&dir.path().join(&paths[0])).expect("source");
         let destination = read_group_file(&dir.path().join(&paths[1])).expect("destination");
+        // `Site` is measured in the destination but descriptive in the source.
         let mut mismatched_profile = destination.profile.clone();
-        mismatched_profile.roles.elemental = vec!["zn".into()];
+        mismatched_profile.roles.elemental = vec!["Site".into()];
+        mismatched_profile.roles.descriptive = vec![];
         let mut rows = destination.rows.clone();
         for row in &mut rows {
             row.elemental = vec![Some(9.0)];
+            row.descriptive = vec![];
         }
         write_group_rows(&dir.path().join(&paths[1]), mismatched_profile, &rows)
             .expect("rewrite schema");

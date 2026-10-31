@@ -17,11 +17,13 @@ export function isAnalysisPath(pathname: string): boolean {
   return ANALYSIS_PATHS.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
 }
 
-/** The open hosted project and the action that opens another. */
+/** The open hosted project and the actions that open another or close it. */
 export interface HostedWorkspace {
   /** Open project ID, or '' when none is open. */
   readonly projectId: string;
   readonly open: (project: Pick<HostedProjectSummary, 'project_id' | 'name'>) => void;
+  /** Closes the open project (e.g. after it is deleted) and shows the project list. */
+  readonly close?: () => void;
 }
 
 /** Provided by the app root in hosted mode only. */

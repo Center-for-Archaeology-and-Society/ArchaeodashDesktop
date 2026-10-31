@@ -7,8 +7,9 @@
 //!
 //! - rows: `path`'s rows, then each extra path's rows, in request order, each
 //!   file's rows in file order (the `GroupService::rows` order);
-//! - elemental columns: the first file's elemental columns that exist (as
-//!   elemental columns) in every file, in first-file order;
+//! - elemental columns: the union of every file's elemental columns in
+//!   first-seen order; a file without one of them gets 0 for it in every
+//!   row (missing values in a column the file has stay missing);
 //! - descriptive columns: the union of every file's descriptive columns in
 //!   first-seen order (cells absent from a file are `None`), then one
 //!   synthetic descriptive column holding each row's file `group_name`
@@ -179,20 +180,14 @@ impl CombinedInput {
             return Err(validation("input_empty", "no group files"));
         };
 
-        let elemental: Vec<String> = first
-            .profile
-            .roles
-            .elemental
-            .iter()
-            .filter(|name| {
-                files
-                    .iter()
-                    .all(|(_, data)| data.profile.roles.elemental.contains(name))
-            })
-            .cloned()
-            .collect();
+        let mut elemental: Vec<String> = Vec::new();
         let mut descriptive: Vec<String> = Vec::new();
         for (_, data) in &files {
+            for name in &data.profile.roles.elemental {
+                if !elemental.contains(name) {
+                    elemental.push(name.clone());
+                }
+            }
             for name in &data.profile.roles.descriptive {
                 if !descriptive.contains(name) {
                     descriptive.push(name.clone());
@@ -206,15 +201,9 @@ impl CombinedInput {
         let mut sources = Vec::with_capacity(files.len());
         for (rel, data) in files {
             let roles = &data.profile.roles;
-            let elemental_idx: Vec<usize> = elemental
+            let elemental_idx: Vec<Option<usize>> = elemental
                 .iter()
-                .map(|name| {
-                    roles
-                        .elemental
-                        .iter()
-                        .position(|c| c == name)
-                        .unwrap_or_default()
-                })
+                .map(|name| roles.elemental.iter().position(|c| c == name))
                 .collect();
             let descriptive_idx: Vec<Option<usize>> = descriptive
                 .iter()
@@ -232,9 +221,13 @@ impl CombinedInput {
                     visible: row.visible.clone(),
                     legacy_rowid: row.legacy_rowid.clone(),
                     descriptive: cells,
+                    // A column this file does not have is 0.
                     elemental: elemental_idx
                         .iter()
-                        .map(|&i| row.elemental.get(i).copied().flatten())
+                        .map(|idx| match idx {
+                            Some(i) => row.elemental.get(*i).copied().flatten(),
+                            None => Some(0.0),
+                        })
                         .collect(),
                 });
             }
@@ -289,13 +282,13 @@ impl CombinedInput {
         &all[..all.len().saturating_sub(1)]
     }
 
-    /// Requires every named input column to exist in every file. A name that
-    /// is an elemental column in any file must be elemental in every file
-    /// (`missing_elemental_column`); a name that is descriptive in any file
-    /// must be descriptive in every file (`missing_group_column`). The
-    /// synthetic column, each file's visible-ID / legacy-rowid column, and
-    /// names present in no file (e.g. post-transform outputs) are left to
-    /// the downstream checks. Errors name the offending file and column.
+    /// Requires every named descriptive input column to exist in every file:
+    /// a name that is descriptive in any file must be descriptive in every
+    /// file (`missing_group_column`). Elemental columns may be missing from
+    /// some files (those rows are 0, see the module docs). The synthetic
+    /// column, each file's visible-ID / legacy-rowid column, and names
+    /// present in no file (e.g. post-transform outputs) are left to the
+    /// downstream checks. Errors name the offending file and column.
     pub fn require_columns<'a>(
         &self,
         names: impl IntoIterator<Item = &'a str>,
@@ -312,20 +305,9 @@ impl CombinedInput {
                 .iter()
                 .any(|s| s.elemental.iter().any(|c| c == name))
             {
-                if let Some(missing) = self
-                    .sources
-                    .iter()
-                    .find(|s| !s.elemental.iter().any(|c| c == name))
-                {
-                    return Err(validation(
-                        "missing_elemental_column",
-                        format!(
-                            "{}: column {name:?} is not a measured elemental column",
-                            missing.path
-                        ),
-                    ));
-                }
-            } else if self
+                continue;
+            }
+            if self
                 .sources
                 .iter()
                 .any(|s| s.descriptive.iter().any(|c| c == name))
@@ -550,8 +532,8 @@ mod tests {
         let data = &combined.data;
         assert!(combined.is_multi());
         assert_eq!(combined.group_column, "Group");
-        // Intersection in first-file order.
-        assert_eq!(data.profile.roles.elemental, vec!["as", "zn"]);
+        // Union in first-seen order.
+        assert_eq!(data.profile.roles.elemental, vec!["as", "fe", "zn", "cu"]);
         // Union in first-seen order, then the synthetic column.
         assert_eq!(
             data.profile.roles.descriptive,
@@ -567,8 +549,20 @@ mod tests {
             .collect();
         assert_eq!(ids, vec!["a1", "a2", "b1"]);
         assert_eq!(data.rows.iter().map(|r| r.uuid).collect::<Vec<_>>(), uuids);
-        assert_eq!(data.rows[1].elemental, vec![Some(4.0), Some(6.0)]);
-        assert_eq!(data.rows[2].elemental, vec![Some(10.0), Some(30.0)]);
+        // Columns a file lacks are 0; missing values in its own columns stay
+        // missing.
+        assert_eq!(
+            data.rows[0].elemental,
+            vec![Some(1.0), Some(2.0), Some(3.0), Some(0.0)]
+        );
+        assert_eq!(
+            data.rows[1].elemental,
+            vec![Some(4.0), None, Some(6.0), Some(0.0)]
+        );
+        assert_eq!(
+            data.rows[2].elemental,
+            vec![Some(10.0), Some(0.0), Some(30.0), Some(5.0)]
+        );
         assert_eq!(
             data.rows[2].descriptive,
             vec![Some("s3".into()), None, Some("w1".into()), Some("B".into())]
@@ -580,15 +574,11 @@ mod tests {
         assert_eq!(combined.file_group_labels(), vec!["A", "A", "B"]);
         assert_eq!(combined.context(), "groups/A.parquet (+1 more)");
 
-        // Requested columns must exist in every file, naming the file.
+        // Elemental columns may be missing from a file (zero-filled);
+        // descriptive columns must exist in every file, naming the file.
         combined
-            .require_columns(["as", "zn", "Site", "Group", "PC1"])
+            .require_columns(["as", "zn", "fe", "cu", "Site", "Group", "PC1"])
             .expect("shared columns");
-        let err = combined
-            .require_columns(["fe"])
-            .expect_err("fe missing in B");
-        assert!(err.to_string().contains("missing_elemental_column"));
-        assert!(err.to_string().contains("groups/B.parquet"), "{err}");
         let err = combined
             .require_columns(["Type"])
             .expect_err("Type missing in B");

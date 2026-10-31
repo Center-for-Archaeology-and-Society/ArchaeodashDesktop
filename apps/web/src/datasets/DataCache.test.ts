@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { GroupRowsResponse } from '@archaeodash/client';
-import { DataCache, PRELOAD_ROW_LIMIT } from './DataCache.tsx';
+import { DataCache, PRELOAD_ROW_LIMIT, rowsVersion } from './DataCache.tsx';
 
 const rows = (path: string, revision: string): GroupRowsResponse => ({
   path,
@@ -64,4 +64,45 @@ test('preload loads files in order within the row budget', async () => {
   assert.deepEqual(loaded, ['g/C'], 'stops once the row budget is used');
   // Preloaded rows are then served without another fetch.
   await cache.rowsFor('g/C', 'rev-1', async () => { throw new Error('should be cached'); });
+});
+
+test('a new file under a path used before is not served the old rows', async () => {
+  // New group files all start at the same revision: a one-row group made by
+  // assigning a sample, deleted, then a 92-row group copied in under the same
+  // file name has the same path and revision.
+  const summary = (rowCount: number) => ({
+    revision_id: 'rev-1',
+    group_id: 'Gwynn_Canyon',
+    row_count: rowCount,
+    elemental_columns: ['Rb', 'Sr'],
+    descriptive_columns: [],
+  });
+  const path = 'artifacts/Gwynn_Canyon.parquet';
+  const response = (n: number): GroupRowsResponse => ({
+    ...rows(path, 'rev-1'),
+    rows: Array.from({ length: n }, (_, i) => ({
+      analytical_uuid: `u${i}`,
+      legacy_rowid: null,
+      visible_id: `s${i}`,
+      descriptive: [],
+      elemental: [1, 2],
+    })),
+  });
+  const cache = new DataCache();
+  cache.observeScan([path]);
+  await cache.rowsFor(path, rowsVersion(summary(1)), async () => response(1));
+  await cache.result('explore:profile', async () => 'old result');
+  // The group is deleted (the next scan no longer lists it)…
+  cache.observeScan([]);
+  assert.equal(cache.peek('explore:profile'), undefined, 'results of a removed file are dropped');
+  // …and another file is copied in under the same name.
+  cache.observeScan([path]);
+  const copied = await cache.rowsFor(path, rowsVersion(summary(92)), async () => response(92));
+  assert.equal(copied.rows.length, 92);
+  // Same path and revision without a scan in between: the version still differs.
+  const other = new DataCache();
+  await other.rowsFor(path, rowsVersion(summary(1)), async () => response(1));
+  const fresh = await other.rowsFor(path, rowsVersion(summary(92)), async () => response(92));
+  assert.equal(fresh.rows.length, 92);
+  assert.equal(rowsVersion(null), undefined);
 });

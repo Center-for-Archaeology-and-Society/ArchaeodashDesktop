@@ -1542,6 +1542,22 @@ pub struct ExportMeasuredDataRequest {
     /// Output format; CSV when omitted.
     #[serde(default)]
     pub format: ExportFormat,
+    /// Which sample ID leads each row; the visible ID when omitted.
+    #[serde(default)]
+    pub id_column: IdColumnChoice,
+}
+
+/// Sample ID shown with each row of an export: the group's visible ID
+/// column (e.g. `anid`), or the import `rowid`. Combined groups from
+/// different imports can have different (or no) visible ID columns; rowid
+/// is always present. Rowids that repeat across the rows are written as
+/// `group:rowid`, and the visible ID follows as the next column.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IdColumnChoice {
+    #[default]
+    Visible,
+    Rowid,
 }
 
 /// Export file format. XLSX workbooks hold one sheet with every row and,
@@ -1604,6 +1620,9 @@ pub struct ExportTransformedRequest {
     /// Output format; CSV when omitted.
     #[serde(default)]
     pub format: ExportFormat,
+    /// Which sample ID leads each row; the visible ID when omitted.
+    #[serde(default)]
+    pub id_column: IdColumnChoice,
 }
 
 /// `POST /exports/pca-scores` request: the computed PCA score frame as CSV.
@@ -1628,6 +1647,9 @@ pub struct ExportPcaScoresRequest {
     /// Output format; CSV when omitted.
     #[serde(default)]
     pub format: ExportFormat,
+    /// Which sample ID leads each row; the visible ID when omitted.
+    #[serde(default)]
+    pub id_column: IdColumnChoice,
 }
 
 /// One ephemeral CSV export result returned to the caller (Section 7.3).
@@ -2439,19 +2461,19 @@ mod export_dto_tests {
             extra_paths: vec![],
             raw_text: false,
             format: Default::default(),
+            id_column: IdColumnChoice::Rowid,
         };
         let json = serde_json::to_string(&measured).unwrap();
+        assert!(json.contains(r#""id_column":"rowid""#), "{json}");
         assert_eq!(
             serde_json::from_str::<ExportMeasuredDataRequest>(&json).unwrap(),
             measured
         );
-        // `raw_text` defaults to false on the wire.
-        assert_eq!(
-            serde_json::from_str::<ExportMeasuredDataRequest>("{\"path\":\"groups/Baca.parquet\"}")
-                .unwrap()
-                .raw_text,
-            false
-        );
+        // `raw_text` defaults to false and `id_column` to the visible ID.
+        let wire = r#"{"path":"groups/Baca.parquet"}"#;
+        let omitted: ExportMeasuredDataRequest = serde_json::from_str(wire).unwrap();
+        assert!(!omitted.raw_text);
+        assert_eq!(omitted.id_column, IdColumnChoice::Visible);
 
         let definition = TransformationDefinition {
             name: "log_ratio_set".into(),
@@ -2476,6 +2498,7 @@ mod export_dto_tests {
             extra_paths: vec![],
             definition: definition.clone(),
             raw_text: true,
+            id_column: Default::default(),
         };
         let json = serde_json::to_string(&transformed).unwrap();
         assert!(json.contains("\"raw_text\":true"), "raw_text: {json}");
@@ -2491,6 +2514,7 @@ mod export_dto_tests {
             columns: vec!["as".into(), "fe".into()],
             scale: false,
             transformation: Some(definition),
+            id_column: Default::default(),
         };
         let json = serde_json::to_string(&pca).unwrap();
         assert_eq!(

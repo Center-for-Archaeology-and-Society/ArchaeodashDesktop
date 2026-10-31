@@ -8,6 +8,8 @@
 #           the Tauri app (which needs GTK on Linux).
 #   web     TypeScript typecheck (contracts, client, web) and web tests
 #   parity  Rust golden parity tests (tests/parity)
+#   db      DB-backed tests of archaeodash-api and archaeodash-control-postgres
+#           against a throwaway PostgreSQL container on home2 (removed after)
 #   fmt     Applies cargo fmt to the workspace (rewrites files)
 #
 # Exits non-zero if any check fails.
@@ -16,7 +18,7 @@ set -euo pipefail
 
 mode="${1:-all}"
 [ "$#" -gt 0 ] && shift
-case "$mode" in all|rust|web|parity|fmt) ;; *) die "unknown mode '$mode' (all|rust|web|parity|fmt)";; esac
+case "$mode" in all|rust|web|parity|fmt|db) ;; *) die "unknown mode '$mode' (all|rust|web|parity|fmt|db)";; esac
 for crate in "$@"; do
   [[ "$crate" =~ ^archaeodash-[a-z0-9-]+$ ]] || die "invalid crate name '$crate'"
   [ "$mode" = rust ] || die "crate names are only accepted with the rust mode"
@@ -53,6 +55,22 @@ if [ "$mode" = parity ]; then
   step "parity tests"
   out=$(cargo test -p archaeodash-parity 2>&1); rc=$?
   printf "%s\n" "$out" | grep -E "^test result|FAILED|panicked|^error" | sort | uniq -c
+  [ $rc -eq 0 ] || status=1
+fi
+if [ "$mode" = db ]; then
+  step "DB-backed tests (throwaway postgres:16-alpine)"
+  name="archaeodash-testdb-$$"
+  pw=$(head -c 18 /dev/urandom | base64 | tr -dc A-Za-z0-9)
+  docker run -d --rm --name "$name" -e POSTGRES_PASSWORD="$pw" -e POSTGRES_DB=archaeodash_test     -p 127.0.0.1::5432 postgres:16-alpine >/dev/null
+  trap "docker rm -f $name >/dev/null 2>&1" EXIT
+  for i in $(seq 1 60); do docker exec "$name" pg_isready -U postgres -d archaeodash_test >/dev/null 2>&1 && break; sleep 1; done
+  sleep 1
+  port=$(docker port "$name" 5432/tcp | head -1 | sed "s/.*://")
+  out=$(DATABASE_URL="postgres://postgres:$pw@127.0.0.1:$port/archaeodash_test"     cargo test -p archaeodash-api -p archaeodash-control-postgres -- --test-threads=1 2>&1); rc=$?
+  printf "%s
+" "$out" | grep -E "^test result|FAILED|panicked|^error" | sort | uniq -c
+  printf "%s
+" "$out" | grep -E "^---- .* stdout ----" -A12 | head -60
   [ $rc -eq 0 ] || status=1
 fi
 if [ "$mode" = all ] || [ "$mode" = web ]; then

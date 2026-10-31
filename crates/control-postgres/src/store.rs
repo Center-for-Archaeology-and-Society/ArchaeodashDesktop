@@ -60,6 +60,14 @@ pub struct ProjectRow {
     pub updated_at: OffsetDateTime,
 }
 
+/// A project removed for good (permanent delete or the retention sweep):
+/// the caller removes its directory `users/<user-id>/projects/<project-id>/`.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct PurgedProject {
+    pub project_id: Uuid,
+    pub user_id: Uuid,
+}
+
 /// How a reservation resolves (Section 6.9 reserve/reconcile discipline).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuotaOutcome {
@@ -167,6 +175,44 @@ pub struct SessionRow {
     pub last_seen_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
     pub revoked_at: Option<OffsetDateTime>,
+}
+
+/// Deletes one locked project row and takes the bytes its live files and
+/// transformation definitions charged off the owner's quota (tombstoned
+/// rows already left it). The file and transformation rows cascade.
+async fn remove_project_rows(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    project_id: Uuid,
+) -> Result<(), ControlError> {
+    let (bytes, files): (i64, i64) = sqlx::query_as(
+        "SELECT \
+           (COALESCE((SELECT SUM(bytes) FROM files \
+                      WHERE project_id = $1 AND deleted_at IS NULL), 0) \
+            + COALESCE((SELECT SUM(bytes) FROM transformations \
+                        WHERE project_id = $1 AND deleted_at IS NULL), 0))::BIGINT, \
+           (SELECT COUNT(*) FROM files WHERE project_id = $1 AND deleted_at IS NULL)",
+    )
+    .bind(project_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    sqlx::query("DELETE FROM projects WHERE project_id = $1")
+        .bind(project_id)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query(
+        "UPDATE storage_quotas SET \
+           logical_bytes = GREATEST(logical_bytes - $2, 0), \
+           file_count = GREATEST(file_count - $3, 0), \
+           updated_at = now() \
+         WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .bind(bytes)
+    .bind(files)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
 }
 
 fn to_offset(now: SystemTime) -> OffsetDateTime {
@@ -647,6 +693,95 @@ impl ControlStore {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() == 1)
+    }
+
+    /// Lists the caller's trashed (soft-deleted) projects, most recently
+    /// deleted first. Same ownership scoping as [`Self::list_projects`].
+    pub async fn list_deleted_projects(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<ProjectRow>, ControlError> {
+        let rows: Vec<ProjectRow> = sqlx::query_as(
+            "SELECT project_id, user_id, name, deleted_at, created_at, updated_at \
+             FROM projects WHERE user_id = $1 AND deleted_at IS NOT NULL \
+             ORDER BY deleted_at DESC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Restores a trashed project the user owns. `Ok(None)` for live,
+    /// purged, foreign and unknown projects alike. Project names are not
+    /// unique, so a restore never conflicts with a live project.
+    pub async fn restore_project(
+        &self,
+        user_id: Uuid,
+        project_id: Uuid,
+        now: SystemTime,
+    ) -> Result<Option<ProjectRow>, ControlError> {
+        let row = sqlx::query_as::<_, ProjectRow>(
+            "UPDATE projects SET deleted_at = NULL, updated_at = $3 \
+             WHERE project_id = $1 AND user_id = $2 AND deleted_at IS NOT NULL \
+             RETURNING project_id, user_id, name, deleted_at, created_at, updated_at",
+        )
+        .bind(project_id)
+        .bind(user_id)
+        .bind(to_offset(now))
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Permanently deletes a project the user owns, live or trashed: the
+    /// catalog row goes (its file and transformation rows cascade) and the
+    /// bytes they still charged leave the owner's quota. Returns whether a
+    /// row was removed; the caller then removes the project directory.
+    pub async fn purge_project(
+        &self,
+        user_id: Uuid,
+        project_id: Uuid,
+    ) -> Result<bool, ControlError> {
+        let mut tx = self.pool.begin().await?;
+        let owned: Option<Uuid> = sqlx::query_scalar(
+            "SELECT project_id FROM projects WHERE project_id = $1 AND user_id = $2 FOR UPDATE",
+        )
+        .bind(project_id)
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if owned.is_none() {
+            return Ok(false);
+        }
+        remove_project_rows(&mut tx, user_id, project_id).await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// Retention sweep for trashed projects: projects deleted before
+    /// `cutoff` are removed as in [`Self::purge_project`] and returned so
+    /// the caller can remove their project directories.
+    pub async fn sweep_expired_projects(
+        &self,
+        cutoff: OffsetDateTime,
+    ) -> Result<Vec<PurgedProject>, ControlError> {
+        let mut tx = self.pool.begin().await?;
+        // SKIP LOCKED: a project being restored or purged right now is left
+        // for the next sweep.
+        let due: Vec<PurgedProject> = sqlx::query_as(
+            "SELECT project_id, user_id FROM projects \
+             WHERE deleted_at IS NOT NULL AND deleted_at < $1 \
+             FOR UPDATE SKIP LOCKED",
+        )
+        .bind(cutoff)
+        .fetch_all(&mut *tx)
+        .await?;
+        for project in &due {
+            remove_project_rows(&mut tx, project.user_id, project.project_id).await?;
+        }
+        tx.commit().await?;
+        Ok(due)
     }
 
     /// Inserts a hosted file catalog row after the bytes are durably staged.
@@ -1574,6 +1709,138 @@ mod tests {
             .await
             .expect("get")
             .is_none());
+    }
+
+    /// Project trash: a trashed project lists in the owner's trash only,
+    /// restores once, and is purged (rows and quota bytes) by a permanent
+    /// delete or by the sweep once past the cutoff.
+    #[tokio::test]
+    async fn trashed_projects_restore_and_purge() {
+        let Some((store, _pool)) = migrated_store().await else {
+            return;
+        };
+        let (owner, _) = make_user(&store).await;
+        let (stranger, _) = make_user(&store).await;
+        let project_id = Uuid::now_v7();
+        store
+            .create_project(project_id, owner.id, "trash", SystemTime::now())
+            .await
+            .expect("create project");
+        // One live 7-byte file charged to the owner's quota.
+        let file = FileRow {
+            file_id: Uuid::now_v7(),
+            user_id: owner.id,
+            project_id,
+            logical_path: "a.csv".to_string(),
+            kind: "source".to_string(),
+            display_filename: "a.csv".to_string(),
+            object_key: format!(
+                "users/{}/projects/{}/files/{}/1",
+                owner.id,
+                project_id,
+                Uuid::now_v7().simple()
+            ),
+            sha256: "c".repeat(64),
+            media_type: "text/csv".to_string(),
+            extension: "csv".to_string(),
+            bytes: 7,
+            state: "published".to_string(),
+            parse_error: None,
+            deleted_at: None,
+            created_at: to_offset(SystemTime::now()),
+            updated_at: to_offset(SystemTime::now()),
+        };
+        assert!(store.insert_file(&file).await.expect("insert file"));
+        let reserved = store.reserve_quota(owner.id, 7, 1000).await;
+        assert!(reserved.expect("reserve"));
+        store
+            .reconcile_quota(owner.id, QuotaOutcome::Commit, 7, 1)
+            .await
+            .expect("commit");
+
+        // Trashed long ago, so only this project is past the sweep cutoff
+        // below even on a shared test database.
+        let long_ago = SystemTime::now() - Duration::from_secs(400 * 86_400);
+        assert!(store
+            .soft_delete_project(owner.id, project_id, long_ago)
+            .await
+            .expect("trash"));
+        let trash = store.list_deleted_projects(owner.id).await.expect("trash");
+        assert_eq!(trash.len(), 1);
+        assert_eq!(trash[0].project_id, project_id);
+        assert!(trash[0].deleted_at.is_some());
+        assert!(store
+            .list_deleted_projects(stranger.id)
+            .await
+            .expect("trash")
+            .is_empty());
+        // Trashed projects still count toward the quota until purged.
+        let quota = store.get_quota(owner.id).await.expect("quota");
+        assert_eq!(quota, Some((7, 0, 1)));
+
+        // Restore: owner only, once; the project is live again.
+        assert!(store
+            .restore_project(stranger.id, project_id, SystemTime::now())
+            .await
+            .expect("restore")
+            .is_none());
+        let restored = store
+            .restore_project(owner.id, project_id, SystemTime::now())
+            .await
+            .expect("restore")
+            .expect("restored row");
+        assert!(restored.deleted_at.is_none());
+        assert!(store
+            .restore_project(owner.id, project_id, SystemTime::now())
+            .await
+            .expect("restore again")
+            .is_none());
+        assert!(store
+            .get_project(owner.id, project_id)
+            .await
+            .expect("get")
+            .is_some());
+
+        // Trash again; a sweep cutoff before the delete leaves it, one
+        // after removes it and its quota bytes.
+        assert!(store
+            .soft_delete_project(owner.id, project_id, long_ago)
+            .await
+            .expect("trash"));
+        let early = to_offset(long_ago - Duration::from_secs(3600));
+        let swept = store.sweep_expired_projects(early).await.expect("sweep");
+        assert!(swept.iter().all(|p| p.project_id != project_id));
+        let late = to_offset(long_ago + Duration::from_secs(3600));
+        let swept = store.sweep_expired_projects(late).await.expect("sweep");
+        let mine = swept.iter().find(|p| p.project_id == project_id);
+        assert_eq!(mine.map(|p| p.user_id), Some(owner.id));
+        assert!(store
+            .list_deleted_projects(owner.id)
+            .await
+            .expect("trash")
+            .is_empty());
+        assert!(store
+            .get_file(owner.id, file.file_id)
+            .await
+            .expect("get file")
+            .is_none());
+        let quota = store.get_quota(owner.id).await.expect("quota");
+        assert_eq!(quota, Some((0, 0, 0)));
+
+        // Permanent delete: owner only, live or trashed; then 404-like false.
+        let live = Uuid::now_v7();
+        store
+            .create_project(live, owner.id, "live", SystemTime::now())
+            .await
+            .expect("create project");
+        let purged = store.purge_project(stranger.id, live).await;
+        assert!(!purged.expect("purge"));
+        let purged = store.purge_project(owner.id, live).await;
+        assert!(purged.expect("purge"));
+        let purged = store.purge_project(owner.id, live).await;
+        assert!(!purged.expect("purge again"));
+        let found = store.get_project(owner.id, live).await;
+        assert!(found.expect("get").is_none());
     }
 
     /// Section 6.4/10.2 hosted file catalog: insertion is ownership-checked

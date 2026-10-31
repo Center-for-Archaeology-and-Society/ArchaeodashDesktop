@@ -1,13 +1,15 @@
 /**
  * Combine several group files into one dataset. Each project group is its
  * own file, so the file's group name is the row's group. Measured columns are
- * the ones every selected file shares (analyses need a common matrix);
- * descriptive columns are the union, with absent cells left missing, plus a
- * synthetic group column holding each row's group name. The backend builds
- * the identical combined table for `extra_paths` requests, so column names
- * and row order line up with analysis results.
+ * the union of the files' columns in first-seen order; a file without one of
+ * them gets 0 for it in every row (missing values in a column the file has
+ * stay missing). Descriptive columns are the union, with absent cells left
+ * missing, plus a synthetic group column holding each row's group name. The
+ * backend builds the identical combined table for `extra_paths` requests, so
+ * column names and row order line up with analysis results.
  */
 import type { GroupRowDto, GroupRowsResponse } from '@archaeodash/client';
+import { unionElements } from '../analysis-setup/setup.ts';
 
 export interface LoadedGroupFile {
   readonly path: string;
@@ -40,13 +42,32 @@ export interface CombinedRows {
   readonly pathOf: string[];
   /** Group names in file order. */
   readonly groupNames: string[];
+  /**
+   * Files lacking some measured columns (set to 0 for their rows), in file
+   * order. Always set by `combineGroupFiles`.
+   */
+  readonly zeroFilled?: ZeroFilled[];
+}
+
+export interface ZeroFilled {
+  readonly path: string;
+  readonly groupName: string;
+  readonly columns: string[];
+}
+
+/** Groups lacking some of the union's measured columns, in the given order. */
+export function zeroFilledGroups(
+  groups: readonly { readonly path: string; readonly groupName: string; readonly elementalColumns: readonly string[] }[],
+): ZeroFilled[] {
+  const all = unionElements(groups.map((g) => g.elementalColumns));
+  return groups
+    .map((g) => ({ path: g.path, groupName: g.groupName, columns: all.filter((c) => !g.elementalColumns.includes(c)) }))
+    .filter((g) => g.columns.length > 0);
 }
 
 export function combineGroupFiles(files: readonly LoadedGroupFile[]): CombinedRows {
   const first = files[0]?.data;
-  const elementalColumns = first
-    ? first.elemental_columns.filter((c) => files.every((f) => f.data.elemental_columns.includes(c)))
-    : [];
+  const elementalColumns = unionElements(files.map((f) => f.data.elemental_columns));
   const descriptiveColumns: string[] = [];
   for (const f of files) {
     for (const c of f.data.descriptive_columns) {
@@ -67,7 +88,8 @@ export function combineGroupFiles(files: readonly LoadedGroupFile[]): CombinedRo
           ...dIdx.map((i) => (i >= 0 ? (row.descriptive[i] ?? null) : null)),
           f.groupName,
         ],
-        elemental: eIdx.map((i) => row.elemental[i] ?? null),
+        // A column this file does not have is 0.
+        elemental: eIdx.map((i) => (i >= 0 ? (row.elemental[i] ?? null) : 0)),
       });
       groupOf.push(f.groupName);
       pathOf.push(f.path);
@@ -83,7 +105,24 @@ export function combineGroupFiles(files: readonly LoadedGroupFile[]): CombinedRo
     groupOf,
     pathOf,
     groupNames: files.map((f) => f.groupName),
+    zeroFilled: zeroFilledGroups(files.map((f) => ({ path: f.path, groupName: f.groupName, elementalColumns: f.data.elemental_columns }))),
   };
+}
+
+/**
+ * Short notice naming the measured columns set to 0 for groups that lack
+ * them, or '' when every group has every column.
+ */
+export function zeroFillNotice(combined: Pick<CombinedRows, 'zeroFilled'>): string {
+  if (!combined.zeroFilled?.length) return '';
+  // Groups lacking the same columns are listed together.
+  const byColumns = new Map<string, string[]>();
+  for (const z of combined.zeroFilled) {
+    const key = z.columns.join(', ');
+    byColumns.set(key, [...(byColumns.get(key) ?? []), z.groupName]);
+  }
+  const parts = [...byColumns].map(([columns, groups]) => `${groups.join(', ')} (${columns})`);
+  return `Some groups lack measured columns, which are 0 for their rows when groups are combined: ${parts.join('; ')}.`;
 }
 
 /** Group selected uuids by their source file, preserving file order. */

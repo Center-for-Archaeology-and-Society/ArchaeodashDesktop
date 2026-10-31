@@ -303,24 +303,22 @@ pub fn pooled_imputation(
     if let Some(hit) = recall(&fast) {
         return Ok(hit);
     }
-    // Group files holding every imputed column; other Parquet files (not
-    // groups, or without these elements) cannot contribute.
+    // Every group file of the folder; other Parquet files cannot contribute.
+    // Elements a group does not have are 0 there, as in the analyzed rows
+    // (see `combined`).
     let loaded: Vec<(String, GroupFileData)> = read_locked(&pool.root, || {
         Ok(files
             .iter()
             .filter_map(|(rel, _, _)| {
                 let data = read_group_file(&pool.root.join(rel)).ok()?;
-                columns
-                    .iter()
-                    .all(|c| data.profile.roles.elemental.contains(c))
-                    .then(|| (rel.clone(), data))
+                Some((rel.clone(), data))
             })
             .collect())
     })?;
     if loaded.is_empty() {
         return Err(validation(
             "imputation_pool_empty",
-            format!("{context}: no group in the folder has every selected element"),
+            format!("{context}: no group files in the folder"),
         ));
     }
     let combined = CombinedInput::from_files(loaded)?;

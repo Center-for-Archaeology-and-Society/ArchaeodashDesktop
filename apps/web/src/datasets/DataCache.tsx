@@ -2,8 +2,9 @@
  * Session cache of project data shared by every page, so moving between
  * pages and Explore tabs does not reload what is already in memory:
  *
- * - group rows, keyed by file path and revision (a save makes a new
- *   revision, so edited files reload and nothing stale is served);
+ * - group rows, keyed by file path and version (see `rowsVersion`: a save
+ *   makes a new revision, so edited files reload and nothing stale is
+ *   served);
  * - computed results (missing-value profiles, histograms, …) keyed by the
  *   request plus the revisions of the files it read;
  * - a background preload of every ready group's rows when a project opens.
@@ -12,11 +13,26 @@
  */
 import { createContext, useContext, useEffect, useState, type ReactElement, type ReactNode } from 'react';
 import type { GroupRowsResponse, GroupsService } from '@archaeodash/client';
+import type { GroupSummary } from '@archaeodash/contracts';
 
 /** Rows preloaded in the background; larger projects load on demand. */
 export const PRELOAD_ROW_LIMIT = 500_000;
 /** Computed results kept (least recently used dropped first). */
 const MAX_RESULTS = 200;
+
+/**
+ * Cache version of a group file's rows: its revision plus its group id, row
+ * count and columns. A revision alone does not identify a file: every new
+ * group file starts at the same revision, so a group deleted and another
+ * copied or created under the same file name would share path and revision.
+ * `undefined` when the file has no summary (always fetched).
+ */
+export function rowsVersion(
+  summary: Pick<GroupSummary, 'revision_id' | 'group_id' | 'row_count' | 'elemental_columns' | 'descriptive_columns'> | null | undefined,
+): string | undefined {
+  if (!summary) return undefined;
+  return JSON.stringify([summary.revision_id, summary.group_id, summary.row_count, summary.elemental_columns, summary.descriptive_columns]);
+}
 
 interface RowsEntry {
   revision: string | undefined;
@@ -28,10 +44,12 @@ export class DataCache {
   private readonly results = new Map<string, Promise<unknown>>();
   private readonly settled = new Map<string, unknown>();
   private preloadRun = 0;
+  /** Paths listed by the last project scan (see `observeScan`). */
+  private listed = new Set<string>();
 
   /**
-   * Rows of `path` at `revision`, fetching only when that revision is not
-   * cached yet. An unknown revision always fetches.
+   * Rows of `path` at `revision` (a `rowsVersion`), fetching only when that
+   * version is not cached yet. An unknown version always fetches.
    */
   rowsFor(path: string, revision: string | undefined, fetch: () => Promise<GroupRowsResponse>): Promise<GroupRowsResponse> {
     const hit = this.rows.get(path);
@@ -48,6 +66,29 @@ export class DataCache {
   /** Forgets cached rows (e.g. a manual Reload). */
   dropRows(paths: Iterable<string>): void {
     for (const p of paths) this.rows.delete(p);
+  }
+
+  /**
+   * Takes note of a project scan: files no longer listed (deleted, moved or
+   * renamed) are forgotten, and so are computed results once any file went
+   * away, so a new file later saved under the same path is never served
+   * the old file's rows or results.
+   */
+  observeScan(paths: Iterable<string>): void {
+    const live = new Set(paths);
+    let gone = false;
+    for (const p of [...this.rows.keys()]) {
+      if (!live.has(p)) {
+        this.rows.delete(p);
+        gone = true;
+      }
+    }
+    for (const p of this.listed) if (!live.has(p)) gone = true;
+    this.listed = live;
+    if (gone) {
+      this.results.clear();
+      this.settled.clear();
+    }
   }
 
   /** A computed result, shared by identical requests; failures are not kept. */

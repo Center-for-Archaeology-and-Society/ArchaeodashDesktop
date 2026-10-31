@@ -10,6 +10,7 @@ import {
   dark3Colors,
   fQuantile2,
   groupColors,
+  hiddenPointsNote,
   paletteColors,
   rowPassesFilterValues,
   labelFor,
@@ -150,4 +151,17 @@ test('groupColors spreads distinct viridis anchors across few groups', async () 
   assert.equal(five[4], VIRIDIS[9]);
   assert.equal(groupColors(12).length, 12);
   assert.deepEqual(groupColors(0), []);
+});
+
+test('hiddenPointsNote counts samples without a value on an axis', () => {
+  assert.equal(hiddenPointsNote(new Map(), 'Fe', 'Zn'), null);
+  assert.equal(hiddenPointsNote(new Map([['A', 0]]), 'Fe', 'Zn'), null);
+  assert.equal(
+    hiddenPointsNote(new Map([['Gwynn Canyon', 1]]), 'Ti', 'Rb'),
+    '1 sample is not plotted because it has no value for Ti or Rb (Gwynn Canyon).',
+  );
+  assert.equal(
+    hiddenPointsNote(new Map([['A', 2], ['B', 0], ['C', 3]]), 'Fe', 'Zn'),
+    '5 samples are not plotted because they have no value for Fe or Zn (A 2, C 3).',
+  );
 });

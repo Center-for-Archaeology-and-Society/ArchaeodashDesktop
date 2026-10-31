@@ -10,8 +10,8 @@
 mod store;
 
 pub use store::{
-    AccountTokenKind, ControlError, ControlStore, FileRow, ProjectRow, QuotaOutcome, SessionRow,
-    SweptFile, SweptTransformation, TombstonedTransformation, TransformationRow,
+    AccountTokenKind, ControlError, ControlStore, FileRow, ProjectRow, PurgedProject, QuotaOutcome,
+    SessionRow, SweptFile, SweptTransformation, TombstonedTransformation, TransformationRow,
     UpsertedTransformation, UserRow,
 };
 

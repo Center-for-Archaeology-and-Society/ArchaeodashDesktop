@@ -89,6 +89,7 @@ import {
   type HostedFileMeta,
   type HostedProjectsService,
   type HostedProjectSummary,
+  type HostedProjectTrash,
   type HostedWorkspaceService,
   type GuestService,
   type GuestSessionInfo,
@@ -442,6 +443,17 @@ export class HttpTransport implements Transport {
         ),
       delete: async (projectId) => {
         await this.rootRequest('DELETE', `/api/v1/projects/${encodeURIComponent(projectId)}`);
+      },
+      trash: () => this.rootRequest<HostedProjectTrash>('GET', '/api/v1/projects/trash'),
+      restore: (projectId) =>
+        this.rootRequest<HostedProjectSummary>(
+          'POST',
+          `/api/v1/projects/${encodeURIComponent(projectId)}/restore`,
+        ),
+      deletePermanently: async (projectId) => {
+        await this.rootRequest('DELETE', `/api/v1/projects/${encodeURIComponent(projectId)}`, {
+          query: { permanent: '1' },
+        });
       },
       quota: () =>
         this.rootRequest<QuotaUsage>('GET', '/api/v1/quota'),

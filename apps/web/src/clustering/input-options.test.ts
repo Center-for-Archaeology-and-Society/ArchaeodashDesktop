@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { GroupRowsResponse } from '@archaeodash/client';
 import {
-  defaultIdColumn, groupEligibility, pcCountOptions, projectionLabels, sourceFeatureCount, sourceOptions, uniqueIdColumns,
+  analysisIdColumns, defaultAnalysisIdColumn, defaultIdColumn, groupEligibility, pcCountOptions, projectionLabels, sourceFeatureCount, sourceOptions, uniqueIdColumns,
 } from './input-options.ts';
 const data: GroupRowsResponse = { path: 'g', revision_id: 'r', visible_id_column: 'ID', legacy_rowid_column: 'rowid', elemental_columns: ['a', 'b'], descriptive_columns: ['Group'], rows: ['B', 'A', 'B', null].map(g => ({ analytical_uuid: 'hidden', elemental: [1, 2], descriptive: [g] })) };
 
@@ -27,6 +27,17 @@ test('ID choices keep only columns with a unique value per row, falling back to 
   assert.equal(defaultIdColumn(dup, uniqueIdColumns(dup)), 'anid');
   const none = { ...data, rows: rows(['a', 'a'], ['x', 'x']).map(r => ({ ...r, descriptive: ['x'] })) };
   assert.deepEqual(uniqueIdColumns(none), ['ID']);
+});
+
+test('analysis ID choices always offer rowid, the default under the rowid Sample IDs choice', () => {
+  const rows = (ids: (string | null)[]) => ids.map((id, i) => ({ analytical_uuid: 'h', visible_id: id, elemental: [], descriptive: [String(i)] }));
+  const base = { ...data, descriptive_columns: ['anid'] };
+  const unique = { ...base, rows: rows(['a', 'b']) };
+  assert.deepEqual(analysisIdColumns(unique), ['ID', 'anid', 'rowid']);
+  assert.equal(defaultAnalysisIdColumn(unique, analysisIdColumns(unique), 'visible'), 'ID');
+  assert.equal(defaultAnalysisIdColumn(unique, analysisIdColumns(unique), 'rowid'), 'rowid');
+  const blank = { ...base, rows: rows([null, null]) };
+  assert.equal(defaultAnalysisIdColumn(blank, analysisIdColumns(blank), 'visible'), 'anid');
 });
 
 test('group eligibility follows getEligible with blank cells counting as a level', () => {

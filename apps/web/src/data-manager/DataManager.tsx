@@ -12,7 +12,8 @@ import { downloadExportResult } from '../exports.ts';
 import { BusyLabel, BusyNote, Spinner } from '../ui/Busy.tsx';
 import { unionElements } from '../analysis-setup/setup.ts';
 import { includedAmong, invertedAmong, shownByFilter, useGroupInclusion, type InclusionFilter } from '../datasets/GroupInclusion.tsx';
-import { useDataCache } from '../datasets/DataCache.tsx';
+import { rowsVersion, useDataCache } from '../datasets/DataCache.tsx';
+import { zeroFilledGroups, zeroFillNotice } from '../visualize/combine.ts';
 import { AnalysisSetupPanel } from './AnalysisSetupPanel.tsx';
 import { ImportDialog } from './ImportDialog.tsx';
 import { ImportWizard } from './ImportWizard.tsx';
@@ -284,6 +285,7 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
   /** Folder a drag would drop into, highlighted in the tree. */
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const supportsFolders = Boolean(transport.groups.folders && transport.groups.copyGroups);
+  const scanCache = useDataCache();
 
   const refresh = useCallback(async (afterNotice = false) => {
     const seq = ++loadSeq.current;
@@ -294,6 +296,8 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
         transport.groups.folders ? transport.groups.folders().catch(() => [] as GroupFolder[]) : Promise.resolve([] as GroupFolder[]),
       ]);
       if (seq !== loadSeq.current) return;
+      // Files gone from the project leave the shared cache.
+      scanCache?.observeScan(next.map((entry) => entry.path));
       setEntries(next);
       setListedFolders(folders);
       const order = next.map((entry) => entry.path);
@@ -307,7 +311,7 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
-  }, [transport]);
+  }, [transport, scanCache]);
 
   useEffect(() => {
     void refresh();
@@ -378,7 +382,7 @@ export function DataManager({ transport, projectName = '', onDataChanged, onReve
     const ready = entries.filter((entry) => entry.summary && !entry.error && entry.revision && (activeFolder === null || folderOf(entry.path) === activeFolder));
     const excluded = inclusion?.excluded;
     const ordered = [...ready.filter((e) => !excluded?.has(e.path)), ...ready.filter((e) => excluded?.has(e.path))];
-    void cache.preload(transport.groups, ordered.map((e) => ({ path: e.path, revision: e.revision, rowCount: e.summary?.row_count })));
+    void cache.preload(transport.groups, ordered.map((e) => ({ path: e.path, revision: e.revision === null ? null : (rowsVersion(e.summary) ?? null), rowCount: e.summary?.row_count })));
     // `preloadKey` captures the folder, file list, and revisions.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cache, preloadKey, transport.groups, renameUnsettled]);
@@ -1366,6 +1370,11 @@ export function RenameGroupForm({ current, name, problem, busy = false, onChange
 /** Details for a selected folder. */
 export function FolderDetails({ folder, inAnalyses }: { folder: FolderNode; inAnalyses: boolean }): ReactElement {
   const rows = folder.entries.reduce((sum, entry) => sum + (entry.summary?.row_count ?? 0), 0);
+  const zeroFilled = zeroFillNotice({
+    zeroFilled: zeroFilledGroups(folder.entries.flatMap((entry) => (entry.summary && !entry.error
+      ? [{ path: entry.path, groupName: entry.name, elementalColumns: entry.summary.elemental_columns }]
+      : []))),
+  });
   return (
     <section className="fm-details" aria-label="Folder details">
       <h3>{folder.name}</h3>
@@ -1375,6 +1384,7 @@ export function FolderDetails({ folder, inAnalyses }: { folder: FolderNode; inAn
         <dt>Rows</dt><dd>{rows}</dd>
         <dt>Analyses</dt><dd>{inAnalyses ? 'Use this folder' : 'Not used (click its circle to use it)'}</dd>
       </dl>
+      {zeroFilled && <p className="fm-hint">{zeroFilled}</p>}
     </section>
   );
 }

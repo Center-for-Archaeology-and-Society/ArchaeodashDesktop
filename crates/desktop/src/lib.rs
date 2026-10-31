@@ -1962,6 +1962,7 @@ mod tests {
         let exports = DesktopExports::new();
         let err = exports
             .export_measured_data(ExportMeasuredDataRequest {
+                id_column: Default::default(),
                 path: "groups/whatever.parquet".into(),
                 extra_paths: vec![],
                 raw_text: false,
@@ -1995,6 +1996,7 @@ mod tests {
         // ID + descriptive + elemental columns, hidden uuid absent.
         let export = exports
             .export_measured_data(ExportMeasuredDataRequest {
+                id_column: Default::default(),
                 path: path.clone(),
                 extra_paths: vec![],
                 raw_text: false,

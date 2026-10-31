@@ -300,6 +300,26 @@ test('http: hosted projects service hits Section 10.2 catalog routes', async () 
 
   await transport.hostedProjects.delete('0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa');
   assert.equal(calls.at(-1)?.method, 'DELETE');
+  assert.equal(calls.at(-1)?.url.searchParams.get('permanent'), null);
+
+  await transport.hostedProjects.trash();
+  assert.equal(calls.at(-1)?.method, 'GET');
+  assert.equal(calls.at(-1)?.url.pathname, '/api/v1/projects/trash');
+
+  await transport.hostedProjects.restore('0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa');
+  assert.equal(calls.at(-1)?.method, 'POST');
+  assert.equal(
+    calls.at(-1)?.url.pathname,
+    '/api/v1/projects/0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa/restore',
+  );
+
+  await transport.hostedProjects.deletePermanently('0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa');
+  assert.equal(calls.at(-1)?.method, 'DELETE');
+  assert.equal(
+    calls.at(-1)?.url.pathname,
+    '/api/v1/projects/0197aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa',
+  );
+  assert.equal(calls.at(-1)?.url.searchParams.get('permanent'), '1');
 });
 
 test('http: hosted files service uploads raw bytes and downloads without envelopes', async () => {

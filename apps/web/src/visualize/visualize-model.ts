@@ -328,3 +328,17 @@ export function ellipsePoints(
   }
   return { px, py };
 }
+
+/**
+ * Note for samples left off the plot because they have no value on an axis
+ * (counts per group, in group order), or null when every sample is shown.
+ */
+export function hiddenPointsNote(hidden: ReadonlyMap<string, number>, xName: string, yName: string): string | null {
+  const parts = [...hidden].filter(([, n]) => n > 0);
+  const total = parts.reduce((sum, [, n]) => sum + n, 0);
+  if (total === 0) return null;
+  const axes = xName === yName ? xName : `${xName} or ${yName}`;
+  const who = parts.length === 1 ? parts[0]![0] : parts.map(([g, n]) => `${g} ${n.toLocaleString()}`).join(', ');
+  const samples = total === 1 ? '1 sample is' : `${total.toLocaleString()} samples are`;
+  return `${samples} not plotted because ${total === 1 ? 'it has' : 'they have'} no value for ${axes} (${who}).`;
+}

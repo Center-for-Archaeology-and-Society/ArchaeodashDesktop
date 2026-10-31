@@ -1,4 +1,4 @@
-import type { GroupRowsResponse, AnalysisInputOptions } from '@archaeodash/client';
+import type { GroupRowsResponse, AnalysisInputOptions, IdColumnChoice } from '@archaeodash/client';
 
 export function projectionLabels(data: GroupRowsResponse, column: string): string[] {
   const index = data.descriptive_columns.indexOf(column);
@@ -37,6 +37,21 @@ export function uniqueIdColumns(data: GroupRowsResponse): string[] {
 export function defaultIdColumn(data: GroupRowsResponse, choices: readonly string[]): string {
   if (choices.includes(data.visible_id_column)) return data.visible_id_column;
   return choices.find(c => c.toLowerCase() === 'anid') ?? choices[0] ?? data.visible_id_column;
+}
+
+/**
+ * Membership/Euclidean ID choices: the unique ID columns plus the rowid
+ * column, which is always unique (the backend labels repeated rowids
+ * `group:rowid`).
+ */
+export function analysisIdColumns(data: GroupRowsResponse): string[] {
+  return [...uniqueIdColumns(data).filter(c => c !== data.legacy_rowid_column), data.legacy_rowid_column];
+}
+
+/** Default analysis ID column under the shared Sample IDs choice. */
+export function defaultAnalysisIdColumn(data: GroupRowsResponse, choices: readonly string[], choice: IdColumnChoice): string {
+  if (choice === 'rowid') return data.legacy_rowid_column;
+  return defaultIdColumn(data, choices.filter(c => c !== data.legacy_rowid_column));
 }
 
 export interface GroupEligibility {

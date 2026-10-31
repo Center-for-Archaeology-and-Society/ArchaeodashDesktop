@@ -12,7 +12,7 @@
 //! server), or `dev`. `dev` accepts links in-process and is refused unless
 //! `AUTH_ALLOW_DEV_EMAIL=1` so it can never silently serve production.
 
-use archaeodash_api::auth::AuthState;
+use archaeodash_api::auth::{AuthState, DEFAULT_RETENTION_DAYS};
 use archaeodash_api::guests::{sweep_guests, GuestLimits, GuestSessions};
 use archaeodash_api::hosted::{serve_web_ui, trust_forwarded_client};
 use archaeodash_api::hosted_files::HostedFileStore;
@@ -193,12 +193,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1_073_741_824);
+    // Days a trashed project or file is kept before the sweep below purges it.
+    let retention_days: i64 = std::env::var("AUTH_RETENTION_DAYS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_RETENTION_DAYS);
+    let sweep_workspaces = workspaces.clone();
     let state = HostedState {
         auth: AuthState {
             store: store.clone(),
             email,
             pepper,
             base_url,
+            retention_days,
         },
         store: store.clone(),
         files: files.clone(),
@@ -239,14 +246,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let app = finalize_hosted_router(app);
 
-    // Retention sweep (Section 6.9): hourly, purges catalog tombstones older
-    // than AUTH_RETENTION_DAYS (default 30) along with their trash objects.
-    // Failures are logged and retried on the next tick; a crash between the
-    // DB delete and the FS purge can only orphan an inaccessible trash file.
-    let retention_days: i64 = std::env::var("AUTH_RETENTION_DAYS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(30);
+    // Retention sweep (Section 6.9): hourly, purges catalog tombstones and
+    // trashed projects older than AUTH_RETENTION_DAYS (default 30) along
+    // with their files. Failures are logged and retried on the next tick; a
+    // crash between the DB delete and the FS purge can only orphan files no
+    // route can reach.
     let sweep_store = store.clone();
     let sweep_files = files.clone();
     // (clones taken before the state move below)
@@ -279,6 +283,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 Err(e) => tracing::warn!(error = %e, "transformation retention sweep failed"),
+            }
+            // Trashed projects: the catalog row (with its file and
+            // transformation rows) and the whole project directory.
+            match sweep_store.sweep_expired_projects(cutoff).await {
+                Ok(swept) => {
+                    for item in swept {
+                        sweep_workspaces.purge(item.user_id, item.project_id).await;
+                        tracing::info!(
+                            project_id = %item.project_id,
+                            "retention sweep purged project"
+                        );
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "project retention sweep failed"),
             }
         }
     });

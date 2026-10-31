@@ -16,6 +16,7 @@ pub mod import;
 pub mod ordination;
 pub mod preferences;
 pub mod prepared;
+pub(crate) mod sample_ids;
 pub mod transforms;
 
 pub use analysis_jobs::{AnalysisJobRegistry, AnalysisJobs, JobContext};

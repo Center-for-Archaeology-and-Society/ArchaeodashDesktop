@@ -1342,7 +1342,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_file_ordination_requires_columns_in_every_file() {
+    fn multi_file_ordination_zero_fills_columns_a_file_lacks() {
         let (service, dir, paths) = service_with_group_files();
         std::fs::write(
             dir.join("other.csv"),
@@ -1363,7 +1363,8 @@ mod tests {
             })
             .expect("commit other");
         let other_path = other.groups[0].path.clone();
-        let err = service
+        // `fe` is missing from the extra file: its rows are 0 there.
+        let response = service
             .pca(&PcaRequest {
                 path: paths[0].clone(),
                 columns: vec!["as".into(), "fe".into()],
@@ -1371,19 +1372,23 @@ mod tests {
                 transformation: None,
                 extra_paths: vec![other_path.clone()],
             })
-            .expect_err("missing column in extra file");
-        match err {
-            DomainError::Validation {
-                ref code,
-                ref message,
-                ..
-            } => {
-                assert_eq!(code, "missing_elemental_column");
-                assert!(message.contains(&other_path), "{message}");
-                assert!(message.contains("\"fe\""), "{message}");
-            }
-            other => panic!("unexpected error {other:?}"),
-        }
+            .expect("missing column zero-filled");
+        let first = archaeodash_data_io::read_group_file(&dir.join(&paths[0])).expect("first");
+        assert_eq!(response.scores.len(), first.rows.len() + 2);
+        // A column no file has is still refused.
+        let err = service
+            .pca(&PcaRequest {
+                path: paths[0].clone(),
+                columns: vec!["as".into(), "zz".into()],
+                scale: false,
+                transformation: None,
+                extra_paths: vec![other_path],
+            })
+            .expect_err("unknown column");
+        assert!(matches!(
+            err,
+            DomainError::Validation { ref code, .. } if code == "missing_elemental_column"
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

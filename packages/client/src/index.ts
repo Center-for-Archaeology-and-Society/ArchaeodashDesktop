@@ -23,6 +23,8 @@ export type {
   HostedProjectsService,
   HostedFilesService,
   HostedProjectSummary,
+  HostedProjectTrash,
+  TrashedHostedProject,
   HostedFileMeta,
   QuotaUsage,
   GuestService,

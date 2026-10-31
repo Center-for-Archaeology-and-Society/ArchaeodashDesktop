@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { GroupRowsResponse } from '@archaeodash/client';
-import { combineGroupFiles, defaultGroupColumn, inputPaths, selectionBySource, syntheticGroupColumn } from './combine.ts';
+import { combineGroupFiles, defaultGroupColumn, inputPaths, selectionBySource, syntheticGroupColumn, zeroFillNotice } from './combine.ts';
 
 function file(
   path: string,
@@ -26,24 +26,33 @@ function file(
   };
 }
 
-test('combining groups keeps shared elements, unions metadata, and tags each row', () => {
+test('combining groups unions elements (absent ones 0) and metadata, and tags each row', () => {
   const a = file('groups/A.parquet', ['Site'], ['as', 'fe', 'na'], [
     ['a1', ['Baca'], [1, 2, 3]],
   ]);
   const b = file('groups/B.parquet', ['Ware', 'Site'], ['fe', 'as'], [
     ['b1', ['Glaze', 'Hooper'], [20, 10]],
-    ['b2', ['WMRW', null], [21, 11]],
+    ['b2', ['WMRW', null], [null, 11]],
   ]);
   const c = combineGroupFiles([
     { path: a.path, groupName: 'A', data: a },
     { path: b.path, groupName: 'B', data: b },
   ]);
-  assert.deepEqual(c.elementalColumns, ['as', 'fe']);
+  assert.deepEqual(c.elementalColumns, ['as', 'fe', 'na']);
   assert.deepEqual(c.descriptiveColumns, ['Site', 'Ware', 'Group']);
   assert.equal(c.groupColumn, 'Group');
   assert.deepEqual(c.groupOf, ['A', 'B', 'B']);
   assert.deepEqual(c.groupNames, ['A', 'B']);
-  assert.deepEqual(c.rows.map((r) => r.elemental), [[1, 2], [10, 20], [11, 21]]);
+  // B has no `na`: 0 there. B's own missing `fe` stays missing.
+  assert.deepEqual(c.rows.map((r) => r.elemental), [[1, 2, 3], [10, 20, 0], [11, null, 0]]);
+  assert.deepEqual(c.zeroFilled, [{ path: 'groups/B.parquet', groupName: 'B', columns: ['na'] }]);
+  assert.equal(zeroFillNotice(c), 'Some groups lack measured columns, which are 0 for their rows when groups are combined: B (na).');
+  const twice = combineGroupFiles([
+    { path: a.path, groupName: 'A', data: a },
+    { path: b.path, groupName: 'B', data: b },
+    { path: 'groups/C.parquet', groupName: 'C', data: { ...b, path: 'groups/C.parquet' } },
+  ]);
+  assert.equal(zeroFillNotice(twice), 'Some groups lack measured columns, which are 0 for their rows when groups are combined: B, C (na).');
   assert.deepEqual(c.rows.map((r) => r.descriptive), [
     ['Baca', null, 'A'],
     ['Hooper', 'Glaze', 'B'],
@@ -61,6 +70,7 @@ test('combining no files yields an empty dataset', () => {
   const c = combineGroupFiles([]);
   assert.equal(c.rows.length, 0);
   assert.deepEqual(c.elementalColumns, []);
+  assert.equal(zeroFillNotice(c), '');
 });
 
 test('synthetic group column avoids a real "Group" column', () => {

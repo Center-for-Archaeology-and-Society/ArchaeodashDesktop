@@ -38,6 +38,7 @@ use super::combined::CombinedInput;
 use super::ordination::OrdinationService;
 use super::transforms::TransformService;
 use crate::prepared::PoolScope;
+use crate::sample_ids::export_id_columns;
 
 fn validation(code: &str, message: impl Into<String>) -> DomainError {
     DomainError::validation(code, message)
@@ -110,11 +111,13 @@ fn xlsx_text(sheet: &mut Worksheet, row: u32, col: u16, text: &str) -> Result<()
 
 /// One worksheet: bold frozen header, then text cells for the ID and
 /// descriptive columns and numbers for measured values (missing = blank).
+/// `ids` holds each row's leading ID cells.
 fn write_measured_sheet(
     book: &mut Workbook,
     name: &str,
     columns: &[String],
     rows: &[GroupRow],
+    ids: &[Vec<Option<String>>],
     n_desc: usize,
 ) -> Result<(), XlsxError> {
     let header = Format::new().set_bold();
@@ -127,10 +130,12 @@ fn write_measured_sheet(
     for (r, row) in rows.iter().enumerate() {
         let excel_row = (r + 1) as u32;
         let mut col: u16 = 0;
-        if let Some(text) = row.visible.as_deref() {
-            xlsx_text(sheet, excel_row, col, text)?;
+        for value in ids.get(r).into_iter().flatten() {
+            if let Some(text) = value.as_deref() {
+                xlsx_text(sheet, excel_row, col, text)?;
+            }
+            col += 1;
         }
-        col += 1;
         for value in &row.descriptive[..n_desc] {
             if let Some(text) = value.as_deref() {
                 xlsx_text(sheet, excel_row, col, text)?;
@@ -263,6 +268,7 @@ impl ExportService {
         req: &ExportMeasuredDataRequest,
         input: &CombinedInput,
         columns: &[String],
+        ids: &[Vec<Option<String>>],
         n_desc: usize,
     ) -> Result<ExportResult, DomainError> {
         let rows = &input.data.rows;
@@ -280,13 +286,14 @@ impl ExportService {
         let mut used = Vec::new();
         if input.is_multi() {
             let name = sheet_name("All groups", &mut used);
-            write_measured_sheet(&mut book, &name, columns, rows, n_desc).map_err(xlsx_err)?;
+            write_measured_sheet(&mut book, &name, columns, rows, ids, n_desc).map_err(xlsx_err)?;
         }
         let mut start = 0;
         for source in &input.sources {
             let end = (start + source.row_count).min(rows.len());
             let name = sheet_name(&source.group_name, &mut used);
-            write_measured_sheet(&mut book, &name, columns, &rows[start..end], n_desc)
+            let part = &ids[start..end];
+            write_measured_sheet(&mut book, &name, columns, &rows[start..end], part, n_desc)
                 .map_err(xlsx_err)?;
             start = end;
         }
@@ -320,6 +327,8 @@ impl ExportService {
     /// Legacy `rvals$selectedData` export: visible ID, descriptive columns,
     /// then measured elemental columns rendered with `r_format_double`.
     /// Missing elemental values render as the legacy `fwrite` NA empty field.
+    /// With `id_column: rowid` the rows start with the rowid label, then the
+    /// visible ID (see `sample_ids`); the same holds for the other exports.
     pub fn export_measured_data(
         &self,
         req: &ExportMeasuredDataRequest,
@@ -327,17 +336,18 @@ impl ExportService {
         let (input, n_desc) = self.read_input(&req.path, &req.extra_paths)?;
         let data = &input.data;
         let roles = &data.profile.roles;
-        let mut columns = Vec::with_capacity(2 + n_desc + roles.elemental.len());
-        columns.push(roles.visible_id.clone());
+        let (mut columns, ids) = export_id_columns(data, req.id_column);
         columns.extend(roles.descriptive[..n_desc].iter().cloned());
         columns.extend(roles.elemental.iter().cloned());
         if req.format == ExportFormat::Xlsx {
-            return self.measured_workbook(req, &input, &columns, n_desc);
+            return self.measured_workbook(req, &input, &columns, &ids, n_desc);
         }
         let mut rows = Vec::with_capacity(data.rows.len());
-        for row in &data.rows {
+        for (row, id_cells) in data.rows.iter().zip(&ids) {
             let mut cells = Vec::with_capacity(columns.len());
-            cells.push(text_cell(row.visible.as_deref(), req.raw_text));
+            for value in id_cells {
+                cells.push(text_cell(value.as_deref(), req.raw_text));
+            }
             for value in &row.descriptive[..n_desc] {
                 cells.push(text_cell(value.as_deref(), req.raw_text));
             }
@@ -372,17 +382,17 @@ impl ExportService {
             Some(&pool),
         )?;
         let roles = &data.profile.roles;
-        let mut columns = Vec::with_capacity(2 + n_desc + matrix.names.len());
-        columns.push(roles.visible_id.clone());
+        let (mut columns, ids) = export_id_columns(data, req.id_column);
         columns.extend(roles.descriptive[..n_desc].iter().cloned());
         columns.extend(matrix.names.iter().cloned());
         if req.format == ExportFormat::Xlsx {
             let rows = data
                 .rows
                 .iter()
+                .zip(&ids)
                 .enumerate()
-                .map(|(i, row)| {
-                    let mut cells = text_cells(row.visible.as_deref(), &row.descriptive[..n_desc]);
+                .map(|(i, (row, id_cells))| {
+                    let mut cells = text_cells(id_cells, &row.descriptive[..n_desc]);
                     cells.extend(matrix.cols.iter().map(|col| number_cell(col[i])));
                     cells
                 })
@@ -392,9 +402,11 @@ impl ExportService {
         }
         let n_rows = matrix.n_rows();
         let mut rows = Vec::with_capacity(n_rows);
-        for (i, row) in data.rows.iter().enumerate() {
+        for (i, (row, id_cells)) in data.rows.iter().zip(&ids).enumerate() {
             let mut cells = Vec::with_capacity(columns.len());
-            cells.push(text_cell(row.visible.as_deref(), req.raw_text));
+            for value in id_cells {
+                cells.push(text_cell(value.as_deref(), req.raw_text));
+            }
             for value in &row.descriptive[..n_desc] {
                 cells.push(text_cell(value.as_deref(), req.raw_text));
             }
@@ -430,17 +442,17 @@ impl ExportService {
         let (input, n_desc) = self.read_input(&req.path, &req.extra_paths)?;
         let data = &input.data;
         let roles = &data.profile.roles;
-        let mut columns = Vec::with_capacity(2 + n_desc + pca.score_names.len());
-        columns.push(roles.visible_id.clone());
+        let (mut columns, ids) = export_id_columns(data, req.id_column);
         columns.extend(roles.descriptive[..n_desc].iter().cloned());
         columns.extend(pca.score_names.iter().cloned());
         if req.format == ExportFormat::Xlsx {
             let rows = data
                 .rows
                 .iter()
+                .zip(&ids)
                 .zip(&pca.scores)
-                .map(|(row, scores)| {
-                    let mut cells = text_cells(row.visible.as_deref(), &row.descriptive[..n_desc]);
+                .map(|((row, id_cells), scores)| {
+                    let mut cells = text_cells(id_cells, &row.descriptive[..n_desc]);
                     cells.extend(scores.iter().map(|&v| number_cell(v)));
                     cells
                 })
@@ -449,10 +461,12 @@ impl ExportService {
             return single_sheet_workbook(&file_name, "PCA scores", columns, rows);
         }
         let mut rows = Vec::with_capacity(data.rows.len());
-        for (i, row) in data.rows.iter().enumerate() {
+        for (i, (row, id_cells)) in data.rows.iter().zip(&ids).enumerate() {
             let mut cells = Vec::with_capacity(columns.len());
             // Scores are computed values; the guard always applies here.
-            cells.push(text_cell(row.visible.as_deref(), false));
+            for value in id_cells {
+                cells.push(text_cell(value.as_deref(), false));
+            }
             for value in &row.descriptive[..n_desc] {
                 cells.push(text_cell(value.as_deref(), false));
             }
@@ -470,9 +484,10 @@ impl ExportService {
     }
 }
 
-/// Visible ID and descriptive values as text cells (empty when missing).
-fn text_cells(visible: Option<&str>, descriptive: &[Option<String>]) -> Vec<Option<TableCell>> {
-    std::iter::once(visible.map(str::to_string))
+/// ID and descriptive values as text cells (empty when missing).
+fn text_cells(ids: &[Option<String>], descriptive: &[Option<String>]) -> Vec<Option<TableCell>> {
+    ids.iter()
+        .cloned()
         .chain(descriptive.iter().cloned())
         .map(|v| v.map(TableCell::Text))
         .collect()
@@ -645,8 +660,8 @@ mod tests {
     use super::*;
     use crate::import::ImportService;
     use archaeodash_contracts::{
-        ImportCommitRequest, ImputationMethod, RatioMode, RatioSpecDto, TransformMethod,
-        TransformationDefinition,
+        IdColumnChoice, ImportCommitRequest, ImputationMethod, RatioMode, RatioSpecDto,
+        TransformMethod, TransformationDefinition,
     };
 
     static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -815,6 +830,7 @@ mod tests {
         let service = ExportService::new(&dir).expect("export service");
         let result = service
             .export_measured_data(&ExportMeasuredDataRequest {
+                id_column: Default::default(),
                 path: paths[0].clone(),
                 extra_paths: paths[1..].to_vec(),
                 raw_text: false,
@@ -902,6 +918,7 @@ mod tests {
         let before = std::fs::read(dir.join(&path)).expect("read group");
         let result = service
             .export_measured_data(&ExportMeasuredDataRequest {
+                id_column: Default::default(),
                 path: path.clone(),
                 extra_paths: vec![],
                 raw_text: false,
@@ -943,6 +960,7 @@ mod tests {
         let tricky_path = commit.groups[0].path.clone();
         let guarded = service
             .export_measured_data(&ExportMeasuredDataRequest {
+                id_column: Default::default(),
                 path: tricky_path.clone(),
                 extra_paths: vec![],
                 raw_text: false,
@@ -956,6 +974,7 @@ mod tests {
         assert_eq!(lines[2], "'@x,Baca,5,100000");
         let raw = service
             .export_measured_data(&ExportMeasuredDataRequest {
+                id_column: Default::default(),
                 path: tricky_path,
                 extra_paths: vec![],
                 raw_text: true,
@@ -979,6 +998,7 @@ mod tests {
         let before = std::fs::read(dir.join(&path)).expect("read group");
         let result = service
             .export_transformed(&ExportTransformedRequest {
+                id_column: Default::default(),
                 format: Default::default(),
                 path: path.clone(),
                 extra_paths: vec![],
@@ -1017,6 +1037,7 @@ mod tests {
         // Descriptive columns cannot be transformed (validation error).
         let err = service
             .export_transformed(&ExportTransformedRequest {
+                id_column: Default::default(),
                 format: Default::default(),
                 path,
                 extra_paths: vec![],
@@ -1047,6 +1068,7 @@ mod tests {
         let (service, _dir, path) = service_with_group();
         let pca = service
             .export_pca_scores(&ExportPcaScoresRequest {
+                id_column: Default::default(),
                 format: ExportFormat::Xlsx,
                 path: path.clone(),
                 extra_paths: vec![],
@@ -1064,6 +1086,7 @@ mod tests {
 
         let transformed = service
             .export_transformed(&ExportTransformedRequest {
+                id_column: Default::default(),
                 format: ExportFormat::Xlsx,
                 path,
                 extra_paths: vec![],
@@ -1092,6 +1115,7 @@ mod tests {
         let (service, _dir, path) = service_with_group();
         let result = service
             .export_pca_scores(&ExportPcaScoresRequest {
+                id_column: Default::default(),
                 format: Default::default(),
                 path: path.clone(),
                 extra_paths: vec![],
@@ -1128,6 +1152,7 @@ mod tests {
         // Unknown column is a validation error.
         let err = service
             .export_pca_scores(&ExportPcaScoresRequest {
+                id_column: Default::default(),
                 format: Default::default(),
                 path,
                 extra_paths: vec![],
@@ -1140,6 +1165,56 @@ mod tests {
             err,
             DomainError::Validation { ref code, .. } if code == "missing_elemental_column"
         ));
+    }
+
+    #[test]
+    fn rowid_id_column_leads_with_unambiguous_rowids() {
+        let (service, dir, path) = service_with_group();
+        // A second import without anid: its rowids restart at 1.
+        std::fs::write(dir.join("other.csv"), "Site,fe,as\nHooper,7,8\n").expect("write source");
+        let import = ImportService::new(&dir).expect("import service");
+        let other = import
+            .commit(&ImportCommitRequest {
+                sheet: None,
+                source: "other.csv".into(),
+                group_column: "Site".into(),
+                visible_id_column: None,
+                elemental_columns: None,
+                recipe: None,
+                destination_dir: None,
+                group_name: None,
+            })
+            .expect("commit other");
+        let request = |format| ExportMeasuredDataRequest {
+            id_column: IdColumnChoice::Rowid,
+            path: path.clone(),
+            extra_paths: vec![other.groups[0].path.clone()],
+            raw_text: false,
+            format,
+        };
+        let result = service
+            .export_measured_data(&request(ExportFormat::Csv))
+            .expect("rowid export");
+        let lines: Vec<&str> = result.content.trim_end_matches('\n').split('\n').collect();
+        assert_eq!(lines[0], "rowid,anid,Site,Group,as,fe");
+        assert_eq!(lines[1], "Baca:1,A1,Baca,Baca,1.5,3");
+        assert_eq!(lines[4], "Hooper:1,\"\",Hooper,Hooper,8,7");
+        service
+            .export_measured_data(&request(ExportFormat::Xlsx))
+            .expect("rowid workbook");
+        // One import alone keeps plain rowids.
+        let single = service
+            .export_measured_data(&ExportMeasuredDataRequest {
+                id_column: IdColumnChoice::Rowid,
+                path: path.clone(),
+                extra_paths: vec![],
+                raw_text: false,
+                format: ExportFormat::Csv,
+            })
+            .expect("single rowid export");
+        let expected = "rowid,anid,Site,as,fe\n1,A1,Baca,1.5,3\n";
+        assert!(single.content.starts_with(expected), "{}", single.content);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1166,6 +1241,7 @@ mod tests {
         let other_path = other.groups[0].path.clone();
         let result = service
             .export_measured_data(&ExportMeasuredDataRequest {
+                id_column: Default::default(),
                 path: path.clone(),
                 extra_paths: vec![other_path.clone()],
                 raw_text: false,
@@ -1174,16 +1250,18 @@ mod tests {
             .expect("multi-file export");
         assert_eq!(result.file_name, "Baca-and-1-more.csv");
         let lines: Vec<&str> = result.content.trim_end_matches('\n').split('\n').collect();
-        // Shared elemental columns only; descriptive union plus "Group".
-        assert_eq!(lines[0], "anid,Site,Ware,Group,as,fe");
-        assert_eq!(lines[1], "A1,Baca,\"\",Baca,1.5,3");
-        assert_eq!(lines[3], "A3,Baca,\"\",Baca,5,6");
-        assert_eq!(lines[4], "B1,Hooper,x,Hooper,8,7");
+        // Union of elemental columns (absent ones 0); descriptive union plus
+        // "Group".
+        assert_eq!(lines[0], "anid,Site,Ware,Group,as,fe,zn");
+        assert_eq!(lines[1], "A1,Baca,\"\",Baca,1.5,3,0");
+        assert_eq!(lines[3], "A3,Baca,\"\",Baca,5,6,0");
+        assert_eq!(lines[4], "B1,Hooper,x,Hooper,8,7,9");
         assert_eq!(lines.len(), 5);
 
         // Single-file exports stay unchanged (no synthetic column).
         let single = service
             .export_measured_data(&ExportMeasuredDataRequest {
+                id_column: Default::default(),
                 path: other_path.clone(),
                 extra_paths: vec![],
                 raw_text: false,
@@ -1195,6 +1273,7 @@ mod tests {
         // Transformed export over both files pools rows and keeps the column.
         let transformed = service
             .export_transformed(&ExportTransformedRequest {
+                id_column: Default::default(),
                 format: Default::default(),
                 path: path.clone(),
                 extra_paths: vec![other_path.clone()],
@@ -1222,9 +1301,10 @@ mod tests {
         assert_eq!(lines[0], "anid,Site,Ware,Group,as");
         assert_eq!(lines[4], "B1,Hooper,x,Hooper,8");
 
-        // A column missing from one file is rejected, naming that file.
-        let err = service
+        // A column missing from one file is 0 for that file's rows.
+        let zn = service
             .export_transformed(&ExportTransformedRequest {
+                id_column: Default::default(),
                 format: Default::default(),
                 path,
                 extra_paths: vec![other_path.clone()],
@@ -1243,11 +1323,11 @@ mod tests {
                 },
                 raw_text: false,
             })
-            .expect_err("zn missing in first file");
-        assert!(
-            err.to_string().contains("missing_elemental_column"),
-            "{err}"
-        );
+            .expect("zn missing in first file");
+        let lines: Vec<&str> = zn.content.trim_end_matches('\n').split('\n').collect();
+        assert_eq!(lines[0], "anid,Site,Ware,Group,zn");
+        assert_eq!(lines[1], "A1,Baca,\"\",Baca,0");
+        assert_eq!(lines[4], "B1,Hooper,x,Hooper,9");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

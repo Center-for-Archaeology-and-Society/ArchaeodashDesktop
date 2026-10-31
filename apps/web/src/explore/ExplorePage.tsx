@@ -34,6 +34,7 @@ import {
   combineGroupFiles,
   defaultGroupColumn,
   inputPaths,
+  zeroFillNotice,
   type CombinedRows,
   type LoadedGroupFile,
 } from '../visualize/combine.ts';
@@ -50,6 +51,8 @@ import { nextSort, sameSortKey, tableOrder, type SortKey, type SortState } from 
 import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
 import { TableCard, num, type TableSheet } from '../ui/TableExport.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
+import { SampleIdPicker, useSampleIds } from '../ids/SampleIdPicker.tsx';
+import { ROWID_COLUMN, visibleIdColumnName } from '../ids/sample-ids.ts';
 import { TabPanels } from '../ui/TabPanels.tsx';
 export interface ExploreDeps {
   readonly groups: GroupsService;
@@ -98,6 +101,8 @@ export function DataTable({
   onReload: () => void;
 }): ReactElement {
   const combined = useMemo(() => combineGroupFiles(files), [files]);
+  // Row labels and exports follow the shared Sample IDs choice.
+  const sampleIds = useSampleIds(files, combined);
   // Global search and column sort (legacy DT table). The order lists
   // indexes into combined.rows, so edits still reach the right row.
   const [query, setQuery] = useState('');
@@ -152,7 +157,7 @@ export function DataTable({
     setExporting(format);
     void autosave
       .idle()
-      .then(() => deps.exports.measuredData({ ...inputPaths(files), raw_text: false, format }))
+      .then(() => deps.exports.measuredData({ ...inputPaths(files), raw_text: false, format, id_column: sampleIds.choice }))
       .then(downloadExportResult)
       .catch((err: unknown) => setExportError(err instanceof Error ? err.message : String(err)))
       .finally(() => setExporting(null));
@@ -172,7 +177,7 @@ export function DataTable({
     setExporting('setup');
     void autosave
       .idle()
-      .then(() => deps.exports.transformed({ ...inputPaths(files), definition: setupDefinition, raw_text: false, format }))
+      .then(() => deps.exports.transformed({ ...inputPaths(files), definition: setupDefinition, raw_text: false, format, id_column: sampleIds.choice }))
       .then(downloadExportResult)
       .catch((err: unknown) => setExportError(err instanceof Error ? err.message : String(err)))
       .finally(() => setExporting(null));
@@ -310,6 +315,7 @@ export function DataTable({
         </p>
       )}
       {exportError && <p role="alert">Export failed: {exportError}</p>}
+      {zeroFillNotice(combined) && <p className="muted">{zeroFillNotice(combined)}</p>}
       <div className="toolbar-row table-search">
         <label className="field field-inline">
           Search
@@ -344,8 +350,8 @@ export function DataTable({
         <table className="data-table" aria-rowcount={total + 1}>
           <thead>
             <tr>
-              <SortHeader label={combined.visibleIdColumn} sortKey={{ kind: 'visible_id' }} sort={sort} onSort={setSort} />
-              <SortHeader label={combined.legacyRowidColumn} sortKey={{ kind: 'legacy_rowid' }} sort={sort} onSort={setSort} />
+              <SortHeader label={visibleIdColumnName(sampleIds.summary)} sortKey={{ kind: 'visible_id' }} sort={sort} onSort={setSort} />
+              <SortHeader label={ROWID_COLUMN} sortKey={{ kind: 'legacy_rowid' }} sort={sort} onSort={setSort} />
               {combined.descriptiveColumns.map((c, index) => (
                 <SortHeader key={c} label={c} sortKey={{ kind: 'descriptive', index }} sort={sort} onSort={setSort} />
               ))}
@@ -373,7 +379,7 @@ export function DataTable({
               const position = first + offset;
               const path = combined.pathOf[rowIndex]!;
               const own = fileOf.get(path)?.data.descriptive_columns ?? [];
-              const rowLabel = row.visible_id ?? `row ${rowIndex + 1}`;
+              const rowLabel = sampleIds.choice === 'rowid' ? `row ${sampleIds.ids[rowIndex] ?? rowIndex + 1}` : row.visible_id || `row ${rowIndex + 1}`;
               return (
                 <tr key={row.analytical_uuid} data-row aria-rowindex={position + 2}>
                   <td>{row.visible_id ?? ''}</td>
@@ -1059,6 +1065,7 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
   const [view, setView] = useState<ExploreView>('table');
 
   const data = useMemo(() => asRowsResponse(files, combined), [files, combined]);
+  const sampleIds = useSampleIds(files, combined);
   // Plots use the Analysis setup's elements; values stay as measured here.
   const { setup } = useAnalysisSetup();
   const plotColumns = useMemo(() => analysisInput(setup, combined.elementalColumns).elements, [setup, combined.elementalColumns]);
@@ -1102,6 +1109,7 @@ export function ExplorePage({ deps }: { deps: ExploreDeps }): ReactElement {
             onChange={dataset.setSelectedPaths}
           />
         </label>
+        {load.kind === 'loaded' && files.length > 0 && <SampleIdPicker ids={sampleIds} />}
         <button type="button" className="btn" onClick={dataset.reload}>
           Reload
         </button>

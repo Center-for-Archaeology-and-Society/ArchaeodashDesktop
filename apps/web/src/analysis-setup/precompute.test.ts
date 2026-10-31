@@ -21,22 +21,22 @@ test('precompute sends the pages\' all-groups requests, slowest last', () => {
   const groups = [candidate('A', ['na', 'fe', 'cs']), candidate('B', ['na', 'fe']), candidate('Broken', ['na'], false), candidate('C', ['fe', 'na', 'k'])];
   const plan = planPrecompute(setup, groups);
   assert.deepEqual(plan.jobs.map((j) => j.kind), ['pca', 'lda', 'umap']);
-  // Ready groups in scan order; columns every group shares, in the first group's order.
+  // Ready groups in scan order; the union of their columns, in first-seen order.
   assert.equal(plan.requests.pca?.path, 'groups/A.parquet');
   assert.deepEqual(plan.requests.pca?.extra_paths, ['groups/B.parquet', 'groups/C.parquet']);
-  assert.deepEqual(plan.requests.pca?.columns, ['na', 'fe']);
+  assert.deepEqual(plan.requests.pca?.columns, ['na', 'fe', 'cs']);
   assert.equal(plan.requests.pca?.transformation?.transform_method, 'log10');
   assert.equal(plan.requests.umap?.seed, UMAP_SEED);
   // LDA as Visualize (by file) and as Ordination (synthetic group column).
   assert.deepEqual(plan.requests.lda.map((r) => [r.group_column, r.group_by_file ?? false]), [['', true], ['Group', false]]);
 });
 
-test('LDA needs three groups and every ordination needs two shared elements', () => {
+test('LDA needs three groups and every ordination needs two elements', () => {
   const setup = { ...newSetup(['na', 'fe']), precompute: ['pca', 'lda'] as ('pca' | 'lda')[] };
   const two = planPrecompute(setup, [candidate('A', ['na', 'fe']), candidate('B', ['na', 'fe'])]);
   assert.deepEqual(two.jobs.map((j) => j.kind), ['pca']);
   assert.deepEqual(two.skipped, [{ kind: 'lda', reason: 'needs three or more groups' }]);
-  const narrow = planPrecompute(setup, [candidate('A', ['na']), candidate('B', ['na', 'fe'])]);
+  const narrow = planPrecompute(setup, [candidate('A', ['na']), candidate('B', ['na', 'k'])]);
   assert.equal(narrow.jobs.length, 0);
   assert.equal(narrow.skipped.length, 2);
   assert.match(narrow.skipped[0]!.reason, /two selected elements/);

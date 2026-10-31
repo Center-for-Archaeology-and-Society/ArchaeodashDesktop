@@ -34,6 +34,7 @@ import {
   clearSelection,
   ellipsePoints,
   emptySelection,
+  hiddenPointsNote,
   normalizeFilterValue,
   paletteColors,
   replaceSelection,
@@ -49,6 +50,7 @@ import { ValueMultiSelect } from './ValueMultiSelect.tsx';
 import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
 import { TableCard } from '../ui/TableExport.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
+import { SampleIdPicker, useSampleIds } from '../ids/SampleIdPicker.tsx';
 
 export interface VisualizeDeps {
   readonly groups: GroupsService;
@@ -97,12 +99,11 @@ export function newGroupNameProblem(
   return clash ? `A group “${clash.name}” already exists there; choose it under Target group instead.` : null;
 }
 
-/** Text for a point label: the chosen column's value, or the visible ID. */
+/** Text for a point label: the chosen column's value. */
 function labelValue(
   row: GroupRowDto,
   column: string,
-  combined: { visibleIdColumn: string; descriptiveColumns: readonly string[]; elementalColumns: readonly string[] },
-  rowNumber: number,
+  combined: { descriptiveColumns: readonly string[]; elementalColumns: readonly string[] },
 ): string {
   const d = combined.descriptiveColumns.indexOf(column);
   if (d >= 0) return row.descriptive[d] ?? '';
@@ -111,7 +112,7 @@ function labelValue(
     const v = row.elemental[e];
     return v === null || v === undefined ? '' : String(v);
   }
-  return row.visible_id ?? row.legacy_rowid ?? String(rowNumber);
+  return '';
 }
 
 /** Convert row-major API records into the column-major arrays used by plots. */
@@ -127,11 +128,14 @@ export function transposeElementalRows(
 /** Pure selected-rows table: ANID, metadata, predictors — never the UUID. */
 export function SelectedRowsTable({
   rows,
+  ids,
   columns,
   descriptiveColumns,
   elementalColumns,
 }: {
   rows: readonly GroupRowDto[];
+  /** Sample ID per row (the shared Sample IDs choice); else the visible ID. */
+  ids?: readonly string[];
   columns: { visibleId: string; legacyRowid: string };
   descriptiveColumns: readonly string[];
   elementalColumns: readonly string[];
@@ -151,9 +155,9 @@ export function SelectedRowsTable({
         </tr>
       </thead>
       <tbody>
-        {rows.map((r) => (
+        {rows.map((r, i) => (
           <tr key={r.analytical_uuid}>
-            <td>{r.visible_id ?? r.legacy_rowid ?? ''}</td>
+            <td>{ids?.[i] ?? r.visible_id ?? r.legacy_rowid ?? ''}</td>
             {descriptiveColumns.map((c, i) => (
               <td key={c}>{normalizeFilterValue(r.descriptive[i])}</td>
             ))}
@@ -224,6 +228,8 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
 
   const dataset = useGroupFiles(deps.groups);
   const { ready, options: groupOptions, selectedPaths, setSelectedPaths, orderedPaths, files, combined, rescan } = dataset;
+  // Hover text, the default point label and the selected rows use the shared Sample IDs.
+  const sampleIds = useSampleIds(files, combined);
   useEffect(() => {
     if (createdTarget === null) return;
     const created = ready.find((c) => c.path.toLowerCase() === createdTarget.toLowerCase());
@@ -458,9 +464,10 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
     : combined.descriptiveColumns.includes(symbolChoice)
       ? symbolChoice
       : combined.groupColumn;
+  // '' labels points by sample ID.
   const labelColumnName = labelColumn !== '' && (combined.descriptiveColumns.includes(labelColumn) || combined.elementalColumns.includes(labelColumn))
     ? labelColumn
-    : combined.visibleIdColumn;
+    : '';
 
   const symbolLevels = useMemo(() => {
     const colIdx = combined.descriptiveColumns.indexOf(symbolColumn);
@@ -506,11 +513,11 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
       const groupName = combined.groupOf[rowIdx]!;
       const symbolValue = symIdx >= 0 ? normalizeFilterValue(row.descriptive[symIdx]) : '';
       const symbol = symIdx >= 0 ? symbolFor(symbolLevels.indexOf(symbolValue)) : symbolFor(0);
-      const label = labelValue(row, labelColumnName, combined, rowIdx + 1);
-      const id = row.visible_id ?? row.legacy_rowid ?? `Row ${rowIdx + 1}`;
+      const id = sampleIds.ids[rowIdx] || `Row ${rowIdx + 1}`;
+      const label = labelColumnName ? labelValue(row, labelColumnName, combined) : id;
       // Legacy hover: group, ID, label column, symbol field, x and y values.
-      const hoverLines = [groupName, `${combined.visibleIdColumn}: ${id}`];
-      if (labelColumnName !== combined.visibleIdColumn) hoverLines.push(`${labelColumnName}: ${label}`);
+      const hoverLines = [groupName, `${sampleIds.column}: ${id}`];
+      if (labelColumnName) hoverLines.push(`${labelColumnName}: ${label}`);
       if (symIdx >= 0 && symbolColumn !== combined.groupColumn) hoverLines.push(`${symbolColumn}: ${symbolValue}`);
       hoverLines.push(`${axisNames[xIdx] ?? 'x'}: ${x}`, `${axisNames[yIdx] ?? 'y'}: ${y}`);
       byGroup.get(groupName)?.push({
@@ -536,7 +543,19 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
         showLabels,
         ellipse: ellipseOn ? ellipsePoints(points.map((p) => p.x), points.map((p) => p.y), ellipseLevel) : undefined,
       }));
-  }, [combined, filteredIdx, coordinate, xIdx, yIdx, symbolColumn, symbolLevels, labelColumnName, showLabels, ellipseOn, ellipseLevel, colorOf, axisNames]);
+  }, [combined, sampleIds, filteredIdx, coordinate, xIdx, yIdx, symbolColumn, symbolLevels, labelColumnName, showLabels, ellipseOn, ellipseLevel, colorOf, axisNames]);
+
+  // Samples without a value on either axis are skipped above; say so.
+  const hiddenNote = useMemo(() => {
+    if (source !== 'elements') return null;
+    const hidden = new Map<string, number>();
+    for (const rowIdx of filteredIdx) {
+      if (coordinate(rowIdx, xIdx) !== null && coordinate(rowIdx, yIdx) !== null) continue;
+      const g = combined.groupOf[rowIdx]!;
+      hidden.set(g, (hidden.get(g) ?? 0) + 1);
+    }
+    return hiddenPointsNote(hidden, axisNames[xIdx] ?? 'X', axisNames[yIdx] ?? 'Y');
+  }, [source, filteredIdx, coordinate, xIdx, yIdx, combined, axisNames]);
 
   const shownTraces = useHeldValue(traces, held);
   const multiplotData = useHeldValue(
@@ -558,6 +577,10 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
   const selectedRows = useMemo(
     () => combined.rows.filter((r) => selection.uuids.has(r.analytical_uuid)),
     [combined, selection],
+  );
+  const selectedIds = useMemo(
+    () => combined.rows.flatMap((r, i) => (selection.uuids.has(r.analytical_uuid) ? [sampleIds.ids[i] ?? ''] : [])),
+    [combined, selection, sampleIds],
   );
 
   const axisOptions = useMemo(() => {
@@ -655,6 +678,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
           Dataset
           <GroupMultiSelect options={groupOptions} selected={selectedPaths} onChange={setSelectedPaths} />
         </label>
+        {files.length > 0 && <SampleIdPicker ids={sampleIds} />}
       </PageHeader>
       <div className="explore-controls">
         <label>
@@ -781,9 +805,8 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
           <label>
             Label column
             <select value={labelColumnName} onChange={(e) => setLabelColumn(e.target.value)}>
-              <option value={combined.visibleIdColumn}>{combined.visibleIdColumn}</option>
+              <option value="">{sampleIds.column}</option>
               {[...combined.descriptiveColumns, ...combined.elementalColumns]
-                .filter((c) => c !== combined.visibleIdColumn)
                 .map((c) => (
                   <option key={c} value={c}>
                     {c}
@@ -830,6 +853,7 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
           onClearSelection={clearSelected}
         />
       )}
+      {!showMultiplot && !sameAxis && hiddenNote && <p className="muted">{hiddenNote}</p>}
       <p className="muted" role="status">
         {selection.uuids.size} selected — double-click the plot to clear.
       </p>
@@ -886,13 +910,14 @@ export function VisualizePage({ deps }: { deps: VisualizeDeps }): ReactElement {
         note={`${selectedRows.length} selected.`}
         sheets={() => [{
           name: 'Selected samples',
-          columns: [combined.visibleIdColumn, ...combined.descriptiveColumns, ...combined.elementalColumns],
-          rows: selectedRows.map((r) => [r.visible_id ?? r.legacy_rowid ?? '', ...r.descriptive.map((v) => v ?? null), ...r.elemental.map((v) => (v === null ? null : v))]),
+          columns: [sampleIds.column, ...combined.descriptiveColumns, ...combined.elementalColumns],
+          rows: selectedRows.map((r, i) => [selectedIds[i] ?? '', ...r.descriptive.map((v) => v ?? null), ...r.elemental.map((v) => (v === null ? null : v))]),
         }]}
       >
         <SelectedRowsTable
           rows={selectedRows}
-          columns={{ visibleId: combined.visibleIdColumn, legacyRowid: combined.legacyRowidColumn }}
+          ids={selectedIds}
+          columns={{ visibleId: sampleIds.column, legacyRowid: combined.legacyRowidColumn }}
           descriptiveColumns={combined.descriptiveColumns}
           elementalColumns={combined.elementalColumns}
         />

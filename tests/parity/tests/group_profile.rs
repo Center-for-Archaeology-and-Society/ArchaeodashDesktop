@@ -165,16 +165,27 @@ fn scanner_discovers_profile_candidates_without_manifest() {
 }
 
 #[test]
-fn blank_group_values_require_explicit_destination() {
+fn blank_group_values_import_as_the_blank_group() {
     let frame = archaeodash_data_io::TextFrame {
         columns: vec!["anid".into(), "CORE".into(), "as".into()],
         rows: vec![
             vec![Some("A1".into()), Some("D1".into()), Some("1.0".into())],
             vec![Some("A2".into()), None, Some("2.0".into())],
+            vec![Some("A3".into()), Some("  ".into()), Some("3.0".into())],
         ],
     };
-    let err = partition_by_group(&frame, "CORE").expect_err("blank rejected");
-    assert!(err.to_string().contains("explicit destination"));
+    let partitions = partition_by_group(&frame, "CORE").expect("blank groups import");
+    let groups: Vec<(&str, &[usize])> = partitions
+        .iter()
+        .map(|p| (p.group_name.as_str(), p.row_indices.as_slice()))
+        .collect();
+    assert_eq!(
+        groups,
+        vec![
+            ("D1", &[0][..]),
+            (archaeodash_data_io::BLANK_GROUP_LABEL, &[1, 2][..])
+        ]
+    );
 }
 
 #[test]

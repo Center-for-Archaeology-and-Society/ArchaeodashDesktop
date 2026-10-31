@@ -13,7 +13,7 @@ import type { GroupCandidate, GroupsService } from '@archaeodash/client';
 import { combineGroupFiles, type CombinedRows, type LoadedGroupFile } from '../visualize/combine.ts';
 import { includedAmong, useGroupInclusion } from './GroupInclusion.tsx';
 import { activeFolderAmong, exclusionWithin, folderOf } from './folders.ts';
-import { useDataCache } from './DataCache.tsx';
+import { rowsVersion, useDataCache } from './DataCache.tsx';
 import { onGroupsChanged } from '../data-manager/events.ts';
 import { sharedScan } from './groupUpdates.ts';
 
@@ -56,6 +56,8 @@ export function useGroupFiles(groups: GroupsService): GroupFiles {
   const [load, setLoad] = useState<GroupFilesLoad>({ kind: 'idle' });
   const [token, setToken] = useState(0);
   const cache = useDataCache();
+  const cacheRef = useRef(cache);
+  cacheRef.current = cache;
   // Set by `reload()` so the next load skips cached rows.
   const forceReload = useRef(false);
 
@@ -93,6 +95,7 @@ export function useGroupFiles(groups: GroupsService): GroupFiles {
       // A rescan answering a change notice shares one scan with the other
       // pages and the Data Manager; any other rescan scans for itself.
       const list = await (afterNotice ? sharedScan(groups) : groups.scan());
+      cacheRef.current?.observeScan(list.map((c) => c.path));
       setCandidates(list);
       const allFolders = list.filter((c) => c.ready && c.group).map((c) => c.path);
       const shared = inclusionRef.current;
@@ -130,9 +133,10 @@ export function useGroupFiles(groups: GroupsService): GroupFiles {
     [ready, selectedPaths],
   );
   // Stable key so a rescan that changes nothing does not refetch rows; it
-  // includes each file's revision, so a saved change reloads that file.
+  // includes each file's version (revision and more, see `rowsVersion`), so
+  // a saved change, or another file under the same path, reloads that file.
   const selectionKey = orderedPaths
-    .map((p) => `${p}\u0001${ready.find((c) => c.path === p)?.group?.revision_id ?? ''}`)
+    .map((p) => `${p}\u0001${rowsVersion(ready.find((c) => c.path === p)?.group) ?? ''}`)
     .join('\u0000');
 
   useEffect(() => {

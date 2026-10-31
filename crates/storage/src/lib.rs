@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use archaeodash_data_io::{GroupFileData, GroupProfile};
+use archaeodash_data_io::{ColumnRoles, GroupFileData, GroupProfile, GroupRow};
 
 /// Typed storage error surfaced to the application layer.
 #[derive(Debug, thiserror::Error)]
@@ -139,8 +139,9 @@ pub struct PlannedOutput {
     /// Fresh revision stamped by the executor when writing the successor.
     pub revision_id: String,
     pub rows: Vec<archaeodash_data_io::GroupRow>,
-    /// Roles carried over from the destination when one exists (schema
-    /// compatibility is enforced by plan functions), else from the source.
+    /// Roles carried over from the destination when one exists, plus any
+    /// columns the incoming rows add (see [`merged_roles`]), else the
+    /// source's.
     pub roles: archaeodash_data_io::ColumnRoles,
     /// Import recipe carried from the source group.
     pub recipe: archaeodash_data_io::ImportRecipe,
@@ -148,55 +149,131 @@ pub struct PlannedOutput {
     pub source_sha256: Option<String>,
 }
 
-/// Confirms two group files can exchange rows: identical elemental and
-/// descriptive role columns (Section 6.8 "destination schema/units
-/// compatibility").
-pub fn assert_schema_compatible(
-    left_path: &str,
-    left: &GroupFileData,
-    right_path: &str,
-    right: &GroupFileData,
-) -> Result<(), StoreError> {
-    if left.profile.roles.elemental != right.profile.roles.elemental {
-        return Err(StoreError::SchemaMismatch {
-            left: left_path.to_string(),
-            right: right_path.to_string(),
-            detail: "elemental columns differ".to_string(),
-        });
+/// Roles of a group receiving rows from groups with other columns: the
+/// target's roles, then the elemental and descriptive columns only the
+/// others have (first-seen order). The ID, rowid, and identity columns stay
+/// the target's. Refused when a column name would have two roles (measured
+/// in one group and descriptive or an ID column in another).
+pub fn merged_roles(
+    target_path: &str,
+    target: &ColumnRoles,
+    others: &[(&str, &ColumnRoles)],
+) -> Result<ColumnRoles, StoreError> {
+    let mut roles = target.clone();
+    let clash = |other: &str, detail: String| StoreError::SchemaMismatch {
+        left: target_path.to_string(),
+        right: other.to_string(),
+        detail,
+    };
+    for (path, other) in others {
+        for name in &other.elemental {
+            if roles.elemental.contains(name) {
+                continue;
+            }
+            if roles.descriptive.contains(name) || is_id_column(&roles, name) {
+                return Err(clash(
+                    path,
+                    format!("column {name:?} is measured in one group but not in the other"),
+                ));
+            }
+            roles.elemental.push(name.clone());
+        }
+        for name in &other.descriptive {
+            if roles.descriptive.contains(name) {
+                continue;
+            }
+            if roles.elemental.contains(name) {
+                return Err(clash(
+                    path,
+                    format!("column {name:?} is measured in one group but not in the other"),
+                ));
+            }
+            if is_id_column(&roles, name) {
+                return Err(clash(
+                    path,
+                    format!("column {name:?} is the ID column of one group but descriptive in the other"),
+                ));
+            }
+            roles.descriptive.push(name.clone());
+        }
     }
-    if left.profile.roles.descriptive != right.profile.roles.descriptive {
-        return Err(StoreError::SchemaMismatch {
-            left: left_path.to_string(),
-            right: right_path.to_string(),
-            detail: "descriptive columns differ".to_string(),
-        });
-    }
-    if left.profile.roles.visible_id != right.profile.roles.visible_id {
-        return Err(StoreError::SchemaMismatch {
-            left: left_path.to_string(),
-            right: right_path.to_string(),
-            detail: "visible id column differs".to_string(),
-        });
-    }
-    Ok(())
+    Ok(roles)
 }
 
-/// Verifies measured values are unchanged for every preserved UUID: the
-/// `(uuid, col, value|null)` tuples of the selected rows must appear
-/// identically in the successor output (Section 6.8 invariant).
+fn is_id_column(roles: &ColumnRoles, name: &str) -> bool {
+    name == roles.visible_id || name == roles.legacy_rowid || name == roles.identity
+}
+
+/// One row re-aligned by column name from `from` roles to `to` roles: a
+/// measured column `from` lacks is 0, a descriptive column it lacks is
+/// missing, except a descriptive column named like `from`'s ID column, which
+/// gets the row's ID. Identity, ID, and rowid values are kept.
+pub fn align_row(row: &GroupRow, from: &ColumnRoles, to: &ColumnRoles) -> GroupRow {
+    if from.elemental == to.elemental && from.descriptive == to.descriptive {
+        return row.clone();
+    }
+    GroupRow {
+        uuid: row.uuid,
+        visible: row.visible.clone(),
+        legacy_rowid: row.legacy_rowid.clone(),
+        descriptive: to
+            .descriptive
+            .iter()
+            .map(
+                |name| match from.descriptive.iter().position(|c| c == name) {
+                    Some(i) => row.descriptive.get(i).cloned().flatten(),
+                    None if *name == from.visible_id => row.visible.clone(),
+                    None => None,
+                },
+            )
+            .collect(),
+        elemental: to
+            .elemental
+            .iter()
+            .map(|name| match from.elemental.iter().position(|c| c == name) {
+                Some(i) => row.elemental.get(i).copied().flatten(),
+                None => Some(0.0),
+            })
+            .collect(),
+    }
+}
+
+/// Verifies measured values are unchanged for every preserved UUID when the
+/// successor has the same columns as `before` (Section 6.8 invariant); see
+/// [`assert_measured_values_preserved_in`].
 pub fn assert_measured_values_preserved(
     selected: &[Uuid],
     before: &GroupFileData,
-    after_rows: &[archaeodash_data_io::GroupRow],
+    after_rows: &[GroupRow],
 ) -> Result<(), StoreError> {
-    let tuple = |row: &archaeodash_data_io::GroupRow| -> Vec<(Uuid, usize, Option<u64>)> {
-        row.elemental
-            .iter()
-            .enumerate()
-            .map(|(col, v)| (row.uuid, col, v.map(f64::to_bits)))
-            .collect()
-    };
-    let before_by_uuid: std::collections::HashMap<Uuid, &archaeodash_data_io::GroupRow> =
+    assert_measured_values_preserved_in(selected, before, after_rows, &before.profile.roles)
+}
+
+/// Verifies measured values are unchanged for every preserved UUID, by
+/// column name: each of the row's measured values in `before` appears
+/// bit-identically (or missing) under the same column in `after_rows`
+/// (columns `after_roles`), and columns `before` lacked are 0 (Section 6.8
+/// invariant).
+pub fn assert_measured_values_preserved_in(
+    selected: &[Uuid],
+    before: &GroupFileData,
+    after_rows: &[GroupRow],
+    after_roles: &ColumnRoles,
+) -> Result<(), StoreError> {
+    let before_columns = &before.profile.roles.elemental;
+    let mut source_of = Vec::with_capacity(after_roles.elemental.len());
+    for name in &after_roles.elemental {
+        source_of.push(before_columns.iter().position(|c| c == name));
+    }
+    if let Some(lost) = before_columns
+        .iter()
+        .find(|name| !after_roles.elemental.contains(name))
+    {
+        return Err(StoreError::Invariant(format!(
+            "measured column {lost:?} missing from successor output"
+        )));
+    }
+    let before_by_uuid: std::collections::HashMap<Uuid, &GroupRow> =
         before.rows.iter().map(|r| (r.uuid, r)).collect();
     let selected_set: HashSet<Uuid> = selected.iter().copied().collect();
     for row in after_rows {
@@ -206,14 +283,41 @@ pub fn assert_measured_values_preserved(
         let original = before_by_uuid.get(&row.uuid).ok_or_else(|| {
             StoreError::Invariant(format!("unexpected uuid {} in successor output", row.uuid))
         })?;
-        if tuple(original) != tuple(row) {
-            return Err(StoreError::Invariant(format!(
-                "measured values changed for uuid {}",
-                row.uuid
-            )));
+        let changed =
+            || StoreError::Invariant(format!("measured values changed for uuid {}", row.uuid));
+        if row.elemental.len() != source_of.len() {
+            return Err(changed());
+        }
+        for (value, source) in row.elemental.iter().zip(&source_of) {
+            let expected = match source {
+                Some(i) => original.elemental.get(*i).copied().flatten(),
+                None => Some(0.0),
+            };
+            if value.map(f64::to_bits) != expected.map(f64::to_bits) {
+                return Err(changed());
+            }
         }
     }
     Ok(())
+}
+
+/// An existing destination's rows aligned to `roles` (its columns plus the
+/// ones incoming rows add); their measured values must be unchanged.
+fn existing_rows(
+    dest: Option<&GroupFileData>,
+    roles: &ColumnRoles,
+) -> Result<Vec<GroupRow>, StoreError> {
+    let Some(dest) = dest else {
+        return Ok(Vec::new());
+    };
+    let rows: Vec<GroupRow> = dest
+        .rows
+        .iter()
+        .map(|r| align_row(r, &dest.profile.roles, roles))
+        .collect();
+    let uuids: Vec<Uuid> = dest.rows.iter().map(|r| r.uuid).collect();
+    assert_measured_values_preserved_in(&uuids, dest, &rows, roles)?;
+    Ok(rows)
 }
 
 /// Plans a move: selected units leave `source` and join `destination`.
@@ -252,8 +356,16 @@ pub fn plan_move(
             ))
         }
     };
+    // An existing destination keeps its columns plus any the moved rows add.
+    let roles = match dest {
+        Some(d) => merged_roles(
+            dest_path,
+            &d.profile.roles,
+            &[(source_path, &source.profile.roles)],
+        )?,
+        None => source.profile.roles.clone(),
+    };
     if let Some(dest) = dest {
-        assert_schema_compatible(source_path, source, dest_path, dest)?;
         let dest_uuids: HashSet<Uuid> = dest.rows.iter().map(|r| r.uuid).collect();
         let collisions: Vec<_> = selected.intersection(&dest_uuids).collect();
         if !collisions.is_empty() {
@@ -267,14 +379,14 @@ pub fn plan_move(
         .rows
         .iter()
         .filter(|r| selected.contains(&r.uuid))
-        .cloned()
+        .map(|r| align_row(r, &source.profile.roles, &roles))
         .collect();
     if moving.is_empty() {
         return Err(StoreError::Invariant("move selected no rows".to_string()));
     }
-    assert_measured_values_preserved(selected_uuids, source, &moving)?;
+    assert_measured_values_preserved_in(selected_uuids, source, &moving, &roles)?;
 
-    let mut dest_rows = dest.map(|d| d.rows.clone()).unwrap_or_default();
+    let mut dest_rows = existing_rows(dest, &roles)?;
     dest_rows.extend(moving);
     let dest_out = PlannedOutput {
         path: dest_path.to_string(),
@@ -282,10 +394,7 @@ pub fn plan_move(
         group_name: destination_group_name.to_string(),
         revision_id: new_destination_revision.to_string(),
         rows: dest_rows,
-        roles: match dest {
-            Some(d) => d.profile.roles.clone(),
-            None => source.profile.roles.clone(),
-        },
+        roles,
         recipe: match dest {
             Some(d) => d.profile.import_recipe.clone(),
             None => source.profile.import_recipe.clone(),
@@ -345,20 +454,28 @@ pub fn plan_copy(
             "selected uuid(s) not present in source {source_path}"
         )));
     }
+    // An existing destination keeps its columns plus any the copies add.
+    let roles = match destination {
+        Some(d) => merged_roles(
+            destination_path,
+            &d.profile.roles,
+            &[(source_path, &source.profile.roles)],
+        )?,
+        None => source.profile.roles.clone(),
+    };
     let moving: Vec<archaeodash_data_io::GroupRow> = source
         .rows
         .iter()
         .filter(|r| selected.contains(&r.uuid))
-        .cloned()
+        .map(|r| align_row(r, &source.profile.roles, &roles))
         .collect();
     if moving.is_empty() {
         return Err(StoreError::Invariant("copy selected no rows".to_string()));
     }
-    assert_measured_values_preserved(selected_uuids, source, &moving)?;
+    assert_measured_values_preserved_in(selected_uuids, source, &moving, &roles)?;
 
     let dest_rows = match destination {
         Some(dest) => {
-            assert_schema_compatible(source_path, source, destination_path, dest)?;
             let dest_uuids: HashSet<Uuid> = dest.rows.iter().map(|r| r.uuid).collect();
             let collisions: Vec<_> = selected.intersection(&dest_uuids).collect();
             if !collisions.is_empty() {
@@ -368,21 +485,19 @@ pub fn plan_copy(
                     destination_path
                 )));
             }
-            let mut rows = dest.rows.clone();
+            let mut rows = existing_rows(Some(dest), &roles)?;
             rows.extend(moving);
             rows
         }
         None => moving,
     };
-    let (roles, recipe, source_path_out, source_sha256) = match destination {
+    let (recipe, source_path_out, source_sha256) = match destination {
         Some(dest) => (
-            dest.profile.roles.clone(),
             dest.profile.import_recipe.clone(),
             dest.profile.source_path.clone(),
             dest.profile.source_sha256.clone(),
         ),
         None => (
-            source.profile.roles.clone(),
             source.profile.import_recipe.clone(),
             source.profile.source_path.clone(),
             source.profile.source_sha256.clone(),
@@ -422,12 +537,16 @@ pub fn plan_merge(
         ));
     }
     let (target_path, target) = &sources[target_index];
-    for (path, group) in sources {
-        assert_schema_compatible(target_path, target, path, group)?;
-    }
+    // The target's columns plus any the other groups add.
+    let others: Vec<(&str, &ColumnRoles)> = sources
+        .iter()
+        .map(|(path, group)| (path.as_str(), &group.profile.roles))
+        .collect();
+    let roles = merged_roles(target_path, &target.profile.roles, &others)?;
     let mut seen: HashSet<Uuid> = HashSet::new();
     let mut rows = Vec::new();
     for (path, group) in sources {
+        let start = rows.len();
         for row in &group.rows {
             if !seen.insert(row.uuid) {
                 return Err(StoreError::Invariant(format!(
@@ -435,13 +554,14 @@ pub fn plan_merge(
                     row.uuid
                 )));
             }
-            rows.push(row.clone());
+            rows.push(align_row(row, &group.profile.roles, &roles));
         }
+        let uuids: Vec<Uuid> = group.rows.iter().map(|r| r.uuid).collect();
+        assert_measured_values_preserved_in(&uuids, group, &rows[start..], &roles)?;
     }
-    let (roles, recipe, source_path, source_sha256) = {
+    let (recipe, source_path, source_sha256) = {
         let p = &target.profile;
         (
-            p.roles.clone(),
             p.import_recipe.clone(),
             p.source_path.clone(),
             p.source_sha256.clone(),
@@ -642,21 +762,163 @@ mod tests {
         assert_eq!(out.rows[0].uuid, u, "copy preserves the analytical uuid");
     }
 
-    #[test]
-    fn merge_plan_rejects_duplicate_uuids_and_schema_mismatch() {
-        let u = [Uuid::now_v7(), Uuid::now_v7()];
-        let mut dup = data("g2", vec![row(u[0], Some(4.0), None)]);
-        dup.profile.roles.elemental.push("zn".to_string());
-        let sources = vec![
-            (
-                "groups/g1.parquet".to_string(),
-                data("g1", vec![row(u[0], Some(1.0), None)]),
-            ),
-            ("groups/g2.parquet".to_string(), dup),
-        ];
-        let err = plan_merge(&sources, 0, "gm", "merged", "r2").expect_err("schema mismatch");
-        assert!(matches!(err, StoreError::SchemaMismatch { .. }));
+    /// A group with columns `elemental` (`zn` extra), descriptive `ware`
+    /// instead of `site`, and ID column `fsno`.
+    fn other_schema(group_id: &str, rows: Vec<(Uuid, f64, Option<f64>, f64)>) -> GroupFileData {
+        let mut out = data(group_id, Vec::new());
+        out.profile.roles.elemental = vec!["zn".to_string(), "as".to_string(), "fe".to_string()];
+        out.profile.roles.descriptive = vec!["ware".to_string()];
+        out.profile.roles.visible_id = "fsno".to_string();
+        out.rows = rows
+            .into_iter()
+            .map(|(uuid, zn, as_val, fe)| GroupRow {
+                uuid,
+                visible: Some(format!("F-{zn}")),
+                legacy_rowid: None,
+                descriptive: vec![Some("glaze".to_string())],
+                elemental: vec![Some(zn), as_val, Some(fe)],
+            })
+            .collect();
+        out
+    }
 
+    #[test]
+    fn row_operations_align_differing_columns_by_name() {
+        let u = [Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7()];
+        let source = other_schema(
+            "g2",
+            vec![(u[0], 7.0, None, 3.0), (u[1], 8.0, Some(1.5), 4.0)],
+        );
+        let dest = data("g1", vec![row(u[2], Some(1.0), None)]);
+        // Move one row into a group lacking `zn` and `ware`: the destination
+        // keeps its columns and ID column, gains the new ones, and its own
+        // rows get 0 for `zn` and a missing `ware`.
+        let (_, dest_out) = plan_move(
+            "groups/g2.parquet",
+            &source,
+            Some(("groups/g1.parquet", Some(&dest))),
+            &[u[0]],
+            "r2",
+            "g1",
+            "g1",
+            "r2",
+        )
+        .expect("plan");
+        let out = dest_out.expect("destination");
+        assert_eq!(out.roles.elemental, vec!["as", "fe", "zn"]);
+        assert_eq!(out.roles.descriptive, vec!["site", "ware"]);
+        assert_eq!(out.roles.visible_id, "anid");
+        assert_eq!(out.rows[0].elemental, vec![Some(1.0), None, Some(0.0)]);
+        assert_eq!(
+            out.rows[0].descriptive,
+            vec![Some("site".to_string()), None]
+        );
+        // The moved row keeps its values by name; its missing `as` stays missing.
+        assert_eq!(out.rows[1].elemental, vec![None, Some(3.0), Some(7.0)]);
+        assert_eq!(
+            out.rows[1].descriptive,
+            vec![None, Some("glaze".to_string())]
+        );
+        assert_eq!(out.rows[1].visible.as_deref(), Some("F-7"));
+        assert_measured_values_preserved_in(&[u[0]], &source, &out.rows, &out.roles)
+            .expect("preserved by name");
+        // Positional comparison would have flagged the reordering.
+        assert!(assert_measured_values_preserved(&[u[0]], &source, &out.rows).is_err());
+
+        // Copy the other way: `zn`, `as`, `fe` already there; `as` gets 0 only
+        // where the column is absent, `site` becomes a new descriptive column.
+        let copy = plan_copy(
+            "groups/g1.parquet",
+            &dest,
+            "groups/g2.parquet",
+            Some(&source),
+            &[u[2]],
+            "g2",
+            "g2",
+            "r2",
+        )
+        .expect("plan")
+        .expect("destination");
+        assert_eq!(copy.roles.elemental, vec!["zn", "as", "fe"]);
+        assert_eq!(copy.roles.descriptive, vec!["ware", "site"]);
+        assert_eq!(copy.rows[2].elemental, vec![Some(0.0), Some(1.0), None]);
+        assert_eq!(copy.rows[0].elemental, vec![Some(7.0), None, Some(3.0)]);
+
+        // Merge: union of columns, each source's values kept by name.
+        let merged = plan_merge(
+            &[
+                ("groups/g1.parquet".to_string(), dest.clone()),
+                ("groups/g2.parquet".to_string(), source.clone()),
+            ],
+            0,
+            "gm",
+            "merged",
+            "r2",
+        )
+        .expect("merge");
+        assert_eq!(merged.roles.elemental, vec!["as", "fe", "zn"]);
+        assert_eq!(merged.rows.len(), 3);
+        assert_eq!(
+            merged.rows[2].elemental,
+            vec![Some(1.5), Some(4.0), Some(8.0)]
+        );
+
+        // A row whose source has a descriptive column named like the
+        // destination's ID column gets its ID there when the cell is absent.
+        let mut with_fsno = dest.clone();
+        with_fsno.profile.roles.descriptive.push("fsno".to_string());
+        with_fsno.rows[0].descriptive.push(Some("F-0".to_string()));
+        let (_, out) = plan_move(
+            "groups/g2.parquet",
+            &source,
+            Some(("groups/g1.parquet", Some(&with_fsno))),
+            &[u[1]],
+            "r2",
+            "g1",
+            "g1",
+            "r2",
+        )
+        .expect("plan");
+        let out = out.expect("destination");
+        assert_eq!(out.roles.descriptive, vec!["site", "fsno", "ware"]);
+        assert_eq!(
+            out.rows[1].descriptive,
+            vec![None, Some("F-8".to_string()), Some("glaze".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_column_with_two_roles_is_refused() {
+        let u = [Uuid::now_v7(), Uuid::now_v7()];
+        let dest = data("g1", vec![row(u[0], Some(1.0), None)]);
+        // `site` measured in the source but descriptive in the destination.
+        let mut measured_site = data("g2", vec![row(u[1], Some(2.0), Some(3.0))]);
+        measured_site.profile.roles.elemental = vec!["as".to_string(), "site".to_string()];
+        measured_site.profile.roles.descriptive = vec![];
+        measured_site.rows[0].descriptive = vec![];
+        // `anid` (the destination's ID column) descriptive in the source.
+        let mut anid_descriptive = data("g3", vec![row(u[1], Some(2.0), Some(3.0))]);
+        anid_descriptive.profile.roles.visible_id = "fsno".to_string();
+        anid_descriptive.profile.roles.descriptive = vec!["anid".to_string()];
+        for source in [measured_site, anid_descriptive] {
+            let err = plan_move(
+                "groups/g2.parquet",
+                &source,
+                Some(("groups/g1.parquet", Some(&dest))),
+                &[u[1]],
+                "r2",
+                "g1",
+                "g1",
+                "r2",
+            )
+            .expect_err("clash");
+            assert!(matches!(err, StoreError::SchemaMismatch { .. }), "{err}");
+        }
+    }
+
+    #[test]
+    fn merge_plan_rejects_duplicate_uuids() {
+        let u = [Uuid::now_v7(), Uuid::now_v7()];
         let sources = vec![
             (
                 "groups/g1.parquet".to_string(),

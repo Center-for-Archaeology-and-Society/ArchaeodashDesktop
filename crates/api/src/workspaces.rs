@@ -201,10 +201,7 @@ impl WorkspaceRegistry {
 
     /// The project directory of one hosted project.
     pub fn workspace_dir(&self, user_id: Uuid, project_id: Uuid) -> PathBuf {
-        self.user_dir(user_id)
-            .join("projects")
-            .join(project_id.to_string())
-            .join("workspace")
+        self.project_dir(user_id, project_id).join("workspace")
     }
 
     /// The project's analysis router, creating and opening the workspace on
@@ -293,10 +290,19 @@ impl WorkspaceRegistry {
         .unwrap_or(0)
     }
 
-    /// Closes a deleted project's router and removes its workspace folder.
-    pub async fn remove(&self, user_id: Uuid, project_id: Uuid) {
+    /// The whole directory of one hosted project: its workspace plus the
+    /// catalog file and transformation objects and their trash.
+    pub fn project_dir(&self, user_id: Uuid, project_id: Uuid) -> PathBuf {
+        self.user_dir(user_id)
+            .join("projects")
+            .join(project_id.to_string())
+    }
+
+    /// Closes a permanently deleted project's router and removes its whole
+    /// project directory. Trashed projects keep their files until then.
+    pub async fn purge(&self, user_id: Uuid, project_id: Uuid) {
         self.close(user_id, project_id);
-        let dir = self.workspace_dir(user_id, project_id);
+        let dir = self.project_dir(user_id, project_id);
         let removed = tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(&dir) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -305,13 +311,13 @@ impl WorkspaceRegistry {
         .await;
         match removed {
             Ok(Ok(())) => {
-                tracing::info!(project_id = %project_id, "removed deleted project's workspace")
+                tracing::info!(project_id = %project_id, "removed deleted project's files")
             }
             Ok(Err(e)) => {
-                tracing::error!(project_id = %project_id, error = %e, "workspace removal failed")
+                tracing::error!(project_id = %project_id, error = %e, "project removal failed")
             }
             Err(e) => {
-                tracing::error!(project_id = %project_id, error = %e, "workspace removal task failed")
+                tracing::error!(project_id = %project_id, error = %e, "project removal task failed")
             }
         }
     }
@@ -451,9 +457,11 @@ fn deleted_project(method: &Method, path: &str) -> Option<Uuid> {
 }
 
 /// Middleware: after a successful project delete (204), close the project's
-/// router and remove its workspace folder. The delete itself (ownership,
-/// CSRF, tombstone) stays with the catalog route.
-pub(crate) async fn remove_deleted_workspace(
+/// router. A trashed project keeps its files so it can be restored; a
+/// permanent delete (`?permanent=1`) also removes its project directory.
+/// The delete itself (ownership, CSRF, catalog row) stays with the catalog
+/// route.
+pub(crate) async fn after_project_delete(
     State(state): State<HostedState>,
     request: Request<Body>,
     next: Next,
@@ -461,6 +469,7 @@ pub(crate) async fn remove_deleted_workspace(
     let Some(project_id) = deleted_project(request.method(), request.uri().path()) else {
         return next.run(request).await;
     };
+    let permanent = crate::auth::permanent_delete_requested(request.uri());
     let user = match require_session(&state.auth, request.headers(), true).await {
         Ok(Some(principal)) => Some(principal.user.id),
         _ => None,
@@ -468,7 +477,11 @@ pub(crate) async fn remove_deleted_workspace(
     let response = next.run(request).await;
     if response.status() == StatusCode::NO_CONTENT {
         if let Some(user_id) = user {
-            state.workspaces.remove(user_id, project_id).await;
+            if permanent {
+                state.workspaces.purge(user_id, project_id).await;
+            } else {
+                state.workspaces.close(user_id, project_id);
+            }
         }
     }
     response
@@ -556,6 +569,7 @@ pub(crate) mod tests {
             email: Arc::new(archaeodash_auth::email::DevSinkEmailSender::new()),
             pepper: ThrottlePepper::from_hex(&"ab".repeat(32)).expect("pepper"),
             base_url: "https://archaeodash.example".to_string(),
+            retention_days: crate::auth::DEFAULT_RETENTION_DAYS,
         }
     }
 
@@ -805,9 +819,15 @@ pub(crate) mod tests {
         assert_eq!(registry.usage_bytes(user).await, 125);
         assert_eq!(registry.usage_bytes(other).await, 1000);
         assert_eq!(registry.usage_bytes(Uuid::now_v7()).await, 0);
-        registry.remove(user, p1).await;
-        assert!(!registry.workspace_dir(user, p1).exists());
+        // Catalog objects live beside the workspace; a purge removes both.
+        let objects = registry.project_dir(user, p1).join("files/x/1");
+        std::fs::create_dir_all(objects.parent().unwrap()).unwrap();
+        std::fs::write(&objects, b"x").unwrap();
+        registry.purge(user, p1).await;
+        assert!(!registry.project_dir(user, p1).exists());
         assert_eq!(registry.usage_bytes(user).await, 5);
+        // Purging a project that has no directory is a no-op.
+        registry.purge(user, Uuid::now_v7()).await;
     }
 
     #[tokio::test]
@@ -840,8 +860,8 @@ pub(crate) mod tests {
 
     /// DB-backed (skips without `DATABASE_URL`): once a user's storage
     /// reaches the quota, uploads are refused while reads keep working; the
-    /// quota route reports workspace bytes; deleting the project removes its
-    /// workspace.
+    /// quota route reports workspace bytes; trashing the project keeps its
+    /// workspace for a restore, and a permanent delete removes it.
     #[tokio::test]
     async fn quota_refuses_new_data_and_project_delete_removes_the_workspace() {
         let Some((state, sink)) = auth_state().await else {
@@ -934,9 +954,108 @@ pub(crate) mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        assert!(!workspace[0].exists(), "workspace removed with the project");
+        assert!(workspace[0].exists(), "a trashed project keeps its files");
         let response = call(&app, "GET", &groups, Some(&cookie), None, Body::empty()).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        // The Trash lists it with its purge date; restoring reopens it.
+        let response = call(
+            &app,
+            "GET",
+            "/api/v1/projects/trash",
+            Some(&cookie),
+            None,
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let trash = json(response).await;
+        assert_eq!(trash["retention_days"], 30);
+        let listed = trash["projects"].as_array().expect("array");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["project_id"], project.as_str());
+        assert!(listed[0]["purge_at"].as_str().is_some());
+        let restore = format!("/api/v1/projects/{project}/restore");
+        let response = call(&app, "POST", &restore, Some(&cookie), None, Body::empty()).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "restore needs CSRF"
+        );
+        let response = call(
+            &app,
+            "POST",
+            &restore,
+            Some(&cookie),
+            Some(&csrf),
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = call(&app, "GET", &groups, Some(&cookie), None, Body::empty()).await;
+        assert_eq!(response.status(), StatusCode::OK, "restored project opens");
+        let response = call(
+            &app,
+            "POST",
+            &restore,
+            Some(&cookie),
+            Some(&csrf),
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "live project");
+
+        // Permanent delete removes the whole project directory.
+        let response = call(
+            &app,
+            "DELETE",
+            &format!("/api/v1/projects/{project}?permanent=1"),
+            Some(&cookie),
+            Some(&csrf),
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(
+            !workspace[0].parent().expect("project dir").exists(),
+            "project directory removed"
+        );
+        let response = call(&app, "GET", &groups, Some(&cookie), None, Body::empty()).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let response = call(
+            &app,
+            "POST",
+            &restore,
+            Some(&cookie),
+            Some(&csrf),
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "purged project");
+    }
+
+    #[test]
+    fn only_project_deletes_are_followed_up() {
+        let id = Uuid::now_v7();
+        let path = format!("/api/v1/projects/{id}");
+        assert_eq!(deleted_project(&Method::DELETE, &path), Some(id));
+        assert_eq!(deleted_project(&Method::GET, &path), None);
+        for other in [
+            format!("/api/v1/projects/{id}/restore"),
+            format!("/api/v1/projects/{id}/transformations"),
+            "/api/v1/projects/trash".to_string(),
+        ] {
+            assert_eq!(deleted_project(&Method::DELETE, &other), None, "{other}");
+        }
+        let permanent = |uri: &str| {
+            let uri: Uri = uri.parse().unwrap();
+            crate::auth::permanent_delete_requested(&uri)
+        };
+        assert!(permanent(&format!("{path}?permanent=1")));
+        assert!(permanent(&format!("{path}?permanent=true")));
+        assert!(!permanent(&path));
+        assert!(!permanent(&format!("{path}?permanent=0")));
+        assert!(!permanent(&format!("{path}?permanent=1&permanent=1")));
     }
 
     #[tokio::test]

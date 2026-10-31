@@ -228,6 +228,19 @@ export interface HostedProjectSummary {
   updated_at: string;
 }
 
+/** A hosted project in the Trash, with when the server will purge it. */
+export interface TrashedHostedProject extends HostedProjectSummary {
+  deleted_at: string;
+  /** Earliest time the retention sweep removes it for good (RFC 3339). */
+  purge_at: string;
+}
+
+/** The signed-in user's Trash and how long the server keeps deleted projects. */
+export interface HostedProjectTrash {
+  projects: TrashedHostedProject[];
+  retention_days: number;
+}
+
 /** One hosted catalog file row (metadata only; bytes come from download). */
 export interface HostedFileMeta {
   file_id: string;
@@ -259,7 +272,14 @@ export interface HostedProjectsService {
   list(): Promise<{ projects: HostedProjectSummary[] }>;
   create(name: string): Promise<HostedProjectSummary>;
   get(projectId: string): Promise<HostedProjectSummary>;
+  /** Moves a project to the Trash; the server purges it after the retention window. */
   delete(projectId: string): Promise<void>;
+  /** Trashed projects, most recently deleted first. */
+  trash(): Promise<HostedProjectTrash>;
+  /** Takes a project out of the Trash. */
+  restore(projectId: string): Promise<HostedProjectSummary>;
+  /** Deletes a project and its files for good. */
+  deletePermanently(projectId: string): Promise<void>;
   /** Storage accounting for the signed-in user (Section 6.9). */
   quota(): Promise<QuotaUsage>;
 }

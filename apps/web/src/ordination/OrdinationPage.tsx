@@ -12,6 +12,7 @@ import type {
   ExportsService,
   GroupsService,
   GroupRowsResponse,
+  IdColumnChoice,
   LdaResponse,
   OrdinationService,
   PcaResponse,
@@ -32,6 +33,7 @@ import { useGroupUpdatesHeld } from '../datasets/groupUpdates.ts';
 import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
 import { TableCard, num, type TableSheet } from '../ui/TableExport.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
+import { SampleIdPicker, useSampleIds } from '../ids/SampleIdPicker.tsx';
 import { TabPanels } from '../ui/TabPanels.tsx';
 import { ContributionTableCard, LdaScalingBars, LdaStripPlot, LdaVectorPlot, PcaVariablesPlot } from './OrdinationCharts.tsx';
 import { GRADIENT_SCALE, componentCount, individualCos2, ldaLayout } from './ordination-model.ts';
@@ -60,10 +62,12 @@ const VIEWS: readonly [OrdinationView, string][] = [
 
 /** Sample labels and groups aligned with the ordinated rows. */
 export interface RowLabels {
-  /** Name of the ID column (ANID). */
+  /** Name of the ID column (the visible ID column, or rowid). */
   readonly idColumn: string;
   readonly ids: readonly string[];
   readonly groups?: readonly string[];
+  /** Shared Sample IDs choice the labels follow; exports use it too. */
+  readonly choice?: IdColumnChoice;
 }
 
 const ROWS_SHOWN = 200;
@@ -527,7 +531,7 @@ function PcaView({ deps, data, extraPaths, groups, rows, columns, transformation
     setExportBusy(true);
     setExportError('');
     void Promise.resolve()
-      .then(() => deps.exports.pcaScores({ ...request, format }))
+      .then(() => deps.exports.pcaScores({ ...request, format, id_column: rows?.choice ?? 'visible' }))
       .then(downloadExportResult)
       .catch((cause: unknown) => setExportError(cause instanceof Error ? cause.message : String(cause)))
       .finally(() => setExportBusy(false));
@@ -813,13 +817,15 @@ export function OrdinationPage({ deps }: { deps: OrdinationDeps }): ReactElement
     () => analysisInput(analysisSetup.setup, data.elemental_columns),
     [analysisSetup.setup, data.elemental_columns],
   );
+  const sampleIds = useSampleIds(files, combined);
   const rowLabels = useMemo<RowLabels>(
     () => ({
-      idColumn: combined.visibleIdColumn,
-      ids: combined.rows.map((r) => r.visible_id ?? r.legacy_rowid ?? ''),
+      idColumn: sampleIds.column,
+      ids: sampleIds.ids,
       groups: combined.groupOf,
+      choice: sampleIds.choice,
     }),
-    [combined],
+    [combined, sampleIds],
   );
 
   return (
@@ -833,6 +839,7 @@ export function OrdinationPage({ deps }: { deps: OrdinationDeps }): ReactElement
             onChange={dataset.setSelectedPaths}
           />
         </label>
+        {load.kind === 'loaded' && files.length > 0 && <SampleIdPicker ids={sampleIds} />}
       </PageHeader>
       <div role="tablist" aria-label="Ordination views" className="pills">
         {VIEWS.map(([key, label]) => (

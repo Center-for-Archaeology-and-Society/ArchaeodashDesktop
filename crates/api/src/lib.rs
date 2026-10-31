@@ -2905,6 +2905,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&ExportMeasuredDataRequest {
+                            id_column: Default::default(),
                             path: path.clone(),
                             extra_paths: vec![],
                             raw_text: false,
@@ -2951,6 +2952,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&ExportTransformedRequest {
+                            id_column: Default::default(),
                             format: Default::default(),
                             path: path.clone(),
                             extra_paths: vec![],
@@ -2977,6 +2979,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&ExportPcaScoresRequest {
+                            id_column: Default::default(),
                             format: Default::default(),
                             path: path.clone(),
                             extra_paths: vec![],
@@ -3004,6 +3007,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&ExportPcaScoresRequest {
+                            id_column: Default::default(),
                             format: Default::default(),
                             path,
                             extra_paths: vec![],

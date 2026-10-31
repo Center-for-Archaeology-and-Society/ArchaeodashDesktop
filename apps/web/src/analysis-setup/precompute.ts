@@ -14,7 +14,7 @@ import type {
   UmapRequest,
 } from '@archaeodash/client';
 import { syntheticGroupColumn } from '../visualize/combine.ts';
-import { UMAP_SEED, analysisInput } from './setup.ts';
+import { UMAP_SEED, analysisInput, unionElements } from './setup.ts';
 
 export const ORDINATION_LABELS: Readonly<Record<OrdinationKind, string>> = { pca: 'PCA', umap: 'UMAP', lda: 'LDA' };
 
@@ -42,11 +42,10 @@ export function planPrecompute(setup: TransformationDefinition | null, candidate
   const skipAll = (reason: string): PrecomputePlan => ({ jobs: [], skipped: wanted.map((kind) => ({ kind, reason })), requests: { lda: [] } });
   if (!setup || wanted.length === 0) return { jobs: [], skipped: [], requests: { lda: [] } };
   if (ready.length === 0) return skipAll('no group files yet');
-  // Same column rule as the pages: measured columns every group shares.
-  const firstColumns = ready[0]!.group!.elemental_columns;
-  const shared = firstColumns.filter((c) => ready.every((r) => r.group!.elemental_columns.includes(c)));
-  const input = analysisInput(setup, shared);
-  if (input.columns.length < 2) return skipAll('needs two selected elements or ratios shared by every group');
+  // Same column rule as the pages: the union of measured columns (a group
+  // lacking one has 0 for it).
+  const input = analysisInput(setup, unionElements(ready.map((r) => r.group!.elemental_columns)));
+  if (input.columns.length < 2) return skipAll('needs two selected elements or ratios');
 
   const [path, ...extra] = ready.map((c) => c.path);
   const base = { path: path!, extra_paths: extra, columns: input.columns, transformation: input.transformation ?? null };

@@ -33,7 +33,9 @@ ArchaeoDash uses two strictly necessary cookies: a session cookie (HttpOnly, Sec
 
 Desktop mode: use the project menu in the top bar to **Open Project**, switch to another folder, or reopen one of your **recent projects**. When the app starts it reopens the last project if its folder still exists. Everything ArchaeoDash writes lives inside that folder: group files (Parquet), saved Analysis setups, and a disposable cache under `.archaeodash/`.
 
-Hosted mode: the **Projects** page lists your projects and files; select a project and refresh to see its groups.
+Hosted mode: the **Projects** page lists your projects. Create one, or **Open** one to browse its groups and run analyses; import source files from the Data Manager once it is open.
+
+**Deleting a project** (hosted mode): **Delete** moves the project to the **Trash** at the bottom of the Projects page. It stays there for 30 days, showing when it will be permanently deleted; **Restore** brings it back with all of its groups and files. After 30 days it is permanently deleted, or use **Delete now** to remove it immediately (this cannot be undone). Projects in the Trash still count toward your storage until they are permanently deleted. If you delete the project that is open, it is closed and you return to the project list. In desktop mode, projects are folders on your computer: remove them with your file manager.
 
 ## Data Manager
 
@@ -45,6 +47,7 @@ The Data Manager (left sidebar) lists the project's group files, organized in **
 - Analyses use one folder at a time — the folder with the filled circle (badge *In analyses*). Click the circle beside another folder to use it instead.
 - Tick or untick groups to include or exclude them from analyses. **All**, **None**, **Invert**, and **Only selected** change the inclusion quickly; the view filter shows all, included, or excluded groups.
 - Toolbar actions: **New folder…**, **Rename folder…** (the selected folder), **Rename group…** (one highlighted group and its file; it stays checked or unchecked for analyses; F2 renames whichever is focused), **Copy to…** / **Move to…** (copy or move whole groups into another folder, for example to start a new grouping of the same samples; you can also drag groups onto a folder to copy them, or hold Shift while dropping to move them), **Merge** (groups in the same folder), **Add column…** (add a descriptive column with a default value to every group in a folder; replacing an existing column asks for confirmation), and **Delete** (groups, or an empty folder).
+- Groups do not need the same columns. Analyses combine the included groups using every measured column any of them has; a group without one of those columns counts as 0 for it (missing values in a column a group has stay missing, for imputation). The folder details and the Explore dataset name the groups this affects. Moving, copying, or merging samples into a group adds the columns they bring: the group's other samples get 0 for new measured columns and blank new descriptive cells, and moved samples get 0 for measured columns they lack. The receiving group keeps its ID column; a sample's ID also fills a blank descriptive column of the same name as its old ID column. A column that is measured in one group but descriptive (or the ID column) in the other is refused.
 - Every change is a journaled transaction: it is either applied to every affected file or to none, and a change is refused if a file changed since you loaded it.
 
 ### Import data
@@ -73,6 +76,14 @@ If groups from the same source (or with the same names) already exist, the wizar
 ## Explore
 
 The Dataset picker at the top of each analysis page chooses which included groups to analyze (all by default).
+
+### Sample IDs
+
+**Sample IDs**, next to the Dataset picker, chooses which ID labels samples on every analysis page — tables, plot labels and hover text, dendrograms, assignment lists, Probabilities and Euclidean Distance IDs, and the ID column of exports. One choice applies to all pages and is remembered in this browser.
+
+- **Sample ID (anid)** — the ID column chosen at import. A sample without one shows its rowid.
+- **rowid** — the sample's row number in the file it was imported from. Every sample has one. Rowids start at 1 in every import, so when they repeat among the selected groups they show as *group:rowid* (for example `Hooper:12`). Exports then start with a *rowid* column followed by the sample ID column.
+- **Automatic** (the default) — uses rowid when the selected groups use different ID columns (for example groups imported from files with and without an `anid` column) or a group has no IDs at all, and the sample ID otherwise. A note under the picker says when IDs differ, are missing, or repeat.
 
 ### Dataset
 
@@ -141,7 +152,7 @@ Result tables can be sorted and filtered; *Columns* hides columns and *Compact t
 Membership probabilities say how likely each sample is to belong to each reference group.
 
 1. Choose the analysis source and, for PCA, how many components to use (the list shows each choice's variance and cumulative variance; all components by default).
-2. Choose the ID column (only columns with a unique value per sample are offered).
+2. Choose the ID column (columns with a unique value per sample, and rowid). It follows **Sample IDs**; picking the sample ID or rowid here changes **Sample IDs** too.
 3. Choose the reference groups. The group sizes table shows which groups are large enough; groups that are too small are disabled (see *Methods*). If no group is large enough, all groups are used and the page says so.
 4. Choose **Hotelling probabilities** (with Mahalanobis fallback) or **Mahalanobis distances** and run.
 
@@ -167,7 +178,7 @@ For each sample, the nearest samples in the reference groups by Euclidean distan
 ## Notes and Troubleshooting
 
 - Desktop mode keeps everything on your machine: keep your own backups of project folders. Hosted mode keeps operational backups for disaster recovery only — this is not a substitute for your own copies (see the Privacy Policy and Terms).
-- If an analysis returns no results, check that groups are included, that the Analysis setup selects elements the groups share, and that enough groups are selected (LDA needs three).
+- If an analysis returns no results, check that groups are included, that the Analysis setup selects elements the groups have, and that enough groups are selected (LDA needs three).
 - If a save fails because the file changed since it was loaded, reload and re-apply the change; the revision check prevents silent overwrites.
 - Long analyses keep running when you switch pages; the activity indicator in the top bar shows they are busy, and a notification appears when one fails or finishes.
 - Desktop: **Info → Show log folder** opens the folder with the app's log files, useful when reporting a problem.

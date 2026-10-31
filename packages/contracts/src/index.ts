@@ -709,9 +709,18 @@ export interface ExportMeasuredDataRequest {
   raw_text?: boolean;
   /** Output format (default CSV). XLSX: an "All groups" sheet plus one sheet per group. */
   format?: ExportFormat;
+  /** Sample ID that leads each row (default the visible ID). */
+  id_column?: IdColumnChoice;
 }
 
 export type ExportFormat = 'csv' | 'xlsx';
+
+/**
+ * Sample ID of exported rows: the group's visible ID column (e.g. anid), or
+ * the import rowid. Rowids that repeat across combined groups are written as
+ * `group:rowid`, followed by the visible ID column.
+ */
+export type IdColumnChoice = 'visible' | 'rowid';
 
 /** One exported cell: number, text, or null (empty). */
 export type TableCell = number | string | null;
@@ -737,12 +746,16 @@ export interface ExportTransformedRequest {
   raw_text?: boolean;
   /** Output format (default CSV). */
   format?: ExportFormat;
+  /** Sample ID that leads each row (default the visible ID). */
+  id_column?: IdColumnChoice;
 }
 
 export interface ExportPcaScoresRequest extends OrdinationRequestBase {
   scale?: boolean;
   /** Output format (default CSV). */
   format?: ExportFormat;
+  /** Sample ID that leads each row (default the visible ID). */
+  id_column?: IdColumnChoice;
 }
 
 export interface ExportResult {

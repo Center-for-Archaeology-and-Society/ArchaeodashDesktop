@@ -829,6 +829,14 @@ button:disabled:has(.spinner) {
   flex-wrap: wrap;
 }
 
+/* Shared Sample IDs picker; its note wraps under the select. */
+.sample-id-picker {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  max-width: 24rem;
+}
+
 .results {
   display: flex;
   flex-direction: column;
@@ -2274,3 +2282,49 @@ button .spinner {
   font-size: 0.85rem;
 }
 /* end analysis setup */
+
+/* Hosted projects: Delete action, its confirm step, and the Trash list. */
+.hosted-project-list li {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
+}
+
+.hosted-project-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.hosted-project-confirm {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  border-radius: 8px;
+  background: var(--danger-soft);
+}
+
+.hosted-project-confirm p {
+  margin: 0;
+  flex: 1 1 20rem;
+}
+
+.btn-danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 85%, black);
+  border-color: color-mix(in srgb, var(--danger) 85%, black);
+  color: #fff;
+}
+
+.hosted-trash {
+  margin-top: 2rem;
+}

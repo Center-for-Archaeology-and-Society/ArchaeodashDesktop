@@ -249,6 +249,13 @@ function AppRoot({ transport, sessionEvents }: { transport: Transport; sessionEv
     if (locationRef.current.pathname === '/projects') navigate('/');
   }, [navigate, setHostedProject]);
 
+  /** The open project was deleted: close it and forget it as the last project. */
+  const closeHostedProject = useCallback(() => {
+    setHostedProject(null);
+    if (usernameRef.current) saveLastProject(usernameRef.current, null);
+    if (locationRef.current.pathname !== '/projects') navigate('/projects');
+  }, [navigate, setHostedProject]);
+
   // Sign-in: reopen this user's last project, then leave the Account page.
   // Sign-out: close the project.
   const previousUser = useRef<string | null>(null);
@@ -325,8 +332,10 @@ function AppRoot({ transport, sessionEvents }: { transport: Transport; sessionEv
     [server.mode, transport, guestToken, guestStarting, startGuest],
   );
   const hostedWorkspace = useMemo<HostedWorkspace | null>(
-    () => (server.mode === 'hosted' && username !== null ? { projectId: projectPath, open: openHostedProject } : null),
-    [server.mode, username, projectPath, openHostedProject],
+    () => (server.mode === 'hosted' && username !== null
+      ? { projectId: projectPath, open: openHostedProject, close: closeHostedProject }
+      : null),
+    [server.mode, username, projectPath, openHostedProject, closeHostedProject],
   );
 
   return (

@@ -214,6 +214,19 @@ export function registerTransportContractTests(
     assert.equal(h.calls[1]?.label, labels.ordinationUmap);
   });
 
+  test('exports carry the sample ID choice', async () => {
+    const h = makeHarness();
+    const result = { file_name: 'Baca.csv', media_type: 'text/csv', content: 'rowid\n' };
+    h.respond(result);
+    assert.deepEqual(await h.transport.exports.measuredData({ path: 'groups/Baca.parquet', id_column: 'rowid' }), result);
+    assert.match(h.calls[0]?.label ?? '', /exports\/measured-data$|invoke export_measured_data$/);
+    assert.match(JSON.stringify(h.calls[0]?.payload), /"id_column":"rowid"/);
+    h.respond(result);
+    await h.transport.exports.pcaScores({ path: 'groups/Baca.parquet', columns: ['Ti'], id_column: 'rowid' });
+    assert.match(h.calls[1]?.label ?? '', /exports\/pca-scores$|invoke export_pca_scores$/);
+    assert.match(JSON.stringify(h.calls[1]?.payload), /"id_column":"rowid"/);
+  });
+
   test('phase 6 clustering and result transports preserve their typed payloads', async () => {
     const h = makeHarness();
     const clusterRequest = { path: 'groups/Baca.parquet', columns: ['Ti', 'Sr'], max_k: 3, seed: 7 };

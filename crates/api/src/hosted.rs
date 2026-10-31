@@ -122,9 +122,10 @@ pub fn hosted_router(state: HostedState) -> Router {
             any(crate::guests::guest_dispatch),
         )
         .with_state(state.clone());
-    // Removes a project's workspace after the catalog route deletes it.
+    // Closes a deleted project's workspace, and removes its files when the
+    // delete is permanent.
     let after_delete =
-        middleware::from_fn_with_state(state.clone(), crate::workspaces::remove_deleted_workspace);
+        middleware::from_fn_with_state(state.clone(), crate::workspaces::after_project_delete);
     let health = Router::new()
         // App name and version for the web client's footer (same as the
         // local API's `/healthz`); readiness stays on /api/v1/health/ready.
@@ -947,6 +948,7 @@ mod tests {
                 email: sink.clone(),
                 pepper: ThrottlePepper::from_hex(&"ab".repeat(32)).expect("pepper"),
                 base_url: "https://archaeodash.example".to_string(),
+                retention_days: crate::auth::DEFAULT_RETENTION_DAYS,
             },
             store,
             files: Arc::new(crate::hosted_files::HostedFileStore::new(&base).expect("file store")),
@@ -1620,6 +1622,7 @@ mod quota_tests {
             pepper: archaeodash_auth::throttle::ThrottlePepper::from_hex(&"ab".repeat(32))
                 .expect("pepper"),
             base_url: "https://archaeodash.example".to_string(),
+            retention_days: crate::auth::DEFAULT_RETENTION_DAYS,
         });
         let app2 = hosted_router(app2_state);
         let res = app2

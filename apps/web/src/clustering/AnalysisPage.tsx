@@ -1,6 +1,6 @@
 import { runAnalysisJob } from './job-workflow.ts';
 import {
-  defaultIdColumn, groupEligibility, pcCountOptions, projectionLabels, sourceFeatureCount, sourceOptions, uniqueIdColumns,
+  analysisIdColumns, defaultAnalysisIdColumn, groupEligibility, pcCountOptions, projectionLabels, sourceFeatureCount, sourceOptions,
 } from './input-options.ts';
 import { includedAfterMove, moveAcrossSources } from './multi-source-move.ts';
 import { GroupMultiSelect } from '../datasets/GroupMultiSelect.tsx';
@@ -30,6 +30,8 @@ import type {
 import { BusyLabel, BusyNote } from '../ui/Busy.tsx';
 import { TableCard, num, type TableSheet } from '../ui/TableExport.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
+import { SampleIdPicker, setIdPreference, useSampleIds } from '../ids/SampleIdPicker.tsx';
+import { idChoiceLabel } from '../ids/sample-ids.ts';
 
 export type AnalysisKind = 'cluster' | 'membership' | 'euclidean';
 /** `ordination` labels the PC-count choices with explained variance (optional). */
@@ -47,8 +49,9 @@ const descriptions = {
 };
 
 /**
- * Per-row labels for a result: the sample's ANID (visible ID) from the
- * loaded rows, matched by its hidden identity; `fallback(i)` otherwise.
+ * Per-row labels for a result: the sample's ID under the shared Sample IDs
+ * choice (visible ID or rowid), matched by its hidden identity;
+ * `Unit n` otherwise.
  */
 export interface RowInfo {
   readonly idColumn: string;
@@ -283,15 +286,18 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   // several groups the synthetic group column is the default grouping.
   // Samples moving between groups keep the settings.
   const defaultGroup = defaultGroupColumn(combined);
+  // The shared Sample IDs choice labels results and picks the default ID column.
+  const sampleIds = useSampleIds(files, combined);
+  const idChoice = sampleIds.choice;
   const settingsData = useRef<{ key: string; setup: unknown } | null>(null);
   useEffect(() => {
     if (!data) return;
-    const ids = uniqueIdColumns(data);
+    const ids = analysisIdColumns(data);
     const previous = settingsData.current;
     settingsData.current = { key: contentKey, setup: analysisSetup.setup };
     if (!previous || previous.key !== contentKey || previous.setup !== analysisSetup.setup) {
       setGroup(defaultGroup);
-      setId(defaultIdColumn(data, ids)); setSourceGroup(defaultGroup); setPlotGroup(defaultGroup); setProjection(null);
+      setId(defaultAnalysisIdColumn(data, ids, idChoice)); setSourceGroup(defaultGroup); setPlotGroup(defaultGroup); setProjection(null);
       return;
     }
     // Same samples: keep each choice unless its column is gone.
@@ -299,8 +305,15 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
     setGroup(g => (has(g) ? g : defaultGroup));
     setSourceGroup(g => (has(g) ? g : defaultGroup));
     setPlotGroup(g => (g === '' || has(g) ? g : defaultGroup));
-    setId(i => (ids.includes(i) ? i : defaultIdColumn(data, ids)));
-  }, [data, contentKey, defaultGroup, analysisSetup.setup]);
+    setId(i => (ids.includes(i) ? i : defaultAnalysisIdColumn(data, ids, idChoice)));
+  }, [data, contentKey, defaultGroup, analysisSetup.setup, idChoice]);
+  // A new Sample IDs choice (here or on another page) resets the ID column.
+  const lastIdChoice = useRef(idChoice);
+  useEffect(() => {
+    if (!data || lastIdChoice.current === idChoice) return;
+    lastIdChoice.current = idChoice;
+    setId(defaultAnalysisIdColumn(data, analysisIdColumns(data), idChoice));
+  }, [data, idChoice]);
   useEffect(() => { if (dataset.load.kind === 'error') setError(dataset.load.message); }, [dataset.load]);
   // PCA of the same inputs the analysis uses, for "First n PCs (var% / cum%)"
   // labels. Keyed by content, so a reload or a move between groups (same
@@ -320,22 +333,31 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   const pcMax = !data ? 0 : pcaVariance?.explained.length || Math.max(1, Math.min(columns.length, data.rows.length));
   // Default to every component (GroupMembership.R / EuclideanDistance.R).
   useEffect(() => { if (pcMax) setPcCount(pcMax); }, [pcMax]);
-  const idChoices = useMemo(() => (data ? uniqueIdColumns(data) : []), [data]);
+  const idChoices = useMemo(() => (data ? analysisIdColumns(data) : []), [data]);
   const umapMax = umapMaxDimensions(columns.length);
   const umapCount = Math.min(umapDimensions, umapMax);
   const sourceCount = source === 'umap' ? umapCount : pcCount;
   const featureCount = sourceFeatureCount(source, columns.length, sourceCount, data ? projectionLabels(data, sourceGroup).length : 0);
   const eligibility = useMemo(() => (data && kind === 'membership' ? groupEligibility(data, group, featureCount) : []), [data, kind, group, featureCount]);
 
-  // ANID and group of each loaded row, by hidden identity.
+  // Sample ID and group of each loaded row, by hidden identity.
   const rowInfo = useMemo<RowInfo>(() => {
-    const byUuid = new Map(combined.rows.map((r, i) => [r.analytical_uuid, { id: r.visible_id ?? r.legacy_rowid ?? '', group: combined.groupOf[i] ?? null }]));
+    const byUuid = new Map(combined.rows.map((r, i) => [r.analytical_uuid, { id: sampleIds.ids[i] ?? '', group: combined.groupOf[i] ?? null }]));
     return {
-      idColumn: combined.visibleIdColumn,
+      idColumn: sampleIds.column,
       label: (uuid, i) => (uuid && byUuid.get(uuid)?.id) || `Unit ${i + 1}`,
       group: uuid => (uuid ? byUuid.get(uuid)?.group ?? null : null),
     };
-  }, [combined]);
+  }, [combined, sampleIds]);
+  /** ID column menu text: the shared choices by their Sample IDs names. */
+  const idLabel = (column: string) => (!data ? column : column === data.legacy_rowid_column ? idChoiceLabel(sampleIds.summary, 'rowid')
+    : column === data.visible_id_column ? idChoiceLabel(sampleIds.summary, 'visible') : column);
+  const chooseId = (column: string) => {
+    setId(column);
+    // Picking the visible ID or rowid here changes the shared choice too.
+    const shared = !data ? null : column === data.legacy_rowid_column ? 'rowid' : column === data.visible_id_column ? 'visible' : null;
+    if (shared && shared !== idChoice) setIdPreference(shared);
+  };
 
   function reset() { activeJob.current?.abort(); activeJob.current = null; generation.current++; setResult(null); setReviewing(false); setError(''); setNotice(''); setBusy(false); }
   // A result stays valid while the same samples are loaded; a Dataset change
@@ -465,6 +487,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
   return <section className="page" aria-label={titles[kind]}>
     <PageHeader title={titles[kind]} description={descriptions[kind]}>
       <label className="field field-inline">Dataset <GroupMultiSelect disabled={busy} options={dataset.options} selected={dataset.selectedPaths} onChange={next => { reset(); dataset.setSelectedPaths(next); }} /></label>
+      {data && <SampleIdPicker ids={sampleIds} disabled={busy} />}
     </PageHeader>
     {dataset.load.kind === 'loading' && <BusyNote>Loading dataset…</BusyNote>}
     {dataset.orderedPaths.length === 0 && dataset.load.kind !== 'loading' && <p className="empty-note">No groups are included. Tick groups in the Data Manager, or choose them in Dataset.</p>}
@@ -501,7 +524,7 @@ export function AnalysisPage({ kind, deps }: { kind: AnalysisKind; deps: Analysi
           <label className="field">Random seed <input type="number" min={-2147483648} max={2147483627} value={seed} onChange={e => setSeed(Number(e.target.value))} /></label>
         </> : <>
           <label className="field">Group column <select value={group} onChange={e => { setGroup(e.target.value); setProjection(null); }}>{data.descriptive_columns.map(c => <option key={c}>{c}</option>)}</select></label>
-          <label className="field">ID column <select value={id} onChange={e => setId(e.target.value)}>{idChoices.map(c => <option key={c}>{c}</option>)}</select><span className="field-hint">Only columns with a unique value per sample.</span></label>
+          <label className="field">ID column <select value={id} onChange={e => chooseId(e.target.value)}>{idChoices.map(c => <option key={c} value={c}>{idLabel(c)}</option>)}</select><span className="field-hint">Columns with a unique value per sample, and rowid. Follows Sample IDs.</span></label>
           {kind === 'membership' ? <label className="field">Method <select value={membershipMethod} onChange={e => setMembershipMethod(e.target.value as MembershipMethod)}><option value="hotellings">Hotelling probabilities (Mahalanobis fallback)</option><option value="mahalanobis">Mahalanobis distances</option></select></label> : <>
             <label className="field">Matches per analytical unit <input type="number" min={1} max={100} value={limit} onChange={e => setLimit(Number(e.target.value))} /></label>
             <label className="field-check"><input type="checkbox" checked={within} onChange={e => setWithin(e.target.checked)} />Include same-group matches</label>

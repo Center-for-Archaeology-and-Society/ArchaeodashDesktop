@@ -26,7 +26,7 @@ use archaeodash_auth::token::{digest_presentation, OpaqueToken, REMEMBER_ME_DAY_
 use archaeodash_auth::GENERIC_AUTH_MESSAGE;
 use archaeodash_contracts::ErrorEnvelope;
 use archaeodash_control_postgres::{AccountTokenKind, ControlError, ControlStore, UserRow};
-use axum::extract::{ConnectInfo, Path, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -55,7 +55,13 @@ pub struct AuthState {
     pub pepper: ThrottlePepper,
     /// Public base URL for verification/reset links (deployment config).
     pub base_url: String,
+    /// Days a trashed project (and other tombstones) is kept before the
+    /// retention sweep purges it (`AUTH_RETENTION_DAYS`).
+    pub retention_days: i64,
 }
+
+/// Default retention window for trashed projects and tombstones.
+pub const DEFAULT_RETENTION_DAYS: i64 = 30;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
@@ -886,6 +892,7 @@ pub(crate) mod tests {
             email: Arc::new(email.clone()),
             pepper: ThrottlePepper::from_hex(&"ab".repeat(32)).expect("pepper"),
             base_url: "https://archaeodash.example".to_string(),
+            retention_days: DEFAULT_RETENTION_DAYS,
         };
         Some((state, email))
     }
@@ -1654,26 +1661,126 @@ async fn projects_get(
     }))
 }
 
-/// `DELETE /api/v1/projects/{id}` — soft delete (tombstone) of an owned
-/// project; file-namespace purge is the asynchronous retention sweep's job.
+#[derive(Deserialize)]
+pub(crate) struct DeleteProjectQuery {
+    #[serde(default)]
+    permanent: Option<String>,
+}
+
+impl DeleteProjectQuery {
+    fn is_permanent(&self) -> bool {
+        matches!(self.permanent.as_deref(), Some("1" | "true"))
+    }
+}
+
+/// Whether a project `DELETE` URI asks for a permanent delete, parsed the
+/// same way as the route handler so the two never disagree.
+pub(crate) fn permanent_delete_requested(uri: &axum::http::Uri) -> bool {
+    Query::<DeleteProjectQuery>::try_from_uri(uri).is_ok_and(|Query(q)| q.is_permanent())
+}
+
+/// `DELETE /api/v1/projects/{id}` — moves an owned project to the Trash
+/// (soft delete); the retention sweep purges it after `retention_days`.
+/// With `?permanent=1` the project (live or trashed) is deleted for good
+/// at once. The project directory itself is handled by
+/// [`crate::workspaces::after_project_delete`].
 async fn projects_delete(
     State(state): State<AuthState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
+    Query(query): Query<DeleteProjectQuery>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorEnvelope>)> {
     let Some(principal) = require_session(&state, &headers, true).await? else {
         return Err(unauthorized());
     };
-    let deleted = state
-        .store
-        .soft_delete_project(principal.user.id, project_id, SystemTime::now())
-        .await
-        .map_err(db_error)?;
+    let deleted = if query.is_permanent() {
+        state
+            .store
+            .purge_project(principal.user.id, project_id)
+            .await
+            .map_err(db_error)?
+    } else {
+        state
+            .store
+            .soft_delete_project(principal.user.id, project_id, SystemTime::now())
+            .await
+            .map_err(db_error)?
+    };
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err((StatusCode::NOT_FOUND, json_error("not_found")))
     }
+}
+
+#[derive(serde::Serialize)]
+struct TrashedProject {
+    project_id: Uuid,
+    name: String,
+    created_at: String,
+    updated_at: String,
+    deleted_at: String,
+    /// When the retention sweep may purge it (the sweep runs hourly).
+    purge_at: String,
+}
+
+/// `GET /api/v1/projects/trash` — the session user's trashed projects,
+/// most recently deleted first, with when each will be purged.
+async fn projects_trash(
+    State(state): State<AuthState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = require_session(&state, &headers, false).await? else {
+        return Err(unauthorized());
+    };
+    let rows = state
+        .store
+        .list_deleted_projects(principal.user.id)
+        .await
+        .map_err(db_error)?;
+    let retention = time::Duration::days(state.retention_days);
+    let projects: Vec<TrashedProject> = rows
+        .into_iter()
+        .filter_map(|row| {
+            let deleted_at = row.deleted_at?;
+            Some(TrashedProject {
+                project_id: row.project_id,
+                name: row.name,
+                created_at: rfc3339(row.created_at),
+                updated_at: rfc3339(row.updated_at),
+                deleted_at: rfc3339(deleted_at),
+                purge_at: rfc3339(deleted_at + retention),
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({
+        "projects": projects,
+        "retention_days": state.retention_days,
+    })))
+}
+
+/// `POST /api/v1/projects/{id}/restore` — takes an owned project out of the
+/// Trash. Live, purged, foreign and unknown projects are all 404.
+async fn projects_restore(
+    State(state): State<AuthState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<ProjectSummary>, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(principal) = require_session(&state, &headers, true).await? else {
+        return Err(unauthorized());
+    };
+    let row = state
+        .store
+        .restore_project(principal.user.id, project_id, SystemTime::now())
+        .await
+        .map_err(db_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, json_error("not_found")))?;
+    Ok(Json(ProjectSummary {
+        project_id: row.project_id,
+        name: row.name,
+        created_at: rfc3339(row.created_at),
+        updated_at: rfc3339(row.updated_at),
+    }))
 }
 
 /// The hosted control-plane router: auth surface plus user-scoped
@@ -1694,10 +1801,12 @@ pub fn auth_router(state: AuthState) -> Router {
             get(preferences_get).put(preferences_set),
         )
         .route("/api/v1/projects", post(projects_create).get(projects_list))
+        .route("/api/v1/projects/trash", get(projects_trash))
         .route(
             "/api/v1/projects/{id}",
             get(projects_get).delete(projects_delete),
         )
+        .route("/api/v1/projects/{id}/restore", post(projects_restore))
         .route(
             "/api/v1/auth/password-reset/request",
             post(password_reset_request),
@@ -2511,6 +2620,9 @@ mod lifecycle_rehearsal {
         .await;
         let other_login = login(format!("proj-other-{suffix}")).await;
         let other_cookie = extract_cookie(&other_login);
+        let other_csrf = extract_csrf(&other_login);
+        let other_pair = format!("{other_cookie}; {other_csrf}");
+        let other_csrf_value = other_csrf.split_once('=').expect("csrf pair").1.to_string();
         let mut other_request = axum::http::Request::builder()
             .uri(&format!("/api/v1/projects/{project_id}"))
             .header(header::COOKIE, other_cookie)
@@ -2546,6 +2658,123 @@ mod lifecycle_rehearsal {
         let response = authed(
             axum::http::Method::DELETE,
             format!("/api/v1/projects/{project_id}"),
+            None,
+        )
+        .await
+        .expect("infallible");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        // The deleted project is in the owner's Trash with a purge date
+        // `retention_days` after the delete.
+        let read_json = |response: axum::response::Response| async move {
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
+        };
+        let response = authed(
+            axum::http::Method::GET,
+            "/api/v1/projects/trash".to_string(),
+            None,
+        )
+        .await
+        .expect("infallible");
+        assert_eq!(response.status(), StatusCode::OK);
+        let trash = read_json(response).await;
+        assert_eq!(trash["retention_days"], DEFAULT_RETENTION_DAYS);
+        let trashed = &trash["projects"].as_array().expect("array")[0];
+        assert_eq!(trashed["project_id"], project_id.as_str());
+        let timestamp = |key: &str| {
+            let text = trashed[key].as_str().expect("timestamp");
+            OffsetDateTime::parse(text, &Rfc3339).expect("rfc3339")
+        };
+        let kept = timestamp("purge_at") - timestamp("deleted_at");
+        assert_eq!(kept, time::Duration::days(DEFAULT_RETENTION_DAYS));
+
+        // Another account can neither see, restore nor purge it.
+        let other = |method: axum::http::Method, uri: String| {
+            let app = app.clone();
+            let pair = other_pair.clone();
+            let csrf = other_csrf_value.clone();
+            async move {
+                let mut request = axum::http::Request::builder()
+                    .method(method)
+                    .uri(&uri)
+                    .header(header::COOKIE, pair)
+                    .header(CSRF_HEADER, csrf)
+                    .body(Body::empty())
+                    .expect("request");
+                request.extensions_mut().insert(ConnectInfo(test_peer()));
+                app.oneshot(request).await.expect("infallible")
+            }
+        };
+        let trash_uri = "/api/v1/projects/trash".to_string();
+        let response = other(axum::http::Method::GET, trash_uri).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let listed = read_json(response).await;
+        assert!(listed["projects"].as_array().expect("array").is_empty());
+        for (method, uri) in [
+            (
+                axum::http::Method::POST,
+                format!("/api/v1/projects/{project_id}/restore"),
+            ),
+            (
+                axum::http::Method::DELETE,
+                format!("/api/v1/projects/{project_id}?permanent=1"),
+            ),
+        ] {
+            let response = other(method.clone(), uri.clone()).await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+        }
+
+        // Restore: back in the listing; a second restore is 404.
+        let response = authed(
+            axum::http::Method::POST,
+            format!("/api/v1/projects/{project_id}/restore"),
+            None,
+        )
+        .await
+        .expect("infallible");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(read_json(response).await["name"], "INAA field season");
+        let response = authed(
+            axum::http::Method::POST,
+            format!("/api/v1/projects/{project_id}/restore"),
+            None,
+        )
+        .await
+        .expect("infallible");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let response = authed(
+            axum::http::Method::GET,
+            format!("/api/v1/projects/{project_id}"),
+            None,
+        )
+        .await
+        .expect("infallible");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Permanent delete: gone from the catalog and the Trash.
+        let response = authed(
+            axum::http::Method::DELETE,
+            format!("/api/v1/projects/{project_id}?permanent=1"),
+            None,
+        )
+        .await
+        .expect("infallible");
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let response = authed(
+            axum::http::Method::GET,
+            "/api/v1/projects/trash".to_string(),
+            None,
+        )
+        .await
+        .expect("infallible");
+        let listed = read_json(response).await;
+        assert!(listed["projects"].as_array().expect("array").is_empty());
+        let response = authed(
+            axum::http::Method::POST,
+            format!("/api/v1/projects/{project_id}/restore"),
             None,
         )
         .await

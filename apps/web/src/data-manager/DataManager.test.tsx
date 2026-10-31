@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { GroupCandidate, GroupSummary } from '@archaeodash/contracts';
-import { AddColumnForm, DataManager, GroupDetails, GroupFileTree, RENAME_SETTLE_MS, RenameGroupForm, columnNameProblem, draggedGroups, dropProblem, exclusionsAfterRename, folderNodes, groupFileStem, groupNameProblem, groupsWithColumn, loadGroupFiles, pathLike, renameGroupFile, renamedEntry, renamedExclusions, withoutStaleExclusions, type DataManagerTransport, type GroupFileEntry } from './DataManager.tsx';
+import { AddColumnForm, DataManager, FolderDetails, GroupDetails, GroupFileTree, RENAME_SETTLE_MS, RenameGroupForm, columnNameProblem, draggedGroups, dropProblem, exclusionsAfterRename, folderNodes, groupFileStem, groupNameProblem, groupsWithColumn, loadGroupFiles, pathLike, renameGroupFile, renamedEntry, renamedExclusions, withoutStaleExclusions, type DataManagerTransport, type GroupFileEntry } from './DataManager.tsx';
 import { RERUN_DELAY_MS } from '../ordination/rerun.ts';
 import { ImportWizard, blankGroupNote } from './ImportWizard.tsx';
 import { DEFAULT_VALUE_OPTIONS, ImportValueOptions, recipeFromOptions } from './ImportValueOptions.tsx';
@@ -99,6 +99,19 @@ test('collapsed groups folder hides its rows', () => {
   const html = renderToStaticMarkup(<GroupFileTree entries={entries} selected={[]} folderOpen={false} />);
   assert.match(html, /aria-expanded="false"/);
   assert.doesNotMatch(html, /aria-level="2"/);
+});
+
+test('folder details name groups lacking measured columns (0 when combined)', () => {
+  const narrow = { ...summary('D3', 4), elemental_columns: ['Fe'] };
+  const folder = {
+    path: 'groups',
+    name: 'groups',
+    entries: [entries[0]!, entries[1]!, { path: 'groups/D3.csv', name: 'D3', summary: narrow, revision: 'rev-D3', error: '' }],
+  };
+  const html = renderToStaticMarkup(<FolderDetails folder={folder} inAnalyses />);
+  assert.match(html, /Some groups lack measured columns, which are 0 for their rows when groups are combined: D3 \(Ca, Na\)\./);
+  const same = renderToStaticMarkup(<FolderDetails folder={{ ...folder, entries: [entries[0]!] }} inAnalyses />);
+  assert.doesNotMatch(same, /lack measured columns/);
 });
 
 test('details panel summarizes a single file or a multi-selection', () => {

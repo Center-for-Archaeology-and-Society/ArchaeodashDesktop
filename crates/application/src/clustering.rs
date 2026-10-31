@@ -26,6 +26,7 @@ use archaeodash_domain::DomainError;
 use super::combined::CombinedInput;
 use super::transforms::TransformService;
 use crate::prepared::PoolScope;
+use crate::sample_ids::{row_groups, rowid_labels};
 
 /// Legacy `set.seed(seed + k)` base seed of the diagnostic series (golden
 /// capture procedure 9).
@@ -556,7 +557,8 @@ impl ClusterService {
 
     /// Sample ID values for one ID column: the legacy `rowid` key column,
     /// the visible ID column, or any descriptive column. Missing values
-    /// become empty strings (`as.character(NA)` renderings).
+    /// become empty strings (`as.character(NA)` renderings). Rowids that
+    /// repeat (combined imports) become `group:rowid` (see `sample_ids`).
     fn id_values(
         data: &GroupFileData,
         id_column: &str,
@@ -564,17 +566,7 @@ impl ClusterService {
     ) -> Result<Vec<String>, DomainError> {
         let roles = &data.profile.roles;
         if id_column == roles.legacy_rowid {
-            return Ok(data
-                .rows
-                .iter()
-                .enumerate()
-                .map(|(index, r)| {
-                    r.legacy_rowid
-                        .clone()
-                        .filter(|v| !v.is_empty())
-                        .unwrap_or_else(|| (index + 1).to_string())
-                })
-                .collect());
+            return Ok(rowid_labels(data, &row_groups(data)));
         }
         if id_column == roles.visible_id {
             return Ok(data
@@ -2279,6 +2271,75 @@ mod tests {
                     && row.rowid == "duplicate"
             }), "each observation remains correlated with its UUID-backed match despite duplicate visible and legacy IDs");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rowid_ids_from_two_imports_name_their_group() {
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "archaeodash-clustering-rowid-{}-{n}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        // Two imports: each numbers its rows from 1, and only one has anid.
+        let mut north = String::from("anid,Site,as,fe\n");
+        let mut south = String::from("Sample,Site,as,fe\n");
+        for i in 0..12 {
+            let (a, f) = (1.0 + f64::from(i) * 0.1, 3.0 + f64::from(i % 5) * 0.05);
+            north.push_str(&format!("N{i},North,{a},{f}\n"));
+            south.push_str(&format!("S{i},South,{},{f}\n", a + 0.05));
+        }
+        std::fs::write(dir.join("north.csv"), north).expect("write north");
+        std::fs::write(dir.join("south.csv"), south).expect("write south");
+        let import = ImportService::new(&dir).expect("import service");
+        let mut paths = Vec::new();
+        for source in ["north.csv", "south.csv"] {
+            let commit = import
+                .commit(&ImportCommitRequest {
+                    sheet: None,
+                    source: source.into(),
+                    group_column: "Site".into(),
+                    visible_id_column: None,
+                    elemental_columns: None,
+                    recipe: None,
+                    destination_dir: None,
+                    group_name: None,
+                })
+                .expect("commit");
+            paths.push(commit.groups[0].path.clone());
+        }
+        let service = ClusterService::new(&dir).expect("service");
+        let rowid = read_group_file(&dir.join(&paths[0]))
+            .expect("read group")
+            .profile
+            .roles
+            .legacy_rowid;
+        let response = service
+            .euclidean_matches(&EuclideanMatchesRequest {
+                path: paths[0].clone(),
+                extra_paths: vec![paths[1].clone()],
+                columns: vec!["as".into(), "fe".into()],
+                transformation: None,
+                source: AnalysisSourceDto::Elements,
+                pc_count: None,
+                source_group_column: None,
+                umap_seed: None,
+                projection_groups: None,
+                group_column: "Site".into(),
+                id_column: rowid,
+                limit: 1,
+                within_group: false,
+            })
+            .expect("matches");
+        let first = response
+            .rows
+            .iter()
+            .find(|row| row.group == "North" && row.id == "North:1")
+            .expect("North row 1 is labelled by group and rowid");
+        assert!(first.match_id.starts_with("South:"), "{}", first.match_id);
+        assert!(response.rows.iter().all(|row| row.id.contains(':')));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
