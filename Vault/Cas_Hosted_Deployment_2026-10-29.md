@@ -68,5 +68,6 @@ Step 5 of [[Hosted_Login_Integration_Plan_2026-10-28]]. The owner chose a sub-pa
   - 2026-10-30: `cas-cfe6205` (anonymous guest sessions, see [[Hosted_Guest_Sessions_2026-10-29]]); compose file updated, backup `compose.yml.bak-cfe6205`. App healthy; public pages return 200.
   - 2026-10-30: `cas-4e0a443` (responsive multiplot pickers and pop-out plot windows, see [[Multiplot_Responsive_Pickers_And_Popout_Windows_2026-10-30]]). App healthy; public pages and `/archaeodash/multiplot-window/...` return 200.
   - 2026-10-30: `cas-557400a` (CSP allows `blob:` images so Plotly PNG export works, see [[Hosted_CSP_Blob_Images_For_PNG_Export_2026-10-30]]). App healthy; public pages return 200.
+  - 2026-10-30: `cas-51c4b80` (project Trash, Sample IDs choice, combining groups with different columns; first deploy with `scripts/home2/deploy-cas.sh`, see [[Deploy_And_DB_Check_Wrappers_2026-10-30]]). App healthy; public pages return 200; `/api/v1/projects/trash` returns 401 without a session.
 - **Not yet checked:** delivery of a real verification email; check `/var/log/mail.log` after the first sign-up.
 - **Follow-ups:** add the URL to `security/live_healthcheck.sh`; commit the repo changes. Registration is open to anyone; quota 1 GB per user; 4 analysis slots.
