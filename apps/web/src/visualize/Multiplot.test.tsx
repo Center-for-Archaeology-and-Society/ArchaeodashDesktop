@@ -105,6 +105,21 @@ test('X and Y selectors build the legacy Y-by-X facet grid', () => {
   assert.ok(html.includes('multiplot-legend'), 'shared group legend');
 });
 
+test('one X column wraps the panels into a grid with no diagonal gap', () => {
+  const props: MultiplotProps = {
+    ...baseProps(),
+    columns: ['a', 'b', 'c', 'd', 'e'],
+    values: Array.from({ length: 5 }, () => [1, 2, 3, 4]),
+  };
+  const html = renderToString(<Multiplot {...props} initialX={['a']} />);
+  // a against b..e: four panels in a 2 x 2 grid, not a single column.
+  assert.ok(html.includes('grid-template-columns:repeat(2, max-content)'), html.match(/grid-template-columns:[^;"]*/)?.[0]);
+  assert.equal((html.match(/class="multiplot-panel"/g) ?? []).length, 4);
+  assert.ok(!html.includes('multiplot-cell-empty'), 'no blank X = Y cell in a wrapped grid');
+  const byRow = renderToString(<Multiplot {...props} initialY={['c']} />);
+  assert.ok(byRow.includes('grid-template-columns:repeat(2, max-content)'), 'one Y column wraps too');
+});
+
 test('static panels draw axis ticks and survive large inputs without spreading', () => {
   const n = 70_000;
   const props: MultiplotProps = {

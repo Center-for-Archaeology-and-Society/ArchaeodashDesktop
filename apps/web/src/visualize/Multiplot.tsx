@@ -18,6 +18,7 @@ import type { Data, Layout } from 'plotly.js-dist-min';
 import {
   crossPairs,
   extent,
+  gridShape,
   niceTicks,
   samplingPlan,
   samplingStatusText,
@@ -399,7 +400,8 @@ export function Multiplot(props: MultiplotProps): ReactElement {
   // after the step, so only SVG steps shrink with the point count.
   const step = mode === 'interactive' ? PANEL_CHUNK : panelsPerStep(indices.length);
   const [renderCount, setRenderCount] = useState(step);
-  const panelHeight = Math.max(MIN_PANEL_HEIGHT, Math.floor(height / Math.max(1, yCols.length)));
+  const shape = useMemo(() => gridShape(xIdx.length, yIdx.length, pairs.length), [xIdx.length, yIdx.length, pairs.length]);
+  const panelHeight = Math.max(MIN_PANEL_HEIGHT, Math.floor(height / shape.rows));
 
   // Draw panels a step at a time so a large grid never freezes the page;
   // the user can stop and continue. Steps are transitions, so React stops
@@ -479,10 +481,11 @@ export function Multiplot(props: MultiplotProps): ReactElement {
     const col = (i: number) => snapshot.columns.indexOf(props.columns[i] ?? '');
     const screenW = window.screen?.availWidth || 1600;
     const screenH = window.screen?.availHeight || 1000;
+    const popColumns = gridShape(draftX.length, draftY.length, draftPairs.length).columns;
     const targets: PopoutTarget[] = popLayout === 'all'
       ? [{
           title: 'Multiplot',
-          width: clamp(draftX.length * (PANEL_WIDTH + 24) + 80, 640, screenW),
+          width: clamp(popColumns * (PANEL_WIDTH + 24) + 80, 640, screenW),
           height: clamp(height + 280, 600, screenH),
         }]
       : draftPairs.map((p) => ({
@@ -516,6 +519,7 @@ export function Multiplot(props: MultiplotProps): ReactElement {
     // One part per grid cell, blanks included (the X = Y diagonal and
     // undrawn panels), so the saved image keeps the on-screen rows: rows
     // can hold different panel counts when only some Y columns are also X.
+    // A wrapped grid (one column on an axis) has no diagonal blanks.
     const parts: SvgPart[] = [];
     let drawn = 0;
     const blank: SvgPart = {
@@ -543,7 +547,7 @@ export function Multiplot(props: MultiplotProps): ReactElement {
       }
     }
     if (drawn === 0) throw new Error('There is no plot to save.');
-    return saveSvgPart(combineSvgParts(parts, Math.max(1, xCols.length)), 'Multiplot', format);
+    return saveSvgPart(combineSvgParts(parts, shape.columns), 'Multiplot', format);
   };
 
   const samplingStatus = mode === 'interactive' ? samplingStatusText(plan) : null;
@@ -631,14 +635,18 @@ export function Multiplot(props: MultiplotProps): ReactElement {
       <div
         className="multiplot-grid"
         ref={gridRef}
-        style={{ gridTemplateColumns: `repeat(${Math.max(1, xCols.length)}, max-content)` }}
+        style={{ gridTemplateColumns: `repeat(${shape.columns}, max-content)` }}
       >
         {(() => {
           let order = 0;
           return yIdx.flatMap((y) =>
-            xIdx.map((x) => {
+            xIdx.flatMap((x) => {
               const key = `${x}-${y}`;
-              if (x === y) return <div key={key} className="multiplot-cell multiplot-cell-empty" aria-hidden="true" />;
+              if (x === y) {
+                // A wrapped grid packs the panels, so the diagonal leaves no gap.
+                if (shape.wrapped) return [];
+                return <div key={key} className="multiplot-cell multiplot-cell-empty" aria-hidden="true" />;
+              }
               // Pairs draw in grid order, so the first `shown` panels are drawn.
               if (order++ >= shown) return <div key={key} className="multiplot-cell multiplot-cell-pending" style={{ width: PANEL_WIDTH, height: panelHeight }} />;
               return (

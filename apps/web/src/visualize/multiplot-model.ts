@@ -118,6 +118,26 @@ export function crossPairs(xIndices: readonly number[], yIndices: readonly numbe
   return pairs;
 }
 
+export interface GridShape {
+  /** True when one axis has a single column, so the panels wrap. */
+  readonly wrapped: boolean;
+  readonly columns: number;
+  readonly rows: number;
+}
+
+/**
+ * Grid shape for the multiplot. With several X and Y columns the grid is
+ * Y rows by X columns. When either axis has one column, the panels would sit
+ * in a single row or column, so they wrap into a near-square grid instead.
+ */
+export function gridShape(xCount: number, yCount: number, pairCount: number): GridShape {
+  if ((xCount === 1 || yCount === 1) && pairCount > 0) {
+    const columns = Math.ceil(Math.sqrt(pairCount));
+    return { wrapped: true, columns, rows: Math.ceil(pairCount / columns) };
+  }
+  return { wrapped: false, columns: Math.max(1, xCount), rows: Math.max(1, yCount) };
+}
+
 /** Minimum and maximum without spreading large arrays (engine argument limits). */
 export function extent(values: Iterable<number>): [number, number] | null {
   let min = Infinity;

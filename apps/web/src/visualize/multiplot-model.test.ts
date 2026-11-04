@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { allPairs, crossPairs, extent, niceTicks, samplingPlan, samplingStatusText, svgToDataUrl, uuidsFromSelectedEvent } from './multiplot-model.ts';
+import { allPairs, crossPairs, extent, gridShape, niceTicks, samplingPlan, samplingStatusText, svgToDataUrl, uuidsFromSelectedEvent } from './multiplot-model.ts';
 
 test('group/facet sampling preserves every row when below the cap', () => {
   const rows = [0, 1, 2, 3];
@@ -154,4 +154,15 @@ test('extent and niceTicks', () => {
   assert.deepEqual(niceTicks(0, 10, 4), [0, 5, 10]);
   assert.deepEqual(niceTicks(0.12, 0.5, 4), [0.2, 0.3, 0.4, 0.5]);
   assert.deepEqual(niceTicks(2, 2), [2]);
+});
+
+test('gridShape wraps panels when one axis has a single column', () => {
+  // Several X and Y columns: Y rows by X columns.
+  assert.deepEqual(gridShape(3, 2, 5), { wrapped: false, columns: 3, rows: 2 });
+  // One X column against 9 Y columns: a 3 x 3 grid, not one column.
+  assert.deepEqual(gridShape(1, 9, 9), { wrapped: true, columns: 3, rows: 3 });
+  // One Y column against 5 X columns (one is X = Y): 4 panels, 2 x 2.
+  assert.deepEqual(gridShape(5, 1, 4), { wrapped: true, columns: 2, rows: 2 });
+  assert.deepEqual(gridShape(1, 1, 1), { wrapped: true, columns: 1, rows: 1 });
+  assert.deepEqual(gridShape(1, 1, 0), { wrapped: false, columns: 1, rows: 1 });
 });
