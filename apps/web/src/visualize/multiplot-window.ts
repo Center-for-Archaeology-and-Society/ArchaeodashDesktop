@@ -14,7 +14,7 @@ export type PopoutLayout = 'all' | 'each';
 /** Route prefix of the pop-out view (no shell, no transport). */
 export const MULTIPLOT_WINDOW_PATH = '/multiplot-window';
 /** "One window per plot" opens at most this many windows. */
-export const MAX_PLOT_WINDOWS = 24;
+export const MAX_PLOT_WINDOWS = 36;
 /** Saved snapshots older than this are removed when a new one is saved. */
 const SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000;
 const DB_NAME = 'archaeodash-multiplot';

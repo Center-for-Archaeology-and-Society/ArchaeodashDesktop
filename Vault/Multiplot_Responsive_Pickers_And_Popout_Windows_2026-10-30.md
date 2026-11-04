@@ -30,7 +30,7 @@ drawing step kept the main thread busy.
   axis selects are hidden while the multiplot shows (it has its own pickers).
 - **Open in new window** (`multiplot-window.ts`, `MultiplotWindow.tsx`): a
   layout choice, "All plots in one window" or "One window per plot" (at most
-  24 windows), and an open button.
+  24 windows, raised to 36 on 2026-11-04), and an open button.
   - The plotted columns and filtered rows are saved to IndexedDB
     (`archaeodash-multiplot`, Float64Array columns; entries older than a day
     are dropped on the next save) under a random key.
