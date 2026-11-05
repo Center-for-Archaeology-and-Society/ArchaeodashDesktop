@@ -28,3 +28,6 @@ hand-written `ssh` commands (each of those asks for approval on every device).
   as `(blank)`) it checks the `(blank)` partition instead.
 - Visualize says how many samples are not plotted because they have no value
   on an axis (per group), instead of dropping them silently.
+
+## Later
+- `scripts/home2/deploy-desktop-cas.sh` publishes the Windows desktop build; see [[Desktop_Download_On_Cas_2026-11-05]].

@@ -7,7 +7,7 @@
 #
 # Also installs deploy/cas/apache-archaeodash.conf when it differs from the
 # installed copy, but only if the two match outside the "BEGIN/END download"
-# blocks (so hand edits on cas are never overwritten). The old file is backed
+# blocks (blank lines ignored) (so hand edits on cas are never overwritten). The old file is backed
 # up in /root, `apachectl configtest` must pass before the reload, and the
 # backup is restored if it does not.
 #
@@ -63,7 +63,7 @@ sudo chmod 644 "$dir/SHA256SUMS"
 ls -la "$dir"
 
 conf=/etc/apache2/conf-available/archaeodash-location.conf
-strip() { sed '/^# BEGIN download/,/^# END download/d'; }
+strip() { sed -e '/^# BEGIN download/,/^# END download/d' -e '/^[[:space:]]*$/d'; }
 if sudo cmp -s "$conf" "$new"; then
   echo "apache: config already current"
 else
