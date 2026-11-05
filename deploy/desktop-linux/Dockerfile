@@ -12,7 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates curl wget file xz-utils git pkg-config \
       libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-      librsvg2-dev libssl-dev libxdo-dev patchelf desktop-file-utils \
+      librsvg2-dev libssl-dev libxdo-dev patchelf desktop-file-utils xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js: the same version as on home2 (the web build reuses its node_modules).
