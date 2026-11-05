@@ -99,15 +99,19 @@ function SinglePlot({
     return () => window.removeEventListener('resize', onResize);
   }, []);
   const plotRef = useRef<HTMLDivElement | null>(null);
-  // The toolbar and legend can wrap, so the plot starts where it lands.
-  const [top, setTop] = useState(120);
+  const belowRef = useRef<HTMLDivElement | null>(null);
+  // The plot sits at the top; the controls and legend below it can wrap,
+  // so measure where the plot starts and how tall the part below it is.
+  const [top, setTop] = useState(12);
+  const [below, setBelow] = useState(120);
   useLayoutEffect(() => {
     if (plotRef.current) setTop(Math.round(plotRef.current.getBoundingClientRect().top + window.scrollY));
+    if (belowRef.current) setBelow(Math.ceil(belowRef.current.getBoundingClientRect().height));
   }, [size, mode]);
   const plan = useMemo(() => samplingPlan(rows, data.groupLabels, 1, 1), [rows, data.groupLabels]);
   const indices = mode === 'interactive' ? plan.indices : rows;
   const width = Math.max(320, size.w - 40);
-  const height = Math.max(260, size.h - top - BOTTOM_SPACE);
+  const height = Math.max(260, size.h - top - below - BOTTOM_SPACE);
   const legendGroups = useMemo(() => {
     const present = new Set(data.groupLabels);
     return data.groupNames.filter((g) => present.has(g));
@@ -126,30 +130,6 @@ function SinglePlot({
   const samplingStatus = mode === 'interactive' ? samplingStatusText(plan) : null;
   return (
     <main className="multiplot-window multiplot-window-single main-panel">
-      <div className="explore-controls">
-        <label>
-          Render mode
-          <select aria-label="Render mode" value={mode} onChange={(e) => setMode(e.target.value as MultiplotMode)}>
-            <option value="static">Static (SVG)</option>
-            <option value="interactive">Interactive (Plotly)</option>
-          </select>
-        </label>
-        <label>
-          Point size {pointSize.toFixed(1)}
-          <input
-            type="range"
-            min={0.1}
-            max={10}
-            step={0.1}
-            value={pointSize}
-            aria-label="Point size"
-            onChange={(e) => setPointSize(Number(e.target.value))}
-          />
-        </label>
-        <PlotSaveButtons name="Multiplot panel" save={save} />
-      </div>
-      {samplingStatus !== null && <p role="status">{samplingStatus}</p>}
-      {legendGroups.length > 0 && <GroupLegend groups={legendGroups} groupNames={data.groupNames} palette={data.palette} />}
       <div ref={plotRef}>
         <MultiplotPanel
           columns={data.columns}
@@ -167,6 +147,32 @@ function SinglePlot({
           height={height}
           mode={mode}
         />
+      </div>
+      <div ref={belowRef} className="multiplot-window-below">
+        <div className="explore-controls">
+          <label>
+            Render mode
+            <select aria-label="Render mode" value={mode} onChange={(e) => setMode(e.target.value as MultiplotMode)}>
+              <option value="static">Static (SVG)</option>
+              <option value="interactive">Interactive (Plotly)</option>
+            </select>
+          </label>
+          <label>
+            Point size {pointSize.toFixed(1)}
+            <input
+              type="range"
+              min={0.1}
+              max={10}
+              step={0.1}
+              value={pointSize}
+              aria-label="Point size"
+              onChange={(e) => setPointSize(Number(e.target.value))}
+            />
+          </label>
+          <PlotSaveButtons name="Multiplot panel" save={save} />
+        </div>
+        {samplingStatus !== null && <p role="status">{samplingStatus}</p>}
+        {legendGroups.length > 0 && <GroupLegend groups={legendGroups} groupNames={data.groupNames} palette={data.palette} />}
       </div>
     </main>
   );

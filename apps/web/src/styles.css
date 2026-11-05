@@ -1439,6 +1439,20 @@ span[role='alert'] {
   overflow: hidden;
 }
 
+/* Plot first, controls below it. */
+.multiplot-window-below {
+  padding-top: 0.5rem;
+}
+
+.multiplot-window .multiplot {
+  display: flex;
+  flex-direction: column;
+}
+
+.multiplot-window .multiplot-grid {
+  order: -1;
+}
+
 .multiplot-legend {
   display: flex;
   flex-wrap: wrap;
