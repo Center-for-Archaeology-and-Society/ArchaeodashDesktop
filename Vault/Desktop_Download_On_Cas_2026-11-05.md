@@ -5,7 +5,7 @@ description: How the Windows and Linux desktop builds are built on home2 and pub
 status: stable
 generated:
   by: claude-code/claude-opus-5-5
-  at: 2026-11-05T17:40:00+00:00
+  at: 2026-11-05T18:10:00+00:00
 sources:
   - id: deploy-script
     resource: ../scripts/home2/deploy-desktop-cas.sh
@@ -46,15 +46,15 @@ Each folder also holds versioned copies `ArchaeoDash-<short sha>.<ext>` (the thr
 - `<Location /archaeodash/download/> ProxyPass ! </Location>` comes after the app proxy, so the downloads are not sent to the app.
 
 ## Current builds (observed 2026-11-05)
-All built from commit `aab9438` with no uncommitted changes, and published at 17:31 UTC. The script's public checks passed for all three files.
+All built from commit `def3593` with no uncommitted changes, and published at about 18:05 UTC. The script's public checks passed for all three files.
 
 | File | Bytes | sha256 (start) |
 |---|---|---|
-| ArchaeoDash.exe | 34,414,592 | `dc1b7ca3…` |
-| ArchaeoDash.AppImage | 92,932,600 | `52493a06…` |
-| ArchaeoDash.deb | 15,724,736 | `6d8c9c44…` |
+| ArchaeoDash.exe | 34,414,592 | `c26612e5…` |
+| ArchaeoDash.AppImage | 92,940,792 | `1feee2e2…` |
+| ArchaeoDash.deb | 15,725,132 | `1f72c5af…` |
 
-These include the multiplot window tiling described in [Multiplot pop-out window tiling](Multiplot_Popout_Window_Tiling_2026-11-05.md).
+These include the multiplot window tiling ([Multiplot pop-out window tiling](Multiplot_Popout_Window_Tiling_2026-11-05.md)) and the plot-first pop-out layout ([Multiplot pop-outs show the plot first](Multiplot_Popout_Plot_First_Layout_2026-11-05.md)). The earlier `aab9438` builds are kept as versioned copies.
 
 ## Limitations
 - Builds are unsigned. Windows SmartScreen warns on first run, and Windows needs the WebView2 runtime (included with Windows 10/11).
