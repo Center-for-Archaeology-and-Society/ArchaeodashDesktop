@@ -13,6 +13,8 @@ HOME2_HOST="home2"
 HOME2_REPO="/mnt/pooled/Projects/Archaeodashdesktop"
 HOME2_MIRROR="~/build/archaeodashdesktop"
 HOME2_TARGET="~/archaeodash-target"
+# Linux desktop builds (container, deploy/desktop-linux) use their own target.
+HOME2_TARGET_LINUX="~/archaeodash-target-linux"
 
 # run_remote SCRIPT_TEXT [ARGS...]: runs a bash script on home2 with
 # positional arguments, quoting them so spaces and metacharacters stay data.
@@ -29,6 +31,10 @@ run_remote() {
 # Rsyncs the share into the home2 mirror (where native build tools can run).
 SYNC_SNIPPET='rsync -a --delete --exclude target --exclude .git --exclude apps/web/dist \
   --exclude "node_modules/.pnpm-*" "'"$HOME2_REPO"'/" '"$HOME2_MIRROR"'/'
+
+# Prints the commit a build is made from (the share's HEAD when the mirror is
+# synced) and whether it had uncommitted tracked changes.
+BUILD_INFO_SNIPPET='printf "commit=%s\ndirty=%s\n" "$(git -C '"$HOME2_REPO"' -c safe.directory="*" rev-parse --short HEAD)" "$(git -C '"$HOME2_REPO"' -c safe.directory="*" status --short --untracked-files=no | wc -l)"'
 
 die() {
   printf '%s\n' "$*" >&2

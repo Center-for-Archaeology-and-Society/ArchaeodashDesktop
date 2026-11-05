@@ -12,7 +12,10 @@ set -euo pipefail
 run_remote "set -eo pipefail
 mkdir -p $HOME2_MIRROR
 $SYNC_SNIPPET
+$BUILD_INFO_SNIPPET > $HOME2_TARGET/BUILD_INFO.next
 cd $HOME2_MIRROR
 XWIN_ACCEPT_LICENSE=1 CARGO_TARGET_DIR=$HOME2_TARGET bash scripts/build-windows-exe.sh 2>&1 \
   | grep -E 'built in|error|warning: unused|Finished|Built ' | tail -12
+mv -f $HOME2_TARGET/BUILD_INFO.next $HOME2_TARGET/BUILD_INFO
+cat $HOME2_TARGET/BUILD_INFO
 ls -la --time-style=+%Y-%m-%dT%H:%M $HOME2_TARGET/x86_64-pc-windows-msvc/release/archaeodash-desktop.exe"
