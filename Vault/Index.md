@@ -165,5 +165,5 @@ Up: [[../../Vault/Index]]
 - [[Hosted_CSP_Blob_Images_For_PNG_Export_2026-10-30]]
 - [[Multiplot_Single_Axis_Grid_Wrap_2026-11-04]]
 - [[Multiplot_Popout_Window_Tiling_2026-11-05]]
-- [[Desktop_Download_On_Cas_2026-11-05]]
+- [Desktop downloads on cas](Desktop_Download_On_Cas_2026-11-05.md): Windows and Linux builds at per-platform download paths, and how to publish them.
 - [[Deploy_And_DB_Check_Wrappers_2026-10-30]]
