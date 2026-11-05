@@ -178,37 +178,224 @@ export interface PopoutTarget {
   readonly pair?: { x: number; y: number };
   readonly width: number;
   readonly height: number;
+  /** Slot in the window grid (the plot's place in the multiplot). */
+  readonly cell?: TileCell;
+}
+
+/** A window's place in a grid of windows (0-based). */
+export interface TileCell {
+  readonly row: number;
+  readonly col: number;
+}
+
+/** Part of the screen windows may cover (CSS pixels, screen coordinates). */
+export interface ScreenArea {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** A window's outer box (frame included), in screen coordinates. */
+export interface WindowRect {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** Tiles smaller than this overlap instead of shrinking further. */
+export const MIN_TILE = { width: 360, height: 300 } as const;
+/** Width-to-height ratio a single-plot window looks best at. */
+const TILE_ASPECT = 1.15;
+
+/** The available screen area (the browser's work area, taskbars excluded). */
+export function screenArea(): ScreenArea {
+  const s = (typeof window !== 'undefined' ? window.screen : undefined) as
+    | (Screen & { availLeft?: number; availTop?: number })
+    | undefined;
+  return {
+    left: Number.isFinite(s?.availLeft) ? s!.availLeft! : 0,
+    top: Number.isFinite(s?.availTop) ? s!.availTop! : 0,
+    width: s?.availWidth || 1600,
+    height: s?.availHeight || 1000,
+  };
 }
 
 /**
- * Opens the windows and saves the data. In a browser the windows open first
- * (still inside the click, so pop-up blockers allow them) and read the data
- * once it is saved; returns how many the browser blocked.
+ * Columns for `count` windows on `area`: the grid whose tiles come closest
+ * to a plot's shape, preferring grids with fewer empty slots.
  */
-export async function openPopouts(key: string, snapshot: MultiplotSnapshot, targets: readonly PopoutTarget[]): Promise<{ blocked: number }> {
+export function fitColumns(count: number, area: ScreenArea): number {
+  let best = 1;
+  let bestScore = Infinity;
+  for (let columns = 1; columns <= Math.max(1, count); columns++) {
+    const rows = Math.ceil(count / columns);
+    const aspect = area.width / columns / (area.height / rows);
+    const score = Math.abs(Math.log(aspect / TILE_ASPECT)) + (columns * rows - count) / Math.max(1, count);
+    if (score < bestScore) {
+      bestScore = score;
+      best = columns;
+    }
+  }
+  return best;
+}
+
+/**
+ * Outer boxes that tile `area` with one window per cell. Without cells (or
+ * with cells that collide) the windows fill a grid that fits the screen in
+ * order. Tiles never get smaller than MIN_TILE: when they would, the
+ * windows keep that size and overlap, spread evenly across the area.
+ */
+export function tileRects(count: number, area: ScreenArea, cells?: readonly (TileCell | undefined)[], min = MIN_TILE): WindowRect[] {
+  if (count <= 0) return [];
+  const given = cells && cells.length === count && cells.every((c) => c !== undefined) ? (cells as TileCell[]) : null;
+  const unique = given && new Set(given.map((c) => `${c.row}:${c.col}`)).size === count;
+  let placed: TileCell[];
+  let columns: number;
+  let rows: number;
+  if (given && unique) {
+    placed = given;
+    columns = Math.max(...given.map((c) => c.col)) + 1;
+    rows = Math.max(...given.map((c) => c.row)) + 1;
+  } else {
+    columns = fitColumns(count, area);
+    rows = Math.ceil(count / columns);
+    placed = Array.from({ length: count }, (_, i) => ({ row: Math.floor(i / columns), col: i % columns }));
+  }
+  const width = Math.min(area.width, Math.max(min.width, Math.floor(area.width / columns)));
+  const height = Math.min(area.height, Math.max(min.height, Math.floor(area.height / rows)));
+  const stepX = columns > 1 ? (area.width - width) / (columns - 1) : 0;
+  const stepY = rows > 1 ? (area.height - height) / (rows - 1) : 0;
+  return placed.map((c) => ({
+    left: Math.round(area.left + c.col * stepX),
+    top: Math.round(area.top + c.row * stepY),
+    width,
+    height,
+  }));
+}
+
+/** Browser popups: the frame around the page, used until a window can be measured. */
+const BROWSER_FRAME = { width: 8, height: 72 } as const;
+
+/** Moves and resizes a popup this page opened (browsers may ignore it). */
+function placeBrowserWindow(win: Window, rect: WindowRect): void {
+  try {
+    win.moveTo(rect.left, rect.top);
+    win.resizeTo(rect.width, rect.height);
+  } catch {
+    // The window closed or the browser forbids it; it stays where it is.
+  }
+}
+
+/** The windows of one "open" click, kept so they can be tiled again. */
+export interface PopoutGroup {
+  readonly key: string;
+  readonly cells: readonly (TileCell | undefined)[];
+  /** Browser windows, by target index (null where the browser blocked one). */
+  readonly browser: readonly (Window | null)[];
+  /** Desktop window labels, by target index. */
+  readonly labels: readonly string[];
+}
+
+function windowLabel(key: string, i: number): string {
+  return `multiplot-${key}-${i}`;
+}
+
+/**
+ * Opens the windows, tiled across the screen, and saves the data. In a
+ * browser the windows open first (still inside the click, so pop-up
+ * blockers allow them) and read the data once it is saved; returns how many
+ * the browser blocked and the group for tileWindows.
+ */
+export async function openPopouts(
+  key: string,
+  snapshot: MultiplotSnapshot,
+  targets: readonly PopoutTarget[],
+  options: { tile?: boolean } = {},
+): Promise<{ blocked: number; group: PopoutGroup }> {
+  const tile = options.tile ?? targets.length > 1;
+  const cells = targets.map((t) => t.cell);
+  const rects = tile ? tileRects(targets.length, screenArea(), cells) : null;
+  const labels = targets.map((_, i) => windowLabel(key, i));
   if (isTauri()) {
     await saveSnapshot(key, snapshot);
     const { invoke } = await import('@tauri-apps/api/core');
     for (const [i, t] of targets.entries()) {
+      const r = rects?.[i];
       await invoke('open_multiplot_window', {
-        label: `multiplot-${key}-${i}`,
+        label: labels[i],
         path: popoutRoute(key, t.pair).slice(1),
         title: t.title,
-        width: t.width,
-        height: t.height,
+        width: r ? r.width : t.width,
+        height: r ? r.height : t.height,
+        x: r ? r.left : null,
+        y: r ? r.top : null,
       });
     }
-    return { blocked: 0 };
+    return { blocked: 0, group: { key, cells, browser: [], labels } };
   }
   let blocked = 0;
+  const browser: (Window | null)[] = [];
   for (const [i, t] of targets.entries()) {
+    const r = rects?.[i];
     const offset = 30 * (i % 10);
-    const features = `popup=yes,width=${Math.round(t.width)},height=${Math.round(t.height)},left=${80 + offset},top=${60 + offset},resizable=yes,scrollbars=yes`;
+    const box = r
+      ? { left: r.left, top: r.top, width: r.width - BROWSER_FRAME.width, height: r.height - BROWSER_FRAME.height }
+      : { left: 80 + offset, top: 60 + offset, width: t.width, height: t.height };
+    const features = `popup=yes,width=${Math.round(box.width)},height=${Math.round(box.height)},left=${Math.round(box.left)},top=${Math.round(box.top)},resizable=yes,scrollbars=yes`;
     const win = window.open(`${BASE_PATH}${popoutRoute(key, t.pair)}`, `archaeodash-multiplot-${key}-${i}`, features);
     if (!win) blocked++;
+    // The features set the page size; set the outer box exactly where allowed.
+    else if (r) placeBrowserWindow(win, r);
+    browser.push(win);
   }
   if (blocked < targets.length) await saveSnapshot(key, snapshot);
-  return { blocked };
+  return { blocked, group: { key, cells, browser, labels } };
+}
+
+/**
+ * Tiles the still-open windows of `groups` across the screen again. All of
+ * one group open: they keep their grid slots. Otherwise the open ones fill
+ * a grid that fits the screen. Returns how many windows were tiled. A
+ * browser may ignore the move (Firefox and Safari can turn it off).
+ */
+export async function tileWindows(groups: readonly PopoutGroup[]): Promise<{ tiled: number }> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const all = groups.flatMap((g) => g.labels.map((label, i) => ({ label, cell: g.cells[i] })));
+    if (all.length === 0) return { tiled: 0 };
+    const open = await invoke<boolean[]>('multiplot_windows_open', { labels: all.map((w) => w.label) });
+    const live = all.filter((_, i) => open[i] === true);
+    const rects = tileRects(live.length, screenArea(), keepCells(groups, live.length, all.length, live.map((w) => w.cell)));
+    for (const [i, w] of live.entries()) {
+      const r = rects[i]!;
+      await invoke('place_multiplot_window', { label: w.label, x: r.left, y: r.top, width: r.width, height: r.height });
+    }
+    return { tiled: live.length };
+  }
+  const all = groups.flatMap((g) => g.browser.map((win, i) => ({ win, cell: g.cells[i] })));
+  const live = all.filter((w): w is { win: Window; cell: TileCell | undefined } => w.win !== null && !w.win.closed);
+  const rects = tileRects(live.length, screenArea(), keepCells(groups, live.length, all.length, live.map((w) => w.cell)));
+  for (const [i, w] of live.entries()) {
+    placeBrowserWindow(w.win, rects[i]!);
+    try {
+      w.win.focus();
+    } catch {
+      // Focus is a courtesy; some browsers ignore it.
+    }
+  }
+  return { tiled: live.length };
+}
+
+/** Grid slots are kept only for one group with every window still open. */
+function keepCells(
+  groups: readonly PopoutGroup[],
+  liveCount: number,
+  totalCount: number,
+  cells: readonly (TileCell | undefined)[],
+): readonly (TileCell | undefined)[] | undefined {
+  return groups.length === 1 && liveCount === totalCount ? cells : undefined;
 }
 
 interface SelectionMessage {

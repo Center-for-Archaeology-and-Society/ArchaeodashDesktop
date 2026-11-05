@@ -35,6 +35,8 @@ import {
   newSnapshotKey,
   onPopoutSelection,
   openPopouts,
+  tileWindows,
+  type PopoutGroup,
   type PopoutLayout,
   type PopoutTarget,
 } from './multiplot-window.ts';
@@ -460,6 +462,8 @@ export function Multiplot(props: MultiplotProps): ReactElement {
   const [popLayout, setPopLayout] = useState<PopoutLayout>('all');
   const [popState, setPopState] = useState<PopoutState>({ kind: 'idle' });
   const openedKeys = useRef(new Set<string>());
+  // Window groups opened one-per-plot, newest last, for "Tile windows".
+  const [popGroups, setPopGroups] = useState<PopoutGroup[]>([]);
   const onSelectRef = useRef(props.onSelect);
   onSelectRef.current = props.onSelect;
   useEffect(
@@ -481,7 +485,13 @@ export function Multiplot(props: MultiplotProps): ReactElement {
     const col = (i: number) => snapshot.columns.indexOf(props.columns[i] ?? '');
     const screenW = window.screen?.availWidth || 1600;
     const screenH = window.screen?.availHeight || 1000;
-    const popColumns = gridShape(draftX.length, draftY.length, draftPairs.length).columns;
+    const popShape = gridShape(draftX.length, draftY.length, draftPairs.length);
+    const popColumns = popShape.columns;
+    // A full X × Y matrix keeps its layout on screen; a wrapped grid lets
+    // the windows fill a grid that fits the screen.
+    const cellOf = (p: PlotPair) => popShape.wrapped
+      ? undefined
+      : { row: draftY.indexOf(props.columns[p.yIndex] ?? ''), col: draftX.indexOf(props.columns[p.xIndex] ?? '') };
     const targets: PopoutTarget[] = popLayout === 'all'
       ? [{
           title: 'Multiplot',
@@ -493,10 +503,12 @@ export function Multiplot(props: MultiplotProps): ReactElement {
           pair: { x: col(p.xIndex), y: col(p.yIndex) },
           width: clamp(760, 400, screenW),
           height: clamp(680, 400, screenH),
+          cell: cellOf(p),
         }));
     setPopState({ kind: 'busy' });
     openPopouts(key, snapshot, targets)
-      .then(({ blocked }) => {
+      .then(({ blocked, group }) => {
+        if (popLayout === 'each' && blocked < targets.length) setPopGroups((gs) => [...gs, group]);
         if (blocked === 0) setPopState({ kind: 'idle' });
         else {
           setPopState({
@@ -509,6 +521,19 @@ export function Multiplot(props: MultiplotProps): ReactElement {
       })
       .catch((err: unknown) => {
         setPopState({ kind: 'error', text: `Could not open the plot window: ${err instanceof Error ? err.message : String(err)}` });
+      });
+  };
+
+  const tileOpenWindows = () => {
+    tileWindows(popGroups)
+      .then(({ tiled }) => {
+        if (tiled === 0) {
+          setPopGroups([]);
+          setPopState({ kind: 'error', text: 'No plot windows are open. Open them with “One window per plot” first.' });
+        } else setPopState({ kind: 'idle' });
+      })
+      .catch((err: unknown) => {
+        setPopState({ kind: 'error', text: `Could not tile the windows: ${err instanceof Error ? err.message : String(err)}` });
       });
   };
 
@@ -613,6 +638,16 @@ export function Multiplot(props: MultiplotProps): ReactElement {
                 ? `Open ${draftPairs.length} window${draftPairs.length === 1 ? '' : 's'}`
                 : 'Open in new window'}
             </button>
+            {popGroups.length > 0 && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={tileOpenWindows}
+                title="Arrange the open plot windows in a grid across the screen"
+              >
+                Tile windows
+              </button>
+            )}
           </span>
         )}
       </div>

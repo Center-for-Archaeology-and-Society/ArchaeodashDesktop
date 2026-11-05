@@ -156,9 +156,59 @@ fn valid_multiplot_path(path: &str) -> bool {
     key_ok && pair_ok && parts.next().is_none()
 }
 
+/// A finite window coordinate kept on any plausible screen layout.
+fn window_coord(v: f64) -> Option<f64> {
+    v.is_finite().then(|| v.clamp(-20_000.0, 20_000.0))
+}
+
+/// A finite window size kept between a usable minimum and a large screen.
+fn window_size(v: f64, default: f64) -> f64 {
+    if v.is_finite() {
+        v.clamp(320.0, 4000.0)
+    } else {
+        default
+    }
+}
+
+/// Moves a window so its outer box (frame included) is `x, y, width, height`
+/// in logical pixels, measuring the frame the platform adds.
+fn place_window(
+    window: &tauri::WebviewWindow,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let (Some(x), Some(y)) = (window_coord(x), window_coord(y)) else {
+        return Err("invalid window position".into());
+    };
+    let (width, height) = (window_size(width, 900.0), window_size(height, 800.0));
+    let _ = window.unmaximize();
+    let scale = window.scale_factor().unwrap_or(1.0).max(0.1);
+    let (frame_w, frame_h) = match (window.outer_size(), window.inner_size()) {
+        (Ok(outer), Ok(inner)) => (
+            f64::from(outer.width.saturating_sub(inner.width)) / scale,
+            f64::from(outer.height.saturating_sub(inner.height)) / scale,
+        ),
+        _ => (0.0, 0.0),
+    };
+    window
+        .set_size(tauri::LogicalSize::new(
+            (width - frame_w).max(320.0),
+            (height - frame_h).max(240.0),
+        ))
+        .map_err(|e| e.to_string())?;
+    window
+        .set_position(tauri::LogicalPosition::new(x, y))
+        .map_err(|e| e.to_string())
+}
+
 /// Opens multiplot figures in their own window (the web client saved the
-/// data for it; the window needs no backend). Focuses an open one.
+/// data for it; the window needs no backend). Focuses an open one. With a
+/// position, `width` and `height` are the outer box and the window is moved
+/// there (tiling); without one they are the page size.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn open_multiplot_window(
     app: tauri::AppHandle,
     label: String,
@@ -166,12 +216,18 @@ async fn open_multiplot_window(
     title: String,
     width: f64,
     height: f64,
+    x: Option<f64>,
+    y: Option<f64>,
 ) -> Result<(), String> {
     if !valid_multiplot_label(&label) || !valid_multiplot_path(&path) {
         return Err("invalid multiplot window request".into());
     }
+    let position = x.zip(y);
     if let Some(window) = app.get_webview_window(&label) {
         let _ = window.unminimize();
+        if let Some((x, y)) = position {
+            place_window(&window, x, y, width, height)?;
+        }
         return window.set_focus().map_err(|e| e.to_string());
     }
     let title: String = title
@@ -179,23 +235,57 @@ async fn open_multiplot_window(
         .filter(|c| !c.is_control())
         .take(120)
         .collect();
-    let size = |v: f64, default: f64| {
-        if v.is_finite() {
-            v.clamp(320.0, 4000.0)
-        } else {
-            default
-        }
-    };
     let url = tauri::WebviewUrl::App(path.into());
-    let _window = tauri::WebviewWindowBuilder::new(&app, &label, url)
+    let mut builder = tauri::WebviewWindowBuilder::new(&app, &label, url)
         .title(format!("{title} — ArchaeoDash"))
-        .inner_size(size(width, 900.0), size(height, 800.0))
+        .inner_size(window_size(width, 900.0), window_size(height, 800.0));
+    if let Some((Some(x), Some(y))) = position.map(|(x, y)| (window_coord(x), window_coord(y))) {
+        builder = builder.position(x, y);
+    }
+    let window = builder
         .build()
         .map_err(|e| format!("could not open the plot window: {e}"))?;
     #[cfg(windows)]
-    if let Ok(hwnd) = _window.hwnd() {
+    if let Ok(hwnd) = window.hwnd() {
         windows_icon::apply(hwnd.0);
     }
+    if let Some((x, y)) = position {
+        // The page size was a guess; correct it now the frame can be measured.
+        let _ = place_window(&window, x, y, width, height);
+    }
+    Ok(())
+}
+
+/// Which of these multiplot windows are still open (same order).
+#[tauri::command]
+fn multiplot_windows_open(app: tauri::AppHandle, labels: Vec<String>) -> Vec<bool> {
+    labels
+        .iter()
+        .take(512)
+        .map(|label| valid_multiplot_label(label) && app.get_webview_window(label).is_some())
+        .collect()
+}
+
+/// Moves an open multiplot window to an outer box (tiling). Does nothing if
+/// the window was closed, so it never opens one.
+#[tauri::command]
+fn place_multiplot_window(
+    app: tauri::AppHandle,
+    label: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    if !valid_multiplot_label(&label) {
+        return Err("invalid multiplot window request".into());
+    }
+    let Some(window) = app.get_webview_window(&label) else {
+        return Ok(());
+    };
+    let _ = window.unminimize();
+    place_window(&window, x, y, width, height)?;
+    let _ = window.set_focus();
     Ok(())
 }
 
@@ -960,6 +1050,8 @@ pub fn run() {
             logging::reveal_log_folder,
             open_help_window,
             open_multiplot_window,
+            multiplot_windows_open,
+            place_multiplot_window,
             list_group_folders,
             create_group_folder,
             rename_group_folder,
