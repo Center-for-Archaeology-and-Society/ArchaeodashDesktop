@@ -71,5 +71,6 @@ Step 5 of [[Hosted_Login_Integration_Plan_2026-10-28]]. The owner chose a sub-pa
   - 2026-10-30: `cas-51c4b80` (project Trash, Sample IDs choice, combining groups with different columns; first deploy with `scripts/home2/deploy-cas.sh`, see [[Deploy_And_DB_Check_Wrappers_2026-10-30]]). App healthy; public pages return 200; `/api/v1/projects/trash` returns 401 without a session.
   - 2026-11-04: `cas-06d3294` (multiplot wraps single-axis panels into a grid, see [[Multiplot_Single_Axis_Grid_Wrap_2026-11-04]]; one-window-per-plot cap raised from 24 to 36). App healthy; public pages return 200; the live bundle has the cap at 36.
   - 2026-11-05: `cas-671c2ff` (one-window-per-plot windows tile across the screen, plus a Tile windows button, see [[Multiplot_Popout_Window_Tiling_2026-11-05]]). App healthy; public pages return 200.
+  - 2026-11-05: `cas-2226f7b` (no app change: the image ID matches `cas-671c2ff`; redeployed so the tag matches HEAD after the desktop download was added, see [[Desktop_Download_On_Cas_2026-11-05]]). App healthy; public pages and the download return 200.
 - **Not yet checked:** delivery of a real verification email; check `/var/log/mail.log` after the first sign-up.
 - **Follow-ups:** add the URL to `security/live_healthcheck.sh`; commit the repo changes. Registration is open to anyone; quota 1 GB per user; 4 analysis slots.
